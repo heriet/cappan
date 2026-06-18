@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cappan WASM demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f6f7f9;
+      color: #1f2933;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+    }
+
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
+    }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .controls {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid #d8dee6;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 650;
+      color: #374151;
+    }
+
+    input,
+    select,
+    button {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+      background: #ffffff;
+      color: #111827;
+    }
+
+    input[type="range"] {
+      padding: 0;
+    }
+
+    input[type="color"] {
+      padding: 3px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    button {
+      cursor: pointer;
+      border-color: #1f2937;
+      background: #1f2937;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    button.secondary {
+      background: #ffffff;
+      color: #1f2937;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .stage {
+      min-height: 520px;
+      padding: 16px;
+      border: 1px solid #d8dee6;
+      border-radius: 8px;
+      background: #ffffff;
+      overflow: auto;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+      image-rendering: auto;
+    }
+
+    .status {
+      min-height: 20px;
+      margin: 12px 0 0;
+      font-size: 13px;
+      color: #4b5563;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 780px) {
+      main {
+        width: min(100vw - 20px, 560px);
+        padding-top: 18px;
+      }
+
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .stage {
+        min-height: 320px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>cappan WASM demo</h1>
+    <div class="workspace">
+      <section class="controls">
+        <label>
+          Font
+          <select id="fontSelect">
+            <option value="">Select...</option>
+            <option value="__default__">Noto Sans JP (built-in)</option>
+            <option value="__custom__">Custom Font File (.ttf, .otf, .ttc, .woff, .woff2)...</option>
+          </select>
+          <input id="fontFile" type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" class="hidden">
+        </label>
+
+        <label>
+          Text
+          <input id="textInput" type="text" value="あのイーハトーヴォのすきとおった風">
+        </label>
+
+        <label>
+          Font size <span id="sizeValue">48</span>
+          <input id="fontSize" type="range" min="12" max="128" value="48">
+        </label>
+
+        <div class="row">
+          <label>
+            Foreground
+            <input id="fgColor" type="color" value="#111827">
+          </label>
+          <label>
+            Background
+            <input id="bgColor" type="color" value="#ffffff">
+          </label>
+        </div>
+
+        <label>
+          Strategy
+          <select id="strategy">
+            <option value="0">sweep</option>
+            <option value="1">fade</option>
+            <option value="2">contour-trace</option>
+            <option value="3">medial-axis</option>
+            <option value="4">distance-field</option>
+            <option value="5">extrema-wave</option>
+            <option value="6">skeleton-grow</option>
+            <option value="7">tangent-flow</option>
+          </select>
+        </label>
+
+        <label>
+          Timing
+          <select id="timing">
+            <option value="0">sequential</option>
+            <option value="1">simultaneous</option>
+            <option value="2">weighted</option>
+          </select>
+        </label>
+
+        <div class="actions">
+          <button id="renderBtn" class="secondary" disabled>Render</button>
+          <button id="animateBtn" disabled>Animate</button>
+        </div>
+
+        <div class="actions">
+          <button id="downloadPngBtn" class="secondary" disabled>Save PNG</button>
+          <button id="downloadApngBtn" class="secondary" disabled>Save APNG</button>
+        </div>
+
+        <label id="progressWrap" class="hidden">
+          Progress <span id="progressValue">0%</span>
+          <input id="progress" type="range" min="0" max="100" value="0">
+        </label>
+      </section>
+
+      <section class="stage">
+        <canvas id="canvas" width="1" height="1"></canvas>
+        <p id="status" class="status">Load a font file to begin.</p>
+      </section>
+    </div>
+
+    <div style="margin-top:16px;text-align:right;font-size:12px;color:#6b7280;">
+      <p style="margin:0 0 6px;">本デモはすべてブラウザ上で動作します。フォントやテキストなどのデータは外部に送信されません。</p>
+      <details style="display:inline-block;text-align:left;">
+        <summary style="cursor:pointer;text-align:right;">Built-in Font License (Noto Sans JP — SIL Open Font License 1.1)</summary>
+        <pre style="margin-top:8px;padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;white-space:pre-wrap;font-size:11px;line-height:1.5;max-height:400px;overflow:auto;">Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries. Copyright 2014-2021 Google LLC. All Rights Reserved.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide development of collaborative font projects, to support the font creation efforts of academic and linguistic communities, and to provide a free and open framework in which fonts may be shared and improved in partnership with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and redistributed freely as long as they are not sold by themselves. The fonts, including any derivative works, can be bundled, embedded, redistributed and/or sold with any software provided that any reserved names are not used by derivative works. The fonts and derivatives, however, cannot be released under any other type of license. The requirement for fonts to remain under this license does not apply to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright Holder(s) under this license and clearly marked as such. This may include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting, or substituting -- in part or in whole -- any of the components of the Original Version, by changing formats or by porting the Font Software to a new environment.
+
+"Author" refers to any designer, engineer, programmer, technical writer or other person who contributed to the Font Software.
+
+PERMISSION &amp; CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining a copy of the Font Software, to use, study, copy, merge, embed, modify, redistribute, and sell modified and unmodified copies of the Font Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components, in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled, redistributed and/or sold with any software, provided that each copy contains the above copyright notice and this license. These can be included either as stand-alone text files, human-readable headers or in the appropriate machine-readable metadata fields within text or binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font Name(s) unless explicit written permission is granted by the corresponding Copyright Holder. This restriction only applies to the primary font name as presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font Software shall not be used to promote, endorse or advertise any Modified Version, except to acknowledge the contribution(s) of the Copyright Holder(s) and the Author(s) or with their explicit written permission.
+
+5) The Font Software, modified or unmodified, in part or in whole, must be distributed entirely under this license, and must not be distributed under any other license. The requirement for fonts to remain under this license does not apply to any document created using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.</pre>
+      </details>
+    </div>
+  </main>
+
+  <script>
+    const elements = {
+      fontSelect: document.getElementById("fontSelect"),
+      fontFile: document.getElementById("fontFile"),
+      textInput: document.getElementById("textInput"),
+      fontSize: document.getElementById("fontSize"),
+      sizeValue: document.getElementById("sizeValue"),
+      fgColor: document.getElementById("fgColor"),
+      bgColor: document.getElementById("bgColor"),
+      strategy: document.getElementById("strategy"),
+      timing: document.getElementById("timing"),
+      renderBtn: document.getElementById("renderBtn"),
+      animateBtn: document.getElementById("animateBtn"),
+      progressWrap: document.getElementById("progressWrap"),
+      progress: document.getElementById("progress"),
+      progressValue: document.getElementById("progressValue"),
+      canvas: document.getElementById("canvas"),
+      status: document.getElementById("status"),
+      downloadPngBtn: document.getElementById("downloadPngBtn"),
+      downloadApngBtn: document.getElementById("downloadApngBtn"),
+    };
+
+    const encoder = new TextEncoder();
+    const ctx = elements.canvas.getContext("2d");
+    let wasm = null;
+    let wasmMemory = null;
+    let fontPtr = 0;
+    let fontLen = 0;
+    let animationId = 0;
+    let animationStart = 0;
+    let hasRendered = false;
+
+    function setStatus(message) {
+      elements.status.textContent = message;
+    }
+
+    function setReady(ready) {
+      elements.renderBtn.disabled = !ready;
+      elements.animateBtn.disabled = !ready;
+      if (!ready) {
+        elements.downloadPngBtn.disabled = true;
+        elements.downloadApngBtn.disabled = true;
+        hasRendered = false;
+      }
+    }
+
+    function hexToRgb(hex) {
+      const value = Number.parseInt(hex.slice(1), 16);
+      return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+    }
+
+    function allocCopy(bytes) {
+      const ptr = wasm.wasm_alloc(bytes.length);
+      if (!ptr) throw new Error("WASM allocation failed");
+      new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+      return ptr;
+    }
+
+    function freeText(ptr, len) {
+      if (ptr) wasm.wasm_free(ptr, len);
+    }
+
+    function stopAnimation() {
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = 0;
+      }
+    }
+
+    async function loadWasm() {
+      const response = await fetch("cappan_wasm.wasm");
+      if (!response.ok) throw new Error("Unable to load cappan_wasm.wasm");
+      const bytes = await response.arrayBuffer();
+      const result = await WebAssembly.instantiate(bytes, {});
+      wasm = result.instance.exports;
+      wasmMemory = wasm.memory;
+    }
+
+    function initFontData(bytes, name) {
+      stopAnimation();
+      if (!wasm) throw new Error("WASM not loaded");
+      if (fontPtr) {
+        wasm.wasm_free_font();
+        wasm.wasm_free(fontPtr, fontLen);
+        fontPtr = 0;
+        fontLen = 0;
+      }
+
+      fontPtr = allocCopy(bytes);
+      fontLen = bytes.length;
+
+      if (!wasm.wasm_init_font(fontPtr, fontLen)) {
+        wasm.wasm_free(fontPtr, fontLen);
+        fontPtr = 0;
+        fontLen = 0;
+        setReady(false);
+        throw new Error("Font initialization failed");
+      }
+
+      setReady(true);
+      setStatus(`${name} loaded.`);
+    }
+
+    async function loadFont(file) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      initFontData(bytes, file.name);
+    }
+
+    function drawBitmap() {
+      const width = wasm.wasm_get_width();
+      const height = wasm.wasm_get_height();
+      const pixelsPtr = wasm.wasm_get_pixels();
+      if (!width || !height || !pixelsPtr) {
+        setStatus("No bitmap returned.");
+        return;
+      }
+
+      const pixels = new Uint8ClampedArray(wasm.memory.buffer, pixelsPtr, width * height * 4);
+      const copy = new Uint8ClampedArray(pixels);
+      const imageData = new ImageData(copy, width, height);
+      elements.canvas.width = width;
+      elements.canvas.height = height;
+      ctx.putImageData(imageData, 0, 0);
+      wasmMemory = wasm.memory;
+      hasRendered = true;
+      elements.downloadPngBtn.disabled = false;
+      elements.downloadApngBtn.disabled = false;
+      setStatus(`${width} x ${height}px`);
+    }
+
+    function renderStatic() {
+      stopAnimation();
+      elements.progressWrap.classList.add("hidden");
+      const text = encoder.encode(elements.textInput.value);
+      const textPtr = allocCopy(text);
+      const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
+      const [br, bg, bb] = hexToRgb(elements.bgColor.value);
+
+      try {
+        const ok = wasm.wasm_render(textPtr, text.length, Number(elements.fontSize.value), fr, fg, fb, br, bg, bb);
+        if (!ok) throw new Error("Render failed");
+        drawBitmap();
+      } finally {
+        freeText(textPtr, text.length);
+      }
+    }
+
+    function initAnimator() {
+      const text = encoder.encode(elements.textInput.value);
+      const textPtr = allocCopy(text);
+      const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
+      const [br, bg, bb] = hexToRgb(elements.bgColor.value);
+
+      try {
+        const ok = wasm.wasm_init_animator(
+          textPtr,
+          text.length,
+          Number(elements.fontSize.value),
+          Number(elements.strategy.value),
+          Number(elements.timing.value),
+          fr,
+          fg,
+          fb,
+          br,
+          bg,
+          bb,
+        );
+        if (!ok) throw new Error("Animator initialization failed");
+      } finally {
+        freeText(textPtr, text.length);
+      }
+    }
+
+    function renderProgress(progress) {
+      const ok = wasm.wasm_render_frame(progress);
+      if (!ok) throw new Error("Frame render failed");
+      elements.progress.value = String(Math.round(progress * 100));
+      elements.progressValue.textContent = `${Math.round(progress * 100)}%`;
+      drawBitmap();
+    }
+
+    function animate() {
+      stopAnimation();
+      initAnimator();
+      elements.progressWrap.classList.remove("hidden");
+      animationStart = performance.now();
+
+      const tick = (now) => {
+        const progress = Math.min(1, (now - animationStart) / 1800);
+        try {
+          renderProgress(progress);
+        } catch (error) {
+          stopAnimation();
+          setStatus(error.message);
+          return;
+        }
+        if (progress < 1) {
+          animationId = requestAnimationFrame(tick);
+        } else {
+          animationId = 0;
+        }
+      };
+
+      animationId = requestAnimationFrame(tick);
+    }
+
+    function downloadPng() {
+        elements.canvas.toBlob((blob) => {
+            if (!blob) return;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "cappan.png";
+            a.click();
+            URL.revokeObjectURL(url);
+        }, "image/png");
+    }
+
+    const crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        crcTable[n] = c;
+    }
+
+    function crc32(bytes) {
+        let crc = 0xffffffff;
+        for (let i = 0; i < bytes.length; i++) crc = crcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+        return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function pngChunk(type, data) {
+        const len = data.length;
+        const buf = new Uint8Array(12 + len);
+        const view = new DataView(buf.buffer);
+        view.setUint32(0, len);
+        buf.set(type, 4);
+        buf.set(data, 8);
+        const crcData = new Uint8Array(4 + len);
+        crcData.set(type, 0);
+        crcData.set(data, 4);
+        view.setUint32(8 + len, crc32(crcData));
+        return buf;
+    }
+
+    async function parsePngChunks(blob) {
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        const view = new DataView(buf.buffer);
+        let offset = 8; // skip PNG signature
+        let ihdr = null;
+        const idatParts = [];
+        while (offset < buf.length) {
+            const len = view.getUint32(offset);
+            const type = new TextDecoder().decode(buf.slice(offset + 4, offset + 8));
+            const data = buf.slice(offset + 8, offset + 8 + len);
+            if (type === "IHDR") ihdr = data;
+            if (type === "IDAT") idatParts.push(data);
+            offset += 12 + len;
+        }
+        return { ihdr, idatParts };
+    }
+
+    async function downloadApng() {
+        const totalFrames = 30;
+        const frameDurationMs = 60; // ~16.7fps, total ~1.8s
+
+        setStatus("Generating APNG...");
+        elements.downloadApngBtn.disabled = true;
+
+        try {
+            initAnimator();
+
+            const frameBlobs = [];
+            for (let i = 0; i < totalFrames; i++) {
+                const progress = i / (totalFrames - 1);
+                const ok = wasm.wasm_render_frame(progress);
+                if (!ok) throw new Error("Frame render failed");
+                drawBitmap();
+                const blob = await new Promise((resolve) => elements.canvas.toBlob(resolve, "image/png"));
+                frameBlobs.push(blob);
+            }
+
+            // Parse first frame to get IHDR
+            const first = await parsePngChunks(frameBlobs[0]);
+            if (!first.ihdr) throw new Error("Failed to parse PNG");
+
+            // Build APNG
+            const pngSignature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+            const ihdrChunk = pngChunk(new Uint8Array([73, 72, 68, 82]), first.ihdr);
+
+            // acTL chunk
+            const actlData = new Uint8Array(8);
+            const actlView = new DataView(actlData.buffer);
+            actlView.setUint32(0, totalFrames);
+            actlView.setUint32(4, 0); // infinite loop
+            const actlChunk = pngChunk(new Uint8Array([97, 99, 84, 76]), actlData);
+
+            let seq = 0;
+            const chunks = [];
+
+            for (let i = 0; i < totalFrames; i++) {
+                const parsed = i === 0 ? first : await parsePngChunks(frameBlobs[i]);
+                const width = new DataView(first.ihdr.buffer, first.ihdr.byteOffset).getUint32(0);
+                const height = new DataView(first.ihdr.buffer, first.ihdr.byteOffset).getUint32(4);
+
+                // fcTL chunk (26 bytes data)
+                const fctlData = new Uint8Array(26);
+                const fctlView = new DataView(fctlData.buffer);
+                fctlView.setUint32(0, seq++);
+                fctlView.setUint32(4, width);
+                fctlView.setUint32(8, height);
+                fctlView.setUint32(12, 0); // x_offset
+                fctlView.setUint32(16, 0); // y_offset
+                fctlView.setUint16(20, frameDurationMs);
+                fctlView.setUint16(22, 1000);
+                fctlData[24] = 0; // dispose_op: none
+                fctlData[25] = 0; // blend_op: source
+                chunks.push(pngChunk(new Uint8Array([102, 99, 84, 76]), fctlData));
+
+                if (i === 0) {
+                    // First frame uses IDAT
+                    for (const idat of parsed.idatParts) {
+                        chunks.push(pngChunk(new Uint8Array([73, 68, 65, 84]), idat));
+                    }
+                } else {
+                    // Subsequent frames use fdAT (sequence_number + IDAT data)
+                    for (const idat of parsed.idatParts) {
+                        const fdatData = new Uint8Array(4 + idat.length);
+                        new DataView(fdatData.buffer).setUint32(0, seq++);
+                        fdatData.set(idat, 4);
+                        chunks.push(pngChunk(new Uint8Array([102, 100, 65, 84]), fdatData));
+                    }
+                }
+            }
+
+            // IEND chunk
+            const iendChunk = pngChunk(new Uint8Array([73, 69, 78, 68]), new Uint8Array(0));
+
+            // Concatenate all
+            const totalSize = pngSignature.length + ihdrChunk.length + actlChunk.length
+                + chunks.reduce((s, c) => s + c.length, 0) + iendChunk.length;
+            const result = new Uint8Array(totalSize);
+            let pos = 0;
+            for (const part of [pngSignature, ihdrChunk, actlChunk, ...chunks, iendChunk]) {
+                result.set(part, pos);
+                pos += part.length;
+            }
+
+            // Download
+            const blob = new Blob([result], { type: "image/apng" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "cappan.apng";
+            a.click();
+            URL.revokeObjectURL(url);
+            setStatus("APNG saved.");
+        } catch (error) {
+            setStatus(error.message);
+        } finally {
+            elements.downloadApngBtn.disabled = false;
+        }
+    }
+
+    elements.fontSize.addEventListener("input", () => {
+      elements.sizeValue.textContent = elements.fontSize.value;
+    });
+
+    elements.fontSelect.addEventListener("change", () => {
+      const value = elements.fontSelect.value;
+      if (value === "__default__") {
+        elements.fontFile.classList.add("hidden");
+        try {
+          if (!wasm.wasm_init_embedded_font()) throw new Error("Embedded font initialization failed");
+          setReady(true);
+          setStatus("Noto Sans JP loaded.");
+        } catch (error) {
+          setStatus(error.message);
+        }
+      } else if (value === "__custom__") {
+        elements.fontFile.classList.remove("hidden");
+        elements.fontFile.click();
+      } else {
+        elements.fontFile.classList.add("hidden");
+      }
+    });
+
+    elements.fontFile.addEventListener("change", async () => {
+      const file = elements.fontFile.files && elements.fontFile.files[0];
+      if (!file) return;
+      try {
+        await loadFont(file);
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
+    elements.renderBtn.addEventListener("click", () => {
+      try {
+        renderStatic();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
+    elements.animateBtn.addEventListener("click", () => {
+      try {
+        animate();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
+    elements.downloadPngBtn.addEventListener("click", () => {
+      try {
+        downloadPng();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
+    elements.downloadApngBtn.addEventListener("click", () => {
+      downloadApng();
+    });
+
+    elements.progress.addEventListener("input", () => {
+      stopAnimation();
+      try {
+        renderProgress(Number(elements.progress.value) / 100);
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
+    loadWasm()
+      .then(() => {
+        if (wasm.wasm_init_embedded_font()) {
+          setReady(true);
+          setStatus("Noto Sans JP loaded.");
+          elements.fontSelect.value = "__default__";
+        } else {
+          setStatus("Load a font file to begin.");
+        }
+      })
+      .catch((error) => setStatus(error.message));
+  </script>
+</body>
+</html>

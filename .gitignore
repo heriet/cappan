@@ -1,0 +1,24 @@
+.agents
+.claude
+.codex
+.local
+
+.env
+
+*.local.md
+
+.zig-cache/
+zig-out/
+.zig-global-cache/
+zig-pkg
+
+docs/*
+!docs/.gitkeep
+docs/demo/*.wasm
+
+# Build assets (auto-downloaded by script/fetch-asset.sh)
+.font/
+*.ttf
+*.otf
+*.woff2
+brotli_dictionary.bin

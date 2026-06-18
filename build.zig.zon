@@ -1,0 +1,12 @@
+.{
+    .name = .cappan,
+    .version = "0.0.1",
+    .fingerprint = 0x72d25cdf33dae45c,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "cappan_core",
+        "cappan_cli",
+    },
+}

@@ -1,0 +1,19 @@
+site_name = "cappan"
+site_description = "TrueType/OpenType font rendering engine"
+docs_dir = "cappan_doc/content"
+site_dir = "docs"
+
+nav = [
+  "index.md",
+  { Guide = ["guide/getting-started.md", "guide/cli.md", "guide/gallery.md", "guide/developer-guide.md"] },
+  { Spec = [
+    { "cappan_core" = ["spec/cappan_core/overview.md", "spec/cappan_core/font.md", "spec/cappan_core/layout.md", "spec/cappan_core/raster.md", "spec/cappan_core/render.md"] },
+    "spec/cappan_cli.md",
+    "spec/cappan_subset.md",
+    "spec/cappan_embed.md",
+    "spec/cappan_inspect.md",
+    "spec/cappan_pathify.md",
+    "spec/cappan_metrics.md",
+    "spec/error.md",
+  ] },
+]

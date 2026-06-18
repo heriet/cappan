@@ -1,0 +1,529 @@
+const std = @import("std");
+const parser = @import("parser.zig");
+const glyph_mod = @import("glyph.zig");
+const head_mod = @import("table/head.zig");
+const maxp_mod = @import("table/maxp.zig");
+const hhea_mod = @import("table/hhea.zig");
+const cmap_mod = @import("table/cmap.zig");
+const loca_mod = @import("table/loca.zig");
+const glyf_mod = @import("table/glyf.zig");
+const hmtx_mod = @import("table/hmtx.zig");
+const kern_mod = @import("table/kern.zig");
+const gpos_mod = @import("table/gpos.zig");
+const cff_mod = @import("table/cff.zig");
+const colr_mod = @import("table/colr.zig");
+const cpal_mod = @import("table/cpal.zig");
+const cblc_mod = @import("table/cblc.zig");
+const cbdt_mod = @import("table/cbdt.zig");
+const name_mod = @import("table/name.zig");
+const charstring_mod = @import("charstring.zig");
+const rasterizer_mod = @import("../raster/rasterizer.zig");
+const woff_mod = @import("woff.zig");
+const woff2_mod = @import("woff2.zig");
+const err_mod = @import("../error.zig");
+
+pub const RasterResult = rasterizer_mod.RasterResult;
+
+pub const Font = struct {
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    owned_data: ?[]u8, // non-null when Font owns the data (e.g. WOFF conversion)
+    offset_table: parser.OffsetTable,
+    head: head_mod.HeadTable,
+    maxp: maxp_mod.MaxpTable,
+    hhea: hhea_mod.HheaTable,
+    cmap: cmap_mod.CmapTable,
+    loca: ?loca_mod.LocaTable,
+    glyf: ?glyf_mod.GlyfTable,
+    hmtx: hmtx_mod.HmtxTable,
+    kern: ?kern_mod.KernTable,
+    gpos: ?gpos_mod.GposTable,
+    cff: ?cff_mod.CffTable,
+    colr: ?colr_mod.ColrTable,
+    cpal: ?cpal_mod.CpalTable,
+    cblc: ?cblc_mod.CblcTable,
+    cbdt: ?cbdt_mod.CbdtTable,
+    name: ?name_mod.NameTable,
+
+    pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
+        if (woff_mod.isWoffFile(data)) {
+            const sfnt_data = try woff_mod.woffToSfnt(allocator, data);
+            errdefer allocator.free(sfnt_data);
+            var font = try if (parser.isTtcFile(sfnt_data))
+                initCollectionIndex(allocator, sfnt_data, 0, diag)
+            else
+                initAt(allocator, sfnt_data, 0, diag);
+            font.owned_data = sfnt_data;
+            return font;
+        }
+        if (woff2_mod.isWoff2File(data)) {
+            const sfnt_data = try woff2_mod.woff2ToSfnt(allocator, data);
+            errdefer allocator.free(sfnt_data);
+            var font = try if (parser.isTtcFile(sfnt_data))
+                initCollectionIndex(allocator, sfnt_data, 0, diag)
+            else
+                initAt(allocator, sfnt_data, 0, diag);
+            font.owned_data = sfnt_data;
+            return font;
+        }
+        if (parser.isTtcFile(data)) {
+            return initCollectionIndex(allocator, data, 0, diag);
+        }
+        return initAt(allocator, data, 0, diag);
+    }
+
+    pub fn initCollectionIndex(allocator: std.mem.Allocator, data: []const u8, font_index: u32, diag: ?*err_mod.Diagnostics) !Font {
+        const ttc_header = try parser.parseTtcHeader(allocator, data);
+        defer allocator.free(ttc_header.offsets);
+
+        if (font_index >= ttc_header.num_fonts) {
+            if (diag) |d| {
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "font index {d} exceeds collection size {d}", .{ font_index, ttc_header.num_fonts }) catch "font index out of range";
+                d.addError(allocator, .{}, msg) catch {};
+            }
+            return error.InvalidFontIndex;
+        }
+
+        const font_index_usize: usize = @intCast(font_index);
+        return initAt(allocator, data, ttc_header.offsets[font_index_usize], diag);
+    }
+
+    pub fn countFontsInCollection(allocator: std.mem.Allocator, data: []const u8) !u32 {
+        const ttc_header = try parser.parseTtcHeader(allocator, data);
+        defer allocator.free(ttc_header.offsets);
+        return ttc_header.num_fonts;
+    }
+
+    fn initAt(allocator: std.mem.Allocator, data: []const u8, start_offset: u32, diag: ?*err_mod.Diagnostics) !Font {
+        const offset_table = try parser.parseOffsetTableAt(allocator, data, start_offset);
+        errdefer allocator.free(offset_table.table_records);
+
+        const head_record = parser.findTable(offset_table, "head".*) orelse {
+            if (diag) |d| d.addError(allocator, .{ .table_tag = "head".* }, "required table 'head' not found") catch {};
+            return error.TableNotFound;
+        };
+        const head = try head_mod.parse(try parser.getTableData(data, head_record));
+
+        const maxp_record = parser.findTable(offset_table, "maxp".*) orelse {
+            if (diag) |d| d.addError(allocator, .{ .table_tag = "maxp".* }, "required table 'maxp' not found") catch {};
+            return error.TableNotFound;
+        };
+        const maxp = try maxp_mod.parse(try parser.getTableData(data, maxp_record));
+
+        const hhea_record = parser.findTable(offset_table, "hhea".*) orelse {
+            if (diag) |d| d.addError(allocator, .{ .table_tag = "hhea".* }, "required table 'hhea' not found") catch {};
+            return error.TableNotFound;
+        };
+        const hhea = try hhea_mod.parse(try parser.getTableData(data, hhea_record));
+
+        const cmap_record = parser.findTable(offset_table, "cmap".*) orelse {
+            if (diag) |d| d.addError(allocator, .{ .table_tag = "cmap".* }, "required table 'cmap' not found") catch {};
+            return error.TableNotFound;
+        };
+        const cmap = try cmap_mod.parse(try parser.getTableData(data, cmap_record));
+
+        // CFF/TrueType 分岐
+        const is_cff = offset_table.sfnt_version == 0x4F54544F;
+
+        var loca_table: ?loca_mod.LocaTable = null;
+        var glyf_table: ?glyf_mod.GlyfTable = null;
+        var cff_table: ?cff_mod.CffTable = null;
+
+        if (is_cff) {
+            const cff_record = parser.findTable(offset_table, "CFF ".*) orelse {
+                if (diag) |d| d.addError(allocator, .{ .table_tag = "CFF ".* }, "required table 'CFF ' not found") catch {};
+                return error.TableNotFound;
+            };
+            const cff_data = try parser.getTableData(data, cff_record);
+            cff_table = try cff_mod.parseCff(allocator, cff_data);
+        } else {
+            const loca_record = parser.findTable(offset_table, "loca".*) orelse {
+                if (diag) |d| d.addError(allocator, .{ .table_tag = "loca".* }, "required table 'loca' not found") catch {};
+                return error.TableNotFound;
+            };
+            loca_table = loca_mod.parse(try parser.getTableData(data, loca_record), head.index_to_loc_format, maxp.num_glyphs);
+
+            const glyf_record = parser.findTable(offset_table, "glyf".*) orelse {
+                if (diag) |d| d.addError(allocator, .{ .table_tag = "glyf".* }, "required table 'glyf' not found") catch {};
+                return error.TableNotFound;
+            };
+            glyf_table = glyf_mod.parse(try parser.getTableData(data, glyf_record));
+        }
+
+        const hmtx_record = parser.findTable(offset_table, "hmtx".*) orelse {
+            if (diag) |d| d.addError(allocator, .{ .table_tag = "hmtx".* }, "required table 'hmtx' not found") catch {};
+            return error.TableNotFound;
+        };
+        const hmtx = hmtx_mod.parse(try parser.getTableData(data, hmtx_record), hhea.number_of_h_metrics);
+
+        const kern_table: ?kern_mod.KernTable = blk: {
+            const kern_record = parser.findTable(offset_table, "kern".*);
+            if (kern_record) |rec| {
+                const kern_data = try parser.getTableData(data, rec);
+                break :blk kern_mod.parse(kern_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+
+        const gpos_table: ?gpos_mod.GposTable = blk: {
+            const gpos_record = parser.findTable(offset_table, "GPOS".*);
+            if (gpos_record) |rec| {
+                const gpos_data = try parser.getTableData(data, rec);
+                break :blk gpos_mod.parse(allocator, gpos_data) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => null,
+                };
+            } else {
+                break :blk null;
+            }
+        };
+        const colr_table: ?colr_mod.ColrTable = blk: {
+            const colr_record = parser.findTable(offset_table, "COLR".*);
+            if (colr_record) |rec| {
+                const colr_data = try parser.getTableData(data, rec);
+                break :blk colr_mod.parse(colr_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const cpal_table: ?cpal_mod.CpalTable = blk: {
+            const cpal_record = parser.findTable(offset_table, "CPAL".*);
+            if (cpal_record) |rec| {
+                const cpal_data = try parser.getTableData(data, rec);
+                break :blk cpal_mod.parse(cpal_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const cblc_table: ?cblc_mod.CblcTable = blk: {
+            const cblc_record = parser.findTable(offset_table, "CBLC".*);
+            if (cblc_record) |rec| {
+                const cblc_data = try parser.getTableData(data, rec);
+                break :blk cblc_mod.parse(cblc_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const cbdt_table: ?cbdt_mod.CbdtTable = blk: {
+            const cbdt_record = parser.findTable(offset_table, "CBDT".*);
+            if (cbdt_record) |rec| {
+                const cbdt_data = try parser.getTableData(data, rec);
+                break :blk cbdt_mod.parse(cbdt_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const name_table: ?name_mod.NameTable = blk: {
+            const name_record = parser.findTable(offset_table, "name".*);
+            if (name_record) |rec| {
+                const name_data_raw = try parser.getTableData(data, rec);
+                break :blk name_mod.parse(name_data_raw) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        return .{
+            .allocator = allocator,
+            .data = data,
+            .owned_data = null,
+            .offset_table = offset_table,
+            .head = head,
+            .maxp = maxp,
+            .hhea = hhea,
+            .cmap = cmap,
+            .loca = loca_table,
+            .glyf = glyf_table,
+            .hmtx = hmtx,
+            .kern = kern_table,
+            .gpos = gpos_table,
+            .cff = cff_table,
+            .colr = colr_table,
+            .cpal = cpal_table,
+            .cblc = cblc_table,
+            .cbdt = cbdt_table,
+            .name = name_table,
+        };
+    }
+
+    pub fn deinit(self: *Font) void {
+        if (self.gpos) |*g| g.deinit();
+        if (self.cff) |*c| c.deinit();
+        self.allocator.free(self.offset_table.table_records);
+        if (self.owned_data) |od| self.allocator.free(od);
+    }
+
+    pub fn getGlyphId(self: Font, codepoint: u32) !u16 {
+        return self.cmap.charToGlyphId(codepoint);
+    }
+
+    pub fn getGlyphOutline(self: Font, allocator: std.mem.Allocator, glyph_id: u16) !?glyph_mod.GlyphOutline {
+        if (self.cff) |cff_table| {
+            const charstring_data = cff_table.getCharString(glyph_id) orelse return null;
+            return try charstring_mod.interpret(
+                allocator,
+                charstring_data,
+                cff_table.global_subrs,
+                cff_table.getLocalSubrs(glyph_id),
+            );
+        } else if (self.glyf) |glyf_table| {
+            return glyf_table.getGlyphOutline(allocator, glyph_id, self.loca.?);
+        } else {
+            return null;
+        }
+    }
+
+    pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {
+        return self.hmtx.getMetrics(glyph_id);
+    }
+
+    pub fn getUnitsPerEm(self: Font) u16 {
+        return self.head.units_per_em;
+    }
+
+    pub fn getAscender(self: Font) i16 {
+        return self.hhea.ascender;
+    }
+
+    pub fn getDescender(self: Font) i16 {
+        return self.hhea.descender;
+    }
+
+    pub fn getLineGap(self: Font) i16 {
+        return self.hhea.line_gap;
+    }
+
+    pub fn getKerning(self: Font, left_glyph: u16, right_glyph: u16) i16 {
+        if (self.gpos) |gpos| {
+            const value = gpos.getKerning(left_glyph, right_glyph);
+            if (value != 0) return value;
+        }
+        if (self.kern) |kern| {
+            return kern.getKerning(left_glyph, right_glyph);
+        }
+        return 0;
+    }
+
+    pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {
+        if (self.colr) |colr| {
+            return colr.findBaseGlyph(glyph_id);
+        }
+        return null;
+    }
+
+    pub fn getColorLayer(self: Font, layer_idx: u16) ?colr_mod.ColorLayer {
+        if (self.colr) |colr| {
+            return colr.getLayer(layer_idx);
+        }
+        return null;
+    }
+
+    pub fn getPaletteColor(self: Font, palette_idx: u16, entry_idx: u16) ?cpal_mod.Color {
+        if (self.cpal) |cpal| {
+            return cpal.getColor(palette_idx, entry_idx);
+        }
+        return null;
+    }
+
+    pub fn getBitmapGlyph(self: Font, glyph_id: u16) ?cbdt_mod.GlyphBitmap {
+        const cblc = self.cblc orelse return null;
+        const cbdt = self.cbdt orelse return null;
+        const location = cblc.findGlyphBitmap(glyph_id) orelse return null;
+        return cbdt.getGlyphBitmap(location);
+    }
+
+    /// Measure the total advance width of a UTF-8 string rendered at the given pixel size.
+    /// Includes inter-glyph kerning. Glyphs with errors are skipped.
+    pub fn measureTextWidth(self: Font, text: []const u8, pixel_size: f32) f32 {
+        const scale = pixel_size / @as(f32, @floatFromInt(self.getUnitsPerEm()));
+        var total: f32 = 0.0;
+        var prev_glyph_id: ?u16 = null;
+
+        if (std.unicode.Utf8View.init(text)) |view| {
+            var iter = view.iterator();
+            while (iter.nextCodepoint()) |codepoint| {
+                const glyph_id = self.getGlyphId(codepoint) catch continue;
+                const metrics = self.getHMetrics(glyph_id) catch continue;
+                if (prev_glyph_id) |prev| {
+                    total += @as(f32, @floatFromInt(self.getKerning(prev, glyph_id))) * scale;
+                }
+                total += @as(f32, @floatFromInt(metrics.advance_width)) * scale;
+                prev_glyph_id = glyph_id;
+            }
+        } else |_| {
+            for (text) |byte| {
+                const glyph_id = self.getGlyphId(@as(u21, byte)) catch continue;
+                const metrics = self.getHMetrics(glyph_id) catch continue;
+                if (prev_glyph_id) |prev| {
+                    total += @as(f32, @floatFromInt(self.getKerning(prev, glyph_id))) * scale;
+                }
+                total += @as(f32, @floatFromInt(metrics.advance_width)) * scale;
+                prev_glyph_id = glyph_id;
+            }
+        }
+
+        return total;
+    }
+
+    pub fn rasterizeCodepoint(self: Font, allocator: std.mem.Allocator, codepoint: u32, pixel_size: f32) !?RasterResult {
+        const glyph_id = try self.getGlyphId(codepoint);
+        if (glyph_id == 0) return null;
+
+        var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
+        defer outline.deinit();
+
+        const scale = pixel_size / @as(f32, @floatFromInt(self.getUnitsPerEm()));
+        return try rasterizer_mod.rasterizeGlyph(allocator, outline, scale, 1);
+    }
+
+    pub fn getCodepointAdvancePx(self: Font, codepoint: u32, pixel_size: f32) !f32 {
+        const glyph_id = try self.getGlyphId(codepoint);
+        const metrics = try self.getHMetrics(glyph_id);
+        const scale = pixel_size / @as(f32, @floatFromInt(self.getUnitsPerEm()));
+        return @as(f32, @floatFromInt(metrics.advance_width)) * scale;
+    }
+
+    pub fn getFontFamily(self: Font, allocator: std.mem.Allocator) !?[]u8 {
+        if (self.name) |name_table| {
+            return try name_table.getName(allocator, .font_family);
+        }
+        return null;
+    }
+
+    pub fn getFontSubfamily(self: Font, allocator: std.mem.Allocator) !?[]u8 {
+        if (self.name) |name_table| {
+            return try name_table.getName(allocator, .font_subfamily);
+        }
+        return null;
+    }
+
+    pub fn getFullFontName(self: Font, allocator: std.mem.Allocator) !?[]u8 {
+        if (self.name) |name_table| {
+            return try name_table.getName(allocator, .full_name);
+        }
+        return null;
+    }
+};
+
+test "Font API integration test" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectEqual(@as(u16, 2048), font.getUnitsPerEm());
+    try std.testing.expect(font.getAscender() > 0);
+    try std.testing.expect(font.getDescender() < 0);
+
+    // Look up 'A'
+    const glyph_id = try font.getGlyphId(0x0041);
+    try std.testing.expect(glyph_id > 0);
+
+    // Get outline
+    var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline.deinit();
+    try std.testing.expect(outline.contours.len > 0);
+
+    // Get metrics
+    const metrics = try font.getHMetrics(glyph_id);
+    try std.testing.expect(metrics.advance_width > 0);
+}
+
+test "Font API CFF integration test" {
+    const font_data = @embedFile("../fixture/SourceSans3-Regular.otf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectEqual(@as(u16, 1000), font.getUnitsPerEm());
+    try std.testing.expect(font.getAscender() > 0);
+    try std.testing.expect(font.getDescender() < 0);
+
+    try std.testing.expect(font.cff != null);
+    try std.testing.expect(font.glyf == null);
+    try std.testing.expect(font.loca == null);
+
+    const glyph_id = try font.getGlyphId(0x0041);
+    try std.testing.expect(glyph_id > 0);
+
+    var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline.deinit();
+    try std.testing.expect(outline.contours.len > 0);
+
+    const metrics = try font.getHMetrics(glyph_id);
+    try std.testing.expect(metrics.advance_width > 0);
+}
+
+test "Font API TrueType still works" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expect(font.cff == null);
+    try std.testing.expect(font.glyf != null);
+    try std.testing.expect(font.loca != null);
+
+    const glyph_id = try font.getGlyphId(0x0041);
+    var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline.deinit();
+    try std.testing.expect(outline.contours.len > 0);
+}
+
+test "rasterizeCodepoint returns bitmap for 'A'" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    var result = (try font.rasterizeCodepoint(std.testing.allocator, 'A', 48.0)) orelse return error.TestUnexpectedResult;
+    defer result.deinit();
+
+    try std.testing.expect(result.width > 0);
+    try std.testing.expect(result.height > 0);
+    try std.testing.expect(result.pixels.len > 0);
+}
+
+test "rasterizeCodepoint returns null for missing glyph" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    // U+FFFF is unlikely to have a glyph in DejaVuSans
+    const result = try font.rasterizeCodepoint(std.testing.allocator, 0x10FFFF, 48.0);
+    try std.testing.expect(result == null);
+}
+
+test "getCodepointAdvancePx returns positive value" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const advance = try font.getCodepointAdvancePx('A', 48.0);
+    try std.testing.expect(advance > 0.0);
+
+    const advance_small = try font.getCodepointAdvancePx('A', 12.0);
+    try std.testing.expect(advance_small > 0.0);
+    try std.testing.expect(advance_small < advance);
+}
+
+test "measureTextWidth Hello" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+    const width = font.measureTextWidth("Hello", 48.0);
+    try std.testing.expect(width > 0);
+}
+
+test "Font API WOFF2 integration test" {
+    const font_data = @embedFile("../fixture/DejaVuSans.woff2");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expect(font.getUnitsPerEm() > 0);
+    try std.testing.expect(font.getAscender() > 0);
+
+    const glyph_id = try font.getGlyphId(0x0041);
+    try std.testing.expect(glyph_id > 0);
+
+    var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline.deinit();
+    try std.testing.expect(outline.contours.len > 0);
+}

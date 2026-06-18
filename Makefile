@@ -1,0 +1,41 @@
+DOCKER_RUN = docker compose run --rm dev
+ZENSICAL_RUN = docker compose run --rm doc
+DOCS_PORT ?= 8000
+
+.PHONY: build test run fmt clean shell fetch-asset build-docs serve-docs generate-gallery build-wasm
+
+build:
+	$(DOCKER_RUN) zig build
+
+build-wasm:
+	$(DOCKER_RUN) zig build wasm
+	mkdir -p docs/demo
+	cp cappan_wasm/web/index.html docs/demo/
+
+test:
+	$(DOCKER_RUN) zig build test
+
+run:
+	$(DOCKER_RUN) zig build run -- $(ARGS)
+
+fmt:
+	$(DOCKER_RUN) zig fmt cappan_core/src/ cappan_cli/src/
+
+clean:
+	rm -rf zig-out .zig-cache
+
+shell:
+	$(DOCKER_RUN) /bin/bash
+
+fetch-asset:
+	$(DOCKER_RUN) bash script/fetch-asset.sh
+
+generate-gallery:
+	bash cappan_doc/generate_gallery.sh
+
+build-docs:
+	$(ZENSICAL_RUN) build
+	$(MAKE) build-wasm
+
+serve-docs:
+	python3 -m http.server $(DOCS_PORT) -d docs

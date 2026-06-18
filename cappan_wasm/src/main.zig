@@ -1,0 +1,166 @@
+const std = @import("std");
+const cappan = @import("cappan_core");
+
+const allocator = std.heap.wasm_allocator;
+
+const embedded_font_data = @embedFile("asset/font/NotoSansJP-Regular.otf");
+
+var current_font: ?cappan.font.Font = null;
+var last_bitmap: ?cappan.render.rgba_bitmap.RgbaBitmap = null;
+var current_renderer: ?cappan.render.incremental.IncrementalRenderer = null;
+
+export fn wasm_alloc(len: usize) ?[*]u8 {
+    const slice = allocator.alloc(u8, len) catch return null;
+    return slice.ptr;
+}
+
+export fn wasm_free(ptr: [*]u8, len: usize) void {
+    allocator.free(ptr[0..len]);
+}
+
+export fn wasm_init_font(font_ptr: [*]const u8, font_len: usize) i32 {
+    wasm_free_animator();
+    free_last_bitmap();
+    if (current_font) |*f| f.deinit();
+    current_font = cappan.font.Font.init(allocator, font_ptr[0..font_len], null) catch {
+        current_font = null;
+        return 0;
+    };
+    return 1;
+}
+
+export fn wasm_init_embedded_font() i32 {
+    wasm_free_animator();
+    free_last_bitmap();
+    if (current_font) |*f| f.deinit();
+    current_font = cappan.font.Font.init(allocator, embedded_font_data, null) catch {
+        current_font = null;
+        return 0;
+    };
+    return 1;
+}
+
+export fn wasm_free_font() void {
+    wasm_free_animator();
+    free_last_bitmap();
+    if (current_font) |*f| {
+        f.deinit();
+        current_font = null;
+    }
+}
+
+export fn wasm_render(
+    text_ptr: [*]const u8,
+    text_len: usize,
+    pixel_size: f32,
+    fg_r: u8,
+    fg_g: u8,
+    fg_b: u8,
+    bg_r: u8,
+    bg_g: u8,
+    bg_b: u8,
+) i32 {
+    const font = current_font orelse return 0;
+    free_last_bitmap();
+    const text = text_ptr[0..text_len];
+    const fonts = [_]cappan.font.Font{font};
+    last_bitmap = cappan.render.renderer.renderText(
+        allocator,
+        &fonts,
+        text,
+        .{
+            .pixel_size = pixel_size,
+            .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
+            .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+        },
+    ) catch return 0;
+    return 1;
+}
+
+export fn wasm_init_animator(
+    text_ptr: [*]const u8,
+    text_len: usize,
+    pixel_size: f32,
+    strategy: u32,
+    timing: u32,
+    fg_r: u8,
+    fg_g: u8,
+    fg_b: u8,
+    bg_r: u8,
+    bg_g: u8,
+    bg_b: u8,
+) i32 {
+    const font = current_font orelse return 0;
+    wasm_free_animator();
+    free_last_bitmap();
+    const text = text_ptr[0..text_len];
+
+    const reveal_strategy: cappan.render.incremental.RevealStrategy = switch (strategy) {
+        0 => .{ .sweep = .{} },
+        1 => .{ .fade = {} },
+        2 => .{ .contour_trace = .{} },
+        3 => .{ .medial_axis = .{} },
+        4 => .{ .distance_field = .{} },
+        5 => .{ .extrema_wave = .{} },
+        6 => .{ .skeleton_grow = .{} },
+        7 => .{ .tangent_flow = .{} },
+        else => .{ .sweep = .{} },
+    };
+
+    const timing_mode: cappan.render.incremental.Timing = switch (timing) {
+        0 => .sequential,
+        1 => .simultaneous,
+        2 => .weighted,
+        else => .sequential,
+    };
+
+    const fonts = [_]cappan.font.Font{font};
+    current_renderer = cappan.render.incremental.IncrementalRenderer.init(
+        allocator,
+        &fonts,
+        text,
+        .{
+            .pixel_size = pixel_size,
+            .strategy = reveal_strategy,
+            .timing = timing_mode,
+            .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
+            .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+        },
+    ) catch return 0;
+    return 1;
+}
+
+export fn wasm_render_frame(progress: f32) i32 {
+    if (current_renderer) |*renderer| {
+        free_last_bitmap();
+        last_bitmap = renderer.renderFrame(progress) catch return 0;
+        return 1;
+    }
+    return 0;
+}
+
+export fn wasm_free_animator() void {
+    if (current_renderer) |*r| {
+        r.deinit();
+        current_renderer = null;
+    }
+}
+
+export fn wasm_get_width() u32 {
+    return if (last_bitmap) |b| b.width else 0;
+}
+
+export fn wasm_get_height() u32 {
+    return if (last_bitmap) |b| b.height else 0;
+}
+
+export fn wasm_get_pixels() ?[*]const u8 {
+    return if (last_bitmap) |b| b.pixels.ptr else null;
+}
+
+fn free_last_bitmap() void {
+    if (last_bitmap) |*b| {
+        b.deinit();
+        last_bitmap = null;
+    }
+}
