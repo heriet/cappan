@@ -1,0 +1,60 @@
+name: Deploy docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y woff2
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Fetch assets
+        run: bash script/fetch-asset.sh
+
+      - name: Build docs with zensical
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace \
+            --user "$(id -u):$(id -g)" \
+            docker.io/zensical/zensical:0.0.45 build
+
+      - name: Build WASM
+        run: zig build wasm
+
+      - name: Copy demo HTML
+        run: mkdir -p docs/demo && cp cappan_wasm/web/index.html docs/demo/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
