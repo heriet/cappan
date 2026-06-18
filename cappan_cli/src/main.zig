@@ -1627,12 +1627,12 @@ fn printUsage() void {
         \\  --fg-color           Foreground color in RRGGBB hex (default: 000000)
         \\  --bg-color           Background color in RRGGBB hex (default: FFFFFF)
         \\  --fallback-font      Fallback font file path (can be specified multiple times)
-        \\  --font-index         TTC ファイル内のフォントインデックス（デフォルト: 0 = 先頭）
-        \\  --gamma              ガンマ補正を有効にする（sRGB線形空間でブレンド）
-        \\  --fractional         フラクショナルピクセル配置（サブピクセル精度の文字配置）
-        \\  --max-width          テキストの最大幅（ピクセル）。超える場合は自動折り返し
-        \\  --text-align         テキスト揃え: left (default), center, right, justify
-        \\  --lcd                LCDサブピクセルレンダリングを有効にする（renderのみ）
+        \\  --font-index         Font index within a TTC file (default: 0 = first)
+        \\  --gamma              Enable gamma correction (blend in sRGB linear space)
+        \\  --fractional         Enable fractional pixel positioning (sub-pixel glyph placement)
+        \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
+        \\  --text-align         Text alignment: left (default), center, right, justify
+        \\  --lcd                Enable LCD sub-pixel rendering (render only)
         \\
         \\render options:
         \\  --output             Output PNG file path
