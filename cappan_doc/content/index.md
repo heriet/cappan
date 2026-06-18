@@ -4,6 +4,8 @@
 
 ![medial-axis writing-order weighted](guide/image/medial_axis_writing_weighted.png)
 
+[ブラウザ Demo](https://heriet.github.io/cappan/demo/)
+
 - このプロジェクトの大部分はAIによって実装されています
 - 個人の学習・実験を主とした目的で管理されており、急な破壊的変更を行うことがあります。重要な製品での利用は推奨しません
 
