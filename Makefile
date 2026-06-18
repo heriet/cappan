@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset build-docs serve-docs generate-gallery build-wasm
+.PHONY: build test run fmt clean shell fetch-asset build-docs serve-docs generate-gallery build-wasm release-windows release-linux
 
 build:
 	$(DOCKER_RUN) zig build
@@ -36,6 +36,12 @@ generate-gallery:
 build-docs:
 	$(ZENSICAL_RUN) build
 	$(MAKE) build-wasm
+
+release-windows:
+	$(DOCKER_RUN) zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+release-linux:
+	$(DOCKER_RUN) zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
 
 serve-docs:
 	python3 -m http.server $(DOCS_PORT) -d docs

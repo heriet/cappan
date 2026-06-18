@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-windows
+            artifact: cappan-windows-x86_64
+            archive: cappan-windows-x86_64.zip
+            archive_cmd: zip cappan-windows-x86_64.zip -j zig-out/bin/cappan.exe
+          - target: x86_64-linux
+            artifact: cappan-linux-x86_64
+            archive: cappan-linux-x86_64.tar.gz
+            archive_cmd: tar czf cappan-linux-x86_64.tar.gz -C zig-out/bin cappan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y woff2
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Fetch assets
+        run: bash script/fetch-asset.sh
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Archive
+        run: ${{ matrix.archive_cmd }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release
+        run: |
+          gh release create ${{ github.ref_name }} \
+            cappan-windows-x86_64.zip \
+            cappan-linux-x86_64.tar.gz \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
