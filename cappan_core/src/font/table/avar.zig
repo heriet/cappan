@@ -45,7 +45,7 @@ pub const AvarTable = struct {
 
             if (value < from2) {
                 // Linearly interpolate between (from1, to1) and (from2, to2)
-                if (from2 == from1) return to1;
+                if (@abs(from2 - from1) < 1e-10) return to1;
                 return to1 + (value - from1) * (to2 - to1) / (from2 - from1);
             }
 
