@@ -54,16 +54,18 @@ pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u16) !Ma
 }
 
 pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inner_index: u16, normalized_coords: []const f32) !i32 {
-    // ItemVariationStore header
-    // format: u16 at store_offset
+    if (store_offset + 8 > data.len) return error.UnexpectedEof;
     const region_list_offset_raw = try parser.readU32(data, store_offset + 2);
+    if (@as(usize, region_list_offset_raw) > data.len -| store_offset) return error.UnexpectedEof;
     const region_list_offset = store_offset + @as(usize, region_list_offset_raw);
     const item_data_count = try parser.readU16(data, store_offset + 6);
 
     if (outer_index >= item_data_count) return 0;
 
-    // Get ItemVariationData offset
-    const item_data_offset_raw = try parser.readU32(data, store_offset + 8 + @as(usize, outer_index) * 4);
+    const ivd_offset_pos = store_offset + 8 + @as(usize, outer_index) * 4;
+    if (ivd_offset_pos + 4 > data.len) return error.UnexpectedEof;
+    const item_data_offset_raw = try parser.readU32(data, ivd_offset_pos);
+    if (@as(usize, item_data_offset_raw) > data.len -| store_offset) return error.UnexpectedEof;
     const item_data_offset = store_offset + @as(usize, item_data_offset_raw);
 
     // Parse ItemVariationData
@@ -78,14 +80,16 @@ pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inn
     // Read region indices
     const region_indices_offset = item_data_offset + 6;
 
-    // Calculate delta row offset
     const long_size: usize = if (long_words) 4 else 2;
     const short_size: usize = if (long_words) 2 else 1;
-    const row_size = @as(usize, word_delta_count) * long_size + @as(usize, region_index_count -| word_delta_count) * short_size;
+    const word_part = @as(usize, word_delta_count) * long_size;
+    const short_part = @as(usize, region_index_count -| word_delta_count) * short_size;
+    const row_size = word_part + short_part;
     const delta_sets_offset = region_indices_offset + @as(usize, region_index_count) * 2;
     const row_offset = delta_sets_offset + @as(usize, inner_index) * row_size;
+    if (row_offset + row_size > data.len) return error.UnexpectedEof;
 
-    // Read VariationRegionList
+    if (region_list_offset + 4 > data.len) return error.UnexpectedEof;
     const axis_count = try parser.readU16(data, region_list_offset);
 
     // Compute delta
