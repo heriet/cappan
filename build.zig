@@ -91,6 +91,20 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(metrics_lib);
 
+    const discover_mod = b.addModule("cappan_discover", .{
+        .root_source_file = b.path("cappan_discover/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cappan_core", .module = lib_mod },
+        },
+    });
+    const discover_lib = b.addLibrary(.{
+        .name = "cappan_discover",
+        .root_module = discover_mod,
+    });
+    b.installArtifact(discover_lib);
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("cappan_cli/src/main.zig"),
         .target = target,
@@ -102,6 +116,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cappan_inspect", .module = inspect_mod },
             .{ .name = "cappan_pathify", .module = pathify_mod },
             .{ .name = "cappan_metrics", .module = metrics_mod },
+            .{ .name = "cappan_discover", .module = discover_mod },
         },
     });
 
@@ -140,6 +155,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "cappan_inspect", .module = inspect_mod },
                 .{ .name = "cappan_pathify", .module = pathify_mod },
                 .{ .name = "cappan_metrics", .module = metrics_mod },
+                .{ .name = "cappan_discover", .module = discover_mod },
             },
         }),
     });
@@ -205,6 +221,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_metrics_test = b.addRunArtifact(metrics_test);
 
+    const discover_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("cappan_discover/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cappan_core", .module = lib_mod },
+            },
+        }),
+    });
+    const run_discover_test = b.addRunArtifact(discover_test);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_test.step);
     test_step.dependOn(&run_exe_test.step);
@@ -213,6 +241,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_pathify_test.step);
     test_step.dependOn(&run_inspect_test.step);
     test_step.dependOn(&run_metrics_test.step);
+    test_step.dependOn(&run_discover_test.step);
 
     // WASM build
     const wasm_step = b.step("wasm", "Build WASM module");

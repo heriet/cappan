@@ -8,5 +8,6 @@
         "build.zig.zon",
         "cappan_core",
         "cappan_cli",
+        "cappan_discover",
     },
 }
