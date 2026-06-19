@@ -40,6 +40,7 @@ pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u16) !Ma
     const entry_size: usize = @as(usize, (mapping.entry_format >> 4) & 3) + 1;
     const inner_bit_count: u5 = @intCast((mapping.entry_format & 0x0F) + 1);
     const pos = mapping.data_offset + @as(usize, index) * entry_size;
+    if (pos + entry_size > data.len) return error.UnexpectedEof;
 
     var entry_value: u32 = 0;
     for (0..entry_size) |i| {
