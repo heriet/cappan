@@ -180,11 +180,16 @@ pub const GvarTable = struct {
 
             const active_points = points orelse shared_points;
 
-            const x_result = try unpackDeltas(allocator, glyph_var_data, serialized_pos, if (active_points) |ap| @as(u16, @intCast(ap.len)) else @as(u16, @intCast(num_points_with_phantom)));
+            const delta_count: u16 = if (active_points) |ap|
+                std.math.cast(u16, ap.len) orelse return error.TooManyPoints
+            else
+                std.math.cast(u16, num_points_with_phantom) orelse return error.TooManyPoints;
+
+            const x_result = try unpackDeltas(allocator, glyph_var_data, serialized_pos, delta_count);
             serialized_pos = x_result.new_offset;
             defer allocator.free(x_result.deltas);
 
-            const y_result = try unpackDeltas(allocator, glyph_var_data, serialized_pos, if (active_points) |ap| @as(u16, @intCast(ap.len)) else @as(u16, @intCast(num_points_with_phantom)));
+            const y_result = try unpackDeltas(allocator, glyph_var_data, serialized_pos, delta_count);
             defer allocator.free(y_result.deltas);
 
             serialized_pos = data_start + variation_data_size;
