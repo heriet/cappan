@@ -41,8 +41,10 @@ pub const GvarTable = struct {
         var pt_idx: usize = 0;
         for (outline.contours) |contour| {
             for (contour.points) |*pt| {
-                pt.x = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.x)) + deltas.x[pt_idx])));
-                pt.y = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.y)) + deltas.y[pt_idx])));
+                const new_x = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(pt.x)) + deltas.x[pt_idx])));
+                const new_y = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(pt.y)) + deltas.y[pt_idx])));
+                pt.x = @as(i16, @intCast(std.math.clamp(new_x, std.math.minInt(i16), std.math.maxInt(i16))));
+                pt.y = @as(i16, @intCast(std.math.clamp(new_y, std.math.minInt(i16), std.math.maxInt(i16))));
                 pt_idx += 1;
             }
         }
@@ -59,8 +61,10 @@ pub const GvarTable = struct {
         defer deltas.deinit();
 
         for (components, 0..) |*comp, i| {
-            comp.dx = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dx)) + deltas.x[i])));
-            comp.dy = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dy)) + deltas.y[i])));
+            const new_dx = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dx)) + deltas.x[i])));
+            const new_dy = @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dy)) + deltas.y[i])));
+            comp.dx = @as(i16, @intCast(std.math.clamp(new_dx, std.math.minInt(i16), std.math.maxInt(i16))));
+            comp.dy = @as(i16, @intCast(std.math.clamp(new_dy, std.math.minInt(i16), std.math.maxInt(i16))));
         }
     }
 
