@@ -125,6 +125,7 @@ pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inn
         // Compute region scalar
         var scalar: f32 = 1.0;
         const region_offset = region_list_offset + 4 + @as(usize, region_idx) * @as(usize, axis_count) * 6;
+        if (region_offset + @as(usize, axis_count) * 6 > data.len) return error.UnexpectedEof;
         for (0..@as(usize, axis_count)) |axis| {
             const axis_offset = region_offset + axis * 6;
             const start = try parser.readF2Dot14(data, axis_offset);
