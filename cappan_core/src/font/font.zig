@@ -16,6 +16,8 @@ const cpal_mod = @import("table/cpal.zig");
 const cblc_mod = @import("table/cblc.zig");
 const cbdt_mod = @import("table/cbdt.zig");
 const name_mod = @import("table/name.zig");
+const fvar_mod = @import("table/fvar.zig");
+const gvar_mod = @import("table/gvar.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -44,6 +46,8 @@ pub const Font = struct {
     cblc: ?cblc_mod.CblcTable,
     cbdt: ?cbdt_mod.CbdtTable,
     name: ?name_mod.NameTable,
+    fvar: ?fvar_mod.FvarTable,
+    gvar: ?gvar_mod.GvarTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -224,6 +228,24 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const fvar_table: ?fvar_mod.FvarTable = blk: {
+            const fvar_record = parser.findTable(offset_table, "fvar".*);
+            if (fvar_record) |rec| {
+                const fvar_data = try parser.getTableData(data, rec);
+                break :blk fvar_mod.parse(fvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const gvar_table: ?gvar_mod.GvarTable = blk: {
+            const gvar_record = parser.findTable(offset_table, "gvar".*);
+            if (gvar_record) |rec| {
+                const gvar_data = try parser.getTableData(data, rec);
+                break :blk gvar_mod.parse(gvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -244,6 +266,8 @@ pub const Font = struct {
             .cblc = cblc_table,
             .cbdt = cbdt_table,
             .name = name_table,
+            .fvar = fvar_table,
+            .gvar = gvar_table,
         };
     }
 
@@ -404,6 +428,33 @@ pub const Font = struct {
         }
         return null;
     }
+
+    pub fn isVariableFont(self: Font) bool {
+        return self.fvar != null;
+    }
+
+    pub fn getAxisCount(self: Font) u16 {
+        if (self.fvar) |fvar| return fvar.getAxisCount();
+        return 0;
+    }
+
+    pub fn getAxis(self: Font, index: u16) !fvar_mod.AxisRecord {
+        if (self.fvar) |fvar| return fvar.getAxis(index);
+        return error.InvalidAxisIndex;
+    }
+
+    pub fn getGlyphOutlineWithVariation(
+        self: Font,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        normalized_coords: []const f32,
+    ) !?glyph_mod.GlyphOutline {
+        var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
+        if (self.gvar) |gvar| {
+            try gvar.applyDeltas(allocator, glyph_id, &outline, normalized_coords);
+        }
+        return outline;
+    }
 };
 
 test "Font API integration test" {
@@ -526,4 +577,44 @@ test "Font API WOFF2 integration test" {
     var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
     defer outline.deinit();
     try std.testing.expect(outline.contours.len > 0);
+}
+
+test "Variable Font fvar parsing" {
+    const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expect(font.isVariableFont());
+    try std.testing.expectEqual(@as(u16, 1), font.getAxisCount());
+
+    const axis = try font.getAxis(0);
+    try std.testing.expect(std.mem.eql(u8, &axis.tag, "wght"));
+}
+
+test "Variable Font gvar apply deltas" {
+    const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_id = try font.getGlyphId(0x0041);
+
+    var outline_default = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline_default.deinit();
+
+    const normalized = [_]f32{1.0};
+    var outline_bold = (try font.getGlyphOutlineWithVariation(std.testing.allocator, glyph_id, &normalized)) orelse return error.TableNotFound;
+    defer outline_bold.deinit();
+
+    try std.testing.expectEqual(outline_default.contours.len, outline_bold.contours.len);
+
+    var differs = false;
+    for (outline_default.contours, outline_bold.contours) |dc, bc| {
+        for (dc.points, bc.points) |dp, bp| {
+            if (dp.x != bp.x or dp.y != bp.y) {
+                differs = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(differs);
 }

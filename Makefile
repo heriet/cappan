@@ -2,9 +2,11 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset build-docs serve-docs generate-gallery build-wasm release-windows release-linux
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery build-wasm release-windows release-linux
 
-build:
+setup: fetch-asset generate-subset
+
+build: setup
 	$(DOCKER_RUN) zig build
 
 build-wasm:
@@ -12,7 +14,7 @@ build-wasm:
 	mkdir -p docs/demo
 	cp cappan_wasm/web/index.html docs/demo/
 
-test:
+test: setup
 	$(DOCKER_RUN) zig build test
 
 run:
@@ -29,6 +31,9 @@ shell:
 
 fetch-asset:
 	$(DOCKER_RUN) bash script/fetch-asset.sh
+
+generate-subset:
+	$(DOCKER_RUN) bash script/generate-subset.sh
 
 generate-gallery:
 	bash cappan_doc/generate_gallery.sh

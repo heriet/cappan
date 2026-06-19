@@ -27,6 +27,8 @@ pub const font = struct {
         pub const cblc = @import("font/table/cblc.zig");
         pub const cbdt = @import("font/table/cbdt.zig");
         pub const name = @import("font/table/name.zig");
+        pub const fvar = @import("font/table/fvar.zig");
+        pub const gvar = @import("font/table/gvar.zig");
     };
 };
 
