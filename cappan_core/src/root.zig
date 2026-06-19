@@ -31,6 +31,9 @@ pub const font = struct {
         pub const gvar = @import("font/table/gvar.zig");
         pub const avar = @import("font/table/avar.zig");
         pub const hvar = @import("font/table/hvar.zig");
+        pub const vhea = @import("font/table/vhea.zig");
+        pub const vmtx = @import("font/table/vmtx.zig");
+        pub const vvar = @import("font/table/vvar.zig");
     };
 };
 
@@ -87,6 +90,9 @@ test {
     _ = @import("font/table/name.zig");
     _ = @import("font/table/avar.zig");
     _ = @import("font/table/hvar.zig");
+    _ = @import("font/table/vhea.zig");
+    _ = @import("font/table/vmtx.zig");
+    _ = @import("font/table/vvar.zig");
     _ = @import("font/charstring.zig");
     _ = @import("raster/outline.zig");
     _ = @import("raster/scanline.zig");

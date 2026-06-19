@@ -20,6 +20,9 @@ const fvar_mod = @import("table/fvar.zig");
 const gvar_mod = @import("table/gvar.zig");
 const avar_mod = @import("table/avar.zig");
 const hvar_mod = @import("table/hvar.zig");
+const vhea_mod = @import("table/vhea.zig");
+const vmtx_mod = @import("table/vmtx.zig");
+const vvar_mod = @import("table/vvar.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -52,6 +55,9 @@ pub const Font = struct {
     gvar: ?gvar_mod.GvarTable,
     avar: ?avar_mod.AvarTable,
     hvar: ?hvar_mod.HvarTable,
+    vhea: ?vhea_mod.VheaTable,
+    vmtx: ?vmtx_mod.VmtxTable,
+    vvar: ?vvar_mod.VvarTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -268,6 +274,34 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const vhea_table: ?vhea_mod.VheaTable = blk: {
+            const vhea_record = parser.findTable(offset_table, "vhea".*);
+            if (vhea_record) |rec| {
+                const vhea_data = try parser.getTableData(data, rec);
+                break :blk vhea_mod.parse(vhea_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const vmtx_table: ?vmtx_mod.VmtxTable = blk: {
+            if (vhea_table) |vhea| {
+                const vmtx_record = parser.findTable(offset_table, "vmtx".*);
+                if (vmtx_record) |rec| {
+                    const vmtx_data = try parser.getTableData(data, rec);
+                    break :blk vmtx_mod.parse(vmtx_data, vhea.number_of_v_metrics);
+                }
+            }
+            break :blk null;
+        };
+        const vvar_table: ?vvar_mod.VvarTable = blk: {
+            const vvar_record = parser.findTable(offset_table, "VVAR".*);
+            if (vvar_record) |rec| {
+                const vvar_data = try parser.getTableData(data, rec);
+                break :blk vvar_mod.parse(vvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -292,6 +326,9 @@ pub const Font = struct {
             .gvar = gvar_table,
             .avar = avar_table,
             .hvar = hvar_table,
+            .vhea = vhea_table,
+            .vmtx = vmtx_table,
+            .vvar = vvar_table,
         };
     }
 
@@ -354,6 +391,43 @@ pub const Font = struct {
             const lsb_delta = try hvar.getLsbDelta(glyph_id, adjusted);
             const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
             metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        }
+        return metrics;
+    }
+
+    pub fn getVMetrics(self: Font, glyph_id: u16) !?vmtx_mod.VMetrics {
+        if (self.vmtx) |vmtx| return try vmtx.getMetrics(glyph_id);
+        return null;
+    }
+
+    pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
+        var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
+        if (self.vvar) |vvar| {
+            var adjusted_coords_buf: [16]f32 = undefined;
+            var adjusted: []f32 = undefined;
+            var allocated = false;
+            if (normalized_coords.len <= 16) {
+                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
+                adjusted = adjusted_coords_buf[0..normalized_coords.len];
+            } else {
+                const heap = try self.allocator.alloc(f32, normalized_coords.len);
+                @memcpy(heap, normalized_coords);
+                adjusted = heap;
+                allocated = true;
+            }
+            defer if (allocated) self.allocator.free(adjusted);
+
+            if (self.avar) |avar| {
+                try avar.mapNormalizedCoords(adjusted);
+            }
+
+            const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adjusted);
+            const new_ah = @as(i32, metrics.advance_height) + ah_delta;
+            metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
+
+            const tsb_delta = try vvar.getTsbDelta(glyph_id, adjusted);
+            const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
+            metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
         }
         return metrics;
     }
