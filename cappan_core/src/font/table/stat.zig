@@ -90,8 +90,11 @@ pub const StatTable = struct {
         if (self.axis_value_array_offset == 0) return error.IndexOutOfRange;
 
         const array_base = @as(usize, self.axis_value_array_offset);
-        const entry_offset = try parser.readU16(self.data, array_base + @as(usize, index) * 2);
+        const entry_pos = array_base + @as(usize, index) * 2;
+        if (entry_pos + 2 > self.data.len) return error.UnexpectedEof;
+        const entry_offset = try parser.readU16(self.data, entry_pos);
         const av_offset = array_base + @as(usize, entry_offset);
+        if (av_offset + 2 > self.data.len) return error.UnexpectedEof;
 
         const format = try parser.readU16(self.data, av_offset);
         switch (format) {
@@ -138,8 +141,11 @@ pub const StatTable = struct {
         if (self.axis_value_array_offset == 0) return error.IndexOutOfRange;
 
         const array_base = @as(usize, self.axis_value_array_offset);
-        const entry_offset = try parser.readU16(self.data, array_base + @as(usize, axis_value_index) * 2);
+        const entry_pos = array_base + @as(usize, axis_value_index) * 2;
+        if (entry_pos + 2 > self.data.len) return error.UnexpectedEof;
+        const entry_offset = try parser.readU16(self.data, entry_pos);
         const av_offset = array_base + @as(usize, entry_offset);
+        if (av_offset + 8 > self.data.len) return error.UnexpectedEof;
 
         const format = try parser.readU16(self.data, av_offset);
         if (format != 4) return error.UnsupportedFormat;
@@ -148,6 +154,7 @@ pub const StatTable = struct {
         if (position >= axis_count) return error.IndexOutOfRange;
 
         const rec_offset = av_offset + 8 + @as(usize, position) * 6;
+        if (rec_offset + 6 > self.data.len) return error.UnexpectedEof;
         return .{
             .axis_index = try parser.readU16(self.data, rec_offset),
             .value = try readFixed(self.data, rec_offset + 2),
