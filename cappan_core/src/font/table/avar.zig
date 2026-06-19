@@ -37,6 +37,7 @@ pub const AvarTable = struct {
 
         for (1..position_map_count) |i| {
             const entry_offset = offset + i * 4;
+            if (entry_offset + 4 > self.data.len) return error.UnexpectedEof;
             const from2 = try parser.readF2Dot14(self.data, entry_offset);
             const to2 = try parser.readF2Dot14(self.data, entry_offset + 2);
 
