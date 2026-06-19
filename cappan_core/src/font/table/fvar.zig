@@ -10,6 +10,13 @@ pub const AxisRecord = struct {
     axis_name_id: u16,
 };
 
+pub const NamedInstance = struct {
+    subfamily_name_id: u16,
+    flags: u16,
+    coordinates: []const f32,
+    post_script_name_id: ?u16,
+};
+
 pub const FvarTable = struct {
     data: []const u8,
     axis_count: u16,
@@ -66,11 +73,45 @@ pub const FvarTable = struct {
         }
         return result;
     }
+
+    pub fn getInstanceCount(self: FvarTable) u16 {
+        return self.instance_count;
+    }
+
+    pub fn getInstance(self: FvarTable, allocator: std.mem.Allocator, index: u16) !NamedInstance {
+        if (index >= self.instance_count) return error.InvalidInstanceIndex;
+        const instances_offset = @as(usize, self.axes_offset) + @as(usize, self.axis_count) * @as(usize, self.axis_size);
+        const inst_offset = instances_offset + @as(usize, index) * @as(usize, self.instance_size);
+
+        const subfamily_name_id = try parser.readU16(self.data, inst_offset);
+        const flags = try parser.readU16(self.data, inst_offset + 2);
+
+        const coords = try allocator.alloc(f32, self.axis_count);
+        errdefer allocator.free(coords);
+        for (0..self.axis_count) |i| {
+            const raw = try parser.readI32(self.data, inst_offset + 4 + i * 4);
+            coords[i] = @as(f32, @floatFromInt(raw)) / 65536.0;
+        }
+
+        const has_ps_name = self.instance_size >= @as(u16, self.axis_count) * 4 + 6;
+        const post_script_name_id: ?u16 = if (has_ps_name)
+            try parser.readU16(self.data, inst_offset + 4 + @as(usize, self.axis_count) * 4)
+        else
+            null;
+
+        return .{
+            .subfamily_name_id = subfamily_name_id,
+            .flags = flags,
+            .coordinates = coords,
+            .post_script_name_id = post_script_name_id,
+        };
+    }
 };
 
 pub const FvarError = error{
     InvalidAxisIndex,
     InvalidAxisCount,
+    InvalidInstanceIndex,
     UnexpectedEof,
 };
 
@@ -127,4 +168,26 @@ test "normalizeCoord" {
 
     const norm_max = try fvar.normalizeCoord(0, axis.max_value);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), norm_max, 0.001);
+}
+
+test "getNamedInstances" {
+    const font_data = @embedFile("../../fixture/SourceSans3VF-Subset.ttf");
+    const offset_table = try parser.parseOffsetTable(std.testing.allocator, font_data);
+    defer std.testing.allocator.free(offset_table.table_records);
+
+    const fvar_record = parser.findTable(offset_table, "fvar".*) orelse return error.TableNotFound;
+    const fvar_data = try parser.getTableData(font_data, fvar_record);
+    const fvar = try parse(fvar_data);
+
+    try std.testing.expect(fvar.getInstanceCount() > 0);
+
+    // Test first instance
+    const inst = try fvar.getInstance(std.testing.allocator, 0);
+    defer std.testing.allocator.free(inst.coordinates);
+
+    try std.testing.expectEqual(@as(usize, 1), inst.coordinates.len);
+    // The coordinate should be a valid weight value
+    try std.testing.expect(inst.coordinates[0] >= 200.0 and inst.coordinates[0] <= 900.0);
+    // subfamily_name_id should be a valid name ID (> 0)
+    try std.testing.expect(inst.subfamily_name_id > 0);
 }

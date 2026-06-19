@@ -499,6 +499,16 @@ pub const Font = struct {
         return error.InvalidAxisIndex;
     }
 
+    pub fn getInstanceCount(self: Font) u16 {
+        if (self.fvar) |fvar| return fvar.getInstanceCount();
+        return 0;
+    }
+
+    pub fn getInstance(self: Font, allocator: std.mem.Allocator, index: u16) !fvar_mod.NamedInstance {
+        if (self.fvar) |fvar| return fvar.getInstance(allocator, index);
+        return error.InvalidInstanceIndex;
+    }
+
     pub fn getGlyphOutlineWithVariation(
         self: Font,
         allocator: std.mem.Allocator,
