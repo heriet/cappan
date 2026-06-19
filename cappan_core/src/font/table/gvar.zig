@@ -127,7 +127,9 @@ pub const GvarTable = struct {
                 }
             } else {
                 const shared_idx = tuple_index & 0x0FFF;
-                const tuple_offset = @as(usize, self.shared_tuples_offset) + @as(usize, shared_idx) * @as(usize, self.axis_count) * 2;
+                const tuple_size = @as(usize, self.axis_count) * 2;
+                const tuple_offset = @as(usize, self.shared_tuples_offset) + @as(usize, shared_idx) * tuple_size;
+                if (tuple_offset + tuple_size > self.data.len) return error.UnexpectedEof;
                 for (0..self.axis_count) |i| {
                     peak_coords[i] = try parser.readF2Dot14(self.data, tuple_offset + i * 2);
                 }
