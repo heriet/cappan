@@ -83,6 +83,9 @@ pub const FvarTable = struct {
         const instances_offset = @as(usize, self.axes_offset) + @as(usize, self.axis_count) * @as(usize, self.axis_size);
         const inst_offset = instances_offset + @as(usize, index) * @as(usize, self.instance_size);
 
+        const coords_end = inst_offset + 4 + @as(usize, self.axis_count) * 4;
+        if (coords_end > self.data.len) return error.UnexpectedEof;
+
         const subfamily_name_id = try parser.readU16(self.data, inst_offset);
         const flags = try parser.readU16(self.data, inst_offset + 2);
 
@@ -93,9 +96,9 @@ pub const FvarTable = struct {
             coords[i] = @as(f32, @floatFromInt(raw)) / 65536.0;
         }
 
-        const has_ps_name = self.instance_size >= @as(u16, self.axis_count) * 4 + 6;
+        const has_ps_name = self.instance_size >= @as(u16, self.axis_count) * 4 + 6 and coords_end + 2 <= self.data.len;
         const post_script_name_id: ?u16 = if (has_ps_name)
-            try parser.readU16(self.data, inst_offset + 4 + @as(usize, self.axis_count) * 4)
+            try parser.readU16(self.data, coords_end)
         else
             null;
 
