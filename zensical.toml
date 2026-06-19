@@ -1,7 +1,9 @@
+[project]
 site_name = "cappan"
-site_description = "TrueType/OpenType font rendering engine"
+site_description = "Font rendering engine implemented in pure Zig"
 docs_dir = "cappan_doc/content"
 site_dir = "docs"
+repo_url = "https://github.com/heriet/cappan"
 
 nav = [
   "index.md",
@@ -17,3 +19,6 @@ nav = [
     "spec/error.md",
   ] },
 ]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"

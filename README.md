@@ -6,7 +6,7 @@
 
 ![medial-axis writing-order weighted](cappan_doc/content/guide/image/medial_axis_writing_weighted.png)
 
-[Demo](https://heriet.github.io/cappan/demo/)
+[Demo on browser](https://heriet.github.io/cappan/demo/)
 
 - Most of this project was built with AI
 - This is a personal learning and experimentation project — expect breaking changes. Not recommended for production use
