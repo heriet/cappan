@@ -59,7 +59,10 @@ pub const GlyfTable = struct {
 
         var offset: usize = 10;
         var flags: u16 = MORE_COMPONENTS;
+        var component_count: u32 = 0;
         while (flags & MORE_COMPONENTS != 0) {
+            if (component_count >= MAX_COMPOUND_DEPTH * 64) return error.InvalidGlyphData;
+            component_count += 1;
             flags = try parser.readU16(glyph_data, offset);
             offset += 2;
             const component_glyph_id = try parser.readU16(glyph_data, offset);
