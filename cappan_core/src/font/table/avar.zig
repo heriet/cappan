@@ -13,7 +13,9 @@ pub const AvarTable = struct {
         for (0..axis_index) |_| {
             if (offset + 2 > self.data.len) return error.UnexpectedEof;
             const position_map_count = try parser.readU16(self.data, offset);
-            offset += 2 + @as(usize, position_map_count) * 4;
+            const segment_size = @as(usize, position_map_count) * 4;
+            if (segment_size > self.data.len -| (offset + 2)) return error.UnexpectedEof;
+            offset += 2 + segment_size;
         }
 
         // Now read this axis's segment map
