@@ -15,6 +15,7 @@ pub const MvarTable = struct {
         while (low < high) {
             const mid = low + (high - low) / 2;
             const rec_offset = self.value_records_offset + @as(usize, mid) * 8;
+            if (rec_offset + 8 > self.data.len) return error.UnexpectedEof;
             const rec_tag = [4]u8{
                 try parser.readU8(self.data, rec_offset),
                 try parser.readU8(self.data, rec_offset + 1),
