@@ -54,12 +54,14 @@ pub const FvarTable = struct {
         if (user_value <= axis.min_value) return -1.0;
         if (user_value >= axis.max_value) return 1.0;
         if (user_value < axis.default_value) {
-            if (axis.default_value == axis.min_value) return 0.0;
-            return -(axis.default_value - user_value) / (axis.default_value - axis.min_value);
+            const denom = axis.default_value - axis.min_value;
+            if (denom == 0.0 or @abs(denom) < 1e-10) return 0.0;
+            return std.math.clamp(-(axis.default_value - user_value) / denom, -1.0, 0.0);
         }
         if (user_value > axis.default_value) {
-            if (axis.max_value == axis.default_value) return 0.0;
-            return (user_value - axis.default_value) / (axis.max_value - axis.default_value);
+            const denom = axis.max_value - axis.default_value;
+            if (denom == 0.0 or @abs(denom) < 1e-10) return 0.0;
+            return std.math.clamp((user_value - axis.default_value) / denom, 0.0, 1.0);
         }
         return 0.0;
     }
