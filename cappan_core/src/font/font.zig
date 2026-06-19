@@ -24,6 +24,7 @@ const vhea_mod = @import("table/vhea.zig");
 const vmtx_mod = @import("table/vmtx.zig");
 const vvar_mod = @import("table/vvar.zig");
 const mvar_mod = @import("table/mvar.zig");
+const stat_mod = @import("table/stat.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -60,6 +61,7 @@ pub const Font = struct {
     vmtx: ?vmtx_mod.VmtxTable,
     vvar: ?vvar_mod.VvarTable,
     mvar: ?mvar_mod.MvarTable,
+    stat: ?stat_mod.StatTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -313,6 +315,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const stat_table: ?stat_mod.StatTable = blk: {
+            const stat_record = parser.findTable(offset_table, "STAT".*);
+            if (stat_record) |rec| {
+                const stat_data = try parser.getTableData(data, rec);
+                break :blk stat_mod.parse(stat_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -341,6 +352,7 @@ pub const Font = struct {
             .vmtx = vmtx_table,
             .vvar = vvar_table,
             .mvar = mvar_table,
+            .stat = stat_table,
         };
     }
 
@@ -467,6 +479,10 @@ pub const Font = struct {
             return mvar.getMetricDelta(tag, adjusted);
         }
         return 0;
+    }
+
+    pub fn getStatTable(self: Font) ?stat_mod.StatTable {
+        return self.stat;
     }
 
     pub fn getUnitsPerEm(self: Font) u16 {
