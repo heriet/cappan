@@ -3,6 +3,17 @@ const parser = @import("../parser.zig");
 const glyph_mod = @import("../glyph.zig");
 const loca_mod = @import("loca.zig");
 
+pub const ComponentInfo = struct {
+    glyph_id: u16,
+    dx: i16,
+    dy: i16,
+    mat_a: f32,
+    mat_b: f32,
+    mat_c: f32,
+    mat_d: f32,
+    has_transform: bool,
+};
+
 pub const GlyfTable = struct {
     data: []const u8,
 
@@ -23,6 +34,93 @@ pub const GlyfTable = struct {
     const WE_HAVE_A_SCALE: u16 = 0x0008;
     const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
     const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+
+    pub fn isCompoundGlyph(self: GlyfTable, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!bool {
+        const loc = try loca.getGlyphLocation(glyph_id);
+        if (loc.length == 0) return false;
+        const end = @as(usize, loc.offset) + @as(usize, loc.length);
+        if (end > self.data.len) return error.InvalidGlyphData;
+        const glyph_data = self.data[loc.offset..end];
+        const number_of_contours = try parser.readI16(glyph_data, 0);
+        return number_of_contours < 0;
+    }
+
+    pub fn getComponentInfos(self: GlyfTable, allocator: std.mem.Allocator, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!?[]ComponentInfo {
+        const loc = try loca.getGlyphLocation(glyph_id);
+        if (loc.length == 0) return null;
+        const end = @as(usize, loc.offset) + @as(usize, loc.length);
+        if (end > self.data.len) return error.InvalidGlyphData;
+        const glyph_data = self.data[loc.offset..end];
+        const number_of_contours = try parser.readI16(glyph_data, 0);
+        if (number_of_contours >= 0) return null; // simple glyph
+
+        var components: std.ArrayList(ComponentInfo) = .empty;
+        errdefer components.deinit(allocator);
+
+        var offset: usize = 10;
+        var flags: u16 = MORE_COMPONENTS;
+        while (flags & MORE_COMPONENTS != 0) {
+            flags = try parser.readU16(glyph_data, offset);
+            offset += 2;
+            const component_glyph_id = try parser.readU16(glyph_data, offset);
+            offset += 2;
+
+            var dx: i16 = 0;
+            var dy: i16 = 0;
+
+            if (flags & ARGS_ARE_XY_VALUES != 0) {
+                if (flags & ARG_1_AND_2_ARE_WORDS != 0) {
+                    dx = try parser.readI16(glyph_data, offset);
+                    dy = try parser.readI16(glyph_data, offset + 2);
+                    offset += 4;
+                } else {
+                    dx = @as(i16, try parser.readI8(glyph_data, offset));
+                    dy = @as(i16, try parser.readI8(glyph_data, offset + 1));
+                    offset += 2;
+                }
+            } else {
+                if (flags & ARG_1_AND_2_ARE_WORDS != 0) {
+                    offset += 4;
+                } else {
+                    offset += 2;
+                }
+            }
+
+            var mat_a: f32 = 1.0;
+            var mat_b: f32 = 0.0;
+            var mat_c: f32 = 0.0;
+            var mat_d: f32 = 1.0;
+            const has_transform = (flags & (WE_HAVE_A_SCALE | WE_HAVE_AN_X_AND_Y_SCALE | WE_HAVE_A_TWO_BY_TWO)) != 0;
+
+            if (flags & WE_HAVE_A_SCALE != 0) {
+                mat_a = try parser.readF2Dot14(glyph_data, offset);
+                mat_d = mat_a;
+                offset += 2;
+            } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE != 0) {
+                mat_a = try parser.readF2Dot14(glyph_data, offset);
+                mat_d = try parser.readF2Dot14(glyph_data, offset + 2);
+                offset += 4;
+            } else if (flags & WE_HAVE_A_TWO_BY_TWO != 0) {
+                mat_a = try parser.readF2Dot14(glyph_data, offset);
+                mat_b = try parser.readF2Dot14(glyph_data, offset + 2);
+                mat_c = try parser.readF2Dot14(glyph_data, offset + 4);
+                mat_d = try parser.readF2Dot14(glyph_data, offset + 6);
+                offset += 8;
+            }
+
+            try components.append(allocator, .{
+                .glyph_id = component_glyph_id,
+                .dx = dx,
+                .dy = dy,
+                .mat_a = mat_a,
+                .mat_b = mat_b,
+                .mat_c = mat_c,
+                .mat_d = mat_d,
+                .has_transform = has_transform,
+            });
+        }
+        return try components.toOwnedSlice(allocator);
+    }
 
     pub fn getGlyphOutline(self: GlyfTable, allocator: std.mem.Allocator, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!?glyph_mod.GlyphOutline {
         return self.getGlyphOutlineRecursive(allocator, glyph_id, loca, 0);

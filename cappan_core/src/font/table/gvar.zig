@@ -1,6 +1,18 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
 const glyph_mod = @import("../glyph.zig");
+const glyf_mod = @import("glyf.zig");
+
+pub const VariationDeltas = struct {
+    x: []f32,
+    y: []f32,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *VariationDeltas) void {
+        self.allocator.free(self.x);
+        self.allocator.free(self.y);
+    }
+};
 
 pub const GvarTable = struct {
     data: []const u8,
@@ -18,28 +30,63 @@ pub const GvarTable = struct {
         outline: *glyph_mod.GlyphOutline,
         normalized_coords: []const f32,
     ) !void {
-        if (glyph_id >= self.glyph_count) return;
-        if (normalized_coords.len != self.axis_count) return;
+        var total_points: usize = 0;
+        for (outline.contours) |contour| {
+            total_points += contour.points.len;
+        }
+
+        var deltas = (try self.computeDeltas(allocator, glyph_id, total_points + 4, normalized_coords)) orelse return;
+        defer deltas.deinit();
+
+        var pt_idx: usize = 0;
+        for (outline.contours) |contour| {
+            for (contour.points) |*pt| {
+                pt.x = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.x)) + deltas.x[pt_idx])));
+                pt.y = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.y)) + deltas.y[pt_idx])));
+                pt_idx += 1;
+            }
+        }
+    }
+
+    pub fn applyCompoundDeltas(
+        self: GvarTable,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        components: []glyf_mod.ComponentInfo,
+        normalized_coords: []const f32,
+    ) !void {
+        var deltas = (try self.computeDeltas(allocator, glyph_id, components.len + 4, normalized_coords)) orelse return;
+        defer deltas.deinit();
+
+        for (components, 0..) |*comp, i| {
+            comp.dx = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dx)) + deltas.x[i])));
+            comp.dy = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(comp.dy)) + deltas.y[i])));
+        }
+    }
+
+    fn computeDeltas(
+        self: GvarTable,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        num_points_with_phantom: usize,
+        normalized_coords: []const f32,
+    ) !?VariationDeltas {
+        if (glyph_id >= self.glyph_count) return null;
+        if (normalized_coords.len != self.axis_count) return null;
 
         const var_data_offset = try self.getGlyphVariationDataOffset(glyph_id);
         const var_data_end = try self.getGlyphVariationDataOffset(glyph_id + 1);
-        if (var_data_offset == var_data_end) return;
+        if (var_data_offset == var_data_end) return null;
 
         const base = @as(usize, self.glyph_variation_data_offset) + var_data_offset;
         const end = @as(usize, self.glyph_variation_data_offset) + var_data_end;
         if (end > self.data.len) return error.UnexpectedEof;
         const glyph_var_data = self.data[base..end];
 
-        var total_points: usize = 0;
-        for (outline.contours) |contour| {
-            total_points += contour.points.len;
-        }
-        const num_points_with_phantom = total_points + 4;
-
         const x_deltas = try allocator.alloc(f32, num_points_with_phantom);
-        defer allocator.free(x_deltas);
+        errdefer allocator.free(x_deltas);
         const y_deltas = try allocator.alloc(f32, num_points_with_phantom);
-        defer allocator.free(y_deltas);
+        errdefer allocator.free(y_deltas);
         @memset(x_deltas, 0.0);
         @memset(y_deltas, 0.0);
 
@@ -148,14 +195,11 @@ pub const GvarTable = struct {
             }
         }
 
-        var pt_idx: usize = 0;
-        for (outline.contours) |contour| {
-            for (contour.points) |*pt| {
-                pt.x = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.x)) + x_deltas[pt_idx])));
-                pt.y = @as(i16, @intFromFloat(@round(@as(f32, @floatFromInt(pt.y)) + y_deltas[pt_idx])));
-                pt_idx += 1;
-            }
-        }
+        return .{
+            .x = x_deltas,
+            .y = y_deltas,
+            .allocator = allocator,
+        };
     }
 
     fn getGlyphVariationDataOffset(self: GvarTable, index: u16) !usize {

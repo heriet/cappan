@@ -469,11 +469,78 @@ pub const Font = struct {
             try avar.mapNormalizedCoords(adjusted_coords);
         }
 
-        var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
-        if (self.gvar) |gvar| {
-            try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
+        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, adjusted_coords, 0);
+    }
+
+    fn getGlyphOutlineWithVariationRecursive(
+        self: Font,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        adjusted_coords: []const f32,
+        depth: u32,
+    ) !?glyph_mod.GlyphOutline {
+        if (depth > 10) return error.CompoundGlyphTooDeep;
+
+        const glyf_table = self.glyf orelse return null;
+        const loca_table = self.loca orelse return null;
+
+        if (try glyf_table.getComponentInfos(allocator, glyph_id, loca_table)) |components_slice| {
+            const components = components_slice;
+            defer allocator.free(components);
+
+            if (self.gvar) |gvar| {
+                try gvar.applyCompoundDeltas(allocator, glyph_id, components, adjusted_coords);
+            }
+
+            var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
+            defer all_contours.deinit(allocator);
+
+            for (components) |comp| {
+                if (try self.getGlyphOutlineWithVariationRecursive(allocator, comp.glyph_id, adjusted_coords, depth + 1)) |component_outline_const| {
+                    var component_outline = component_outline_const;
+                    defer component_outline.deinit();
+                    for (component_outline.contours) |contour| {
+                        const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
+                        for (contour.points, 0..) |pt, i| {
+                            if (comp.has_transform) {
+                                const fx = @as(f32, @floatFromInt(pt.x));
+                                const fy = @as(f32, @floatFromInt(pt.y));
+                                new_points[i] = .{
+                                    .x = @as(i16, @intFromFloat(@round(comp.mat_a * fx + comp.mat_c * fy))) + comp.dx,
+                                    .y = @as(i16, @intFromFloat(@round(comp.mat_b * fx + comp.mat_d * fy))) + comp.dy,
+                                    .on_curve = pt.on_curve,
+                                };
+                            } else {
+                                new_points[i] = .{
+                                    .x = pt.x + comp.dx,
+                                    .y = pt.y + comp.dy,
+                                    .on_curve = pt.on_curve,
+                                };
+                            }
+                        }
+                        try all_contours.append(allocator, .{ .points = new_points });
+                    }
+                }
+            }
+
+            const loc = try loca_table.getGlyphLocation(glyph_id);
+            const glyph_data = glyf_table.data[loc.offset..@as(usize, loc.offset) + @as(usize, loc.length)];
+            const contours = try all_contours.toOwnedSlice(allocator);
+            return .{
+                .contours = contours,
+                .x_min = try parser.readI16(glyph_data, 2),
+                .y_min = try parser.readI16(glyph_data, 4),
+                .x_max = try parser.readI16(glyph_data, 6),
+                .y_max = try parser.readI16(glyph_data, 8),
+                .allocator = allocator,
+            };
+        } else {
+            var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
+            if (self.gvar) |gvar| {
+                try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
+            }
+            return outline;
         }
-        return outline;
     }
 };
 
