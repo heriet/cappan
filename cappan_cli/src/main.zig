@@ -4,6 +4,7 @@ const cappan_subset = @import("cappan_subset");
 const cappan_inspect = @import("cappan_inspect");
 const cappan_pathify = @import("cappan_pathify");
 const cappan_metrics = @import("cappan_metrics");
+const discover = @import("cappan_discover");
 const Color = cappan_core.render.rgba_bitmap.Color;
 const RgbaBitmap = cappan_core.render.rgba_bitmap.RgbaBitmap;
 const incremental_mod = cappan_core.render.incremental;
@@ -11,7 +12,6 @@ const png_mod = @import("image/png.zig");
 const apng_mod = @import("image/apng.zig");
 const bmp_mod = @import("image/bmp.zig");
 const ppm_mod = @import("image/ppm.zig");
-const system_font_mod = @import("system_font.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -766,7 +766,7 @@ fn cmdSubset(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
 // --- cappan fonts ---
 
 fn cmdListFonts(allocator: std.mem.Allocator, io: std.Io) !void {
-    var fonts = system_font_mod.scanSystemFonts(allocator, io) catch |err| {
+    var fonts = discover.scanSystemFonts(allocator, io) catch |err| {
         std.debug.print("Error: could not scan system fonts: {}\n", .{err});
         return;
     };
@@ -1517,7 +1517,7 @@ const ResolvedFont = struct {
 
 fn resolveFontPath(allocator: std.mem.Allocator, io: std.Io, common: CommonOptions) ?ResolvedFont {
     if (common.font_name) |font_name| {
-        var fonts = system_font_mod.scanSystemFonts(allocator, io) catch |err| {
+        var fonts = discover.scanSystemFonts(allocator, io) catch |err| {
             std.debug.print("Error: could not scan system fonts: {}\n", .{err});
             return null;
         };
@@ -1558,7 +1558,6 @@ test {
     _ = @import("image/apng.zig");
     _ = @import("image/bmp.zig");
     _ = @import("image/ppm.zig");
-    _ = @import("system_font.zig");
 }
 
 test "PNG output structure" {
