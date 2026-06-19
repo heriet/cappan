@@ -624,15 +624,11 @@ pub const Font = struct {
         glyph_id: u16,
         normalized_coords: []const f32,
     ) !?glyph_mod.GlyphOutline {
-        const adjusted_coords = try allocator.alloc(f32, normalized_coords.len);
-        defer allocator.free(adjusted_coords);
-        @memcpy(adjusted_coords, normalized_coords);
+        var buf: [16]f32 = undefined;
+        const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+        defer if (adj.allocated) self.allocator.free(adj.coords);
 
-        if (self.avar) |avar| {
-            try avar.mapNormalizedCoords(adjusted_coords);
-        }
-
-        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, adjusted_coords, 0);
+        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, adj.coords, 0);
     }
 
     fn getGlyphOutlineWithVariationRecursive(
