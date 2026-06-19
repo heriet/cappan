@@ -1,6 +1,6 @@
 .{
     .name = .cappan,
-    .version = "0.0.1",
+    .version = "0.2.0",
     .fingerprint = 0x72d25cdf33dae45c,
     .minimum_zig_version = "0.16.0",
     .paths = .{
