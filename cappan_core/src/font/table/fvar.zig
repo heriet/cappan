@@ -32,6 +32,7 @@ pub const FvarTable = struct {
     pub fn getAxis(self: FvarTable, index: u16) !AxisRecord {
         if (index >= self.axis_count) return error.InvalidAxisIndex;
         const offset: usize = @as(usize, self.axes_offset) + @as(usize, index) * @as(usize, self.axis_size);
+        if (offset + @as(usize, self.axis_size) > self.data.len) return error.UnexpectedEof;
         const tag = self.data[offset..][0..4].*;
         const min_raw = try parser.readI32(self.data, offset + 4);
         const default_raw = try parser.readI32(self.data, offset + 8);
