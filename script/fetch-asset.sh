@@ -137,6 +137,23 @@ else
   echo "  OK: brotli_dictionary.bin (cached)"
 fi
 
+# --- SourceSans3-Variable.ttf ---
+# TODO: add SHA256 verification
+SOURCE_SANS_VF_DIR="$FONT_DIR/source-sans-vf"
+if [ ! -f "$SOURCE_SANS_VF_DIR/SourceSans3VF-Upright.ttf" ]; then
+  echo "Downloading Source Sans 3 Variable 3.052R..."
+  tmpdir=$(mktemp -d)
+  curl -fsSL "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/VF-source-sans-3.052R.zip" \
+    -o "$tmpdir/source-sans-vf.zip"
+  unzip -q "$tmpdir/source-sans-vf.zip" -d "$tmpdir"
+  mkdir -p "$SOURCE_SANS_VF_DIR"
+  find "$tmpdir" -name "*.ttf" -exec cp {} "$SOURCE_SANS_VF_DIR/" \;
+  rm -rf "$tmpdir"
+  echo "  OK: Source Sans 3 Variable"
+else
+  echo "  OK: Source Sans 3 Variable (cached)"
+fi
+
 # --- Copy to target locations ---
 echo "Copying fonts to target locations..."
 

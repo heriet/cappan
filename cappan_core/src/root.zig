@@ -27,6 +27,16 @@ pub const font = struct {
         pub const cblc = @import("font/table/cblc.zig");
         pub const cbdt = @import("font/table/cbdt.zig");
         pub const name = @import("font/table/name.zig");
+        pub const fvar = @import("font/table/fvar.zig");
+        pub const gvar = @import("font/table/gvar.zig");
+        pub const avar = @import("font/table/avar.zig");
+        pub const hvar = @import("font/table/hvar.zig");
+        pub const item_variation_store = @import("font/table/item_variation_store.zig");
+        pub const vhea = @import("font/table/vhea.zig");
+        pub const vmtx = @import("font/table/vmtx.zig");
+        pub const vvar = @import("font/table/vvar.zig");
+        pub const mvar = @import("font/table/mvar.zig");
+        pub const stat = @import("font/table/stat.zig");
     };
 };
 
@@ -81,6 +91,14 @@ test {
     _ = @import("font/table/cblc.zig");
     _ = @import("font/table/cbdt.zig");
     _ = @import("font/table/name.zig");
+    _ = @import("font/table/avar.zig");
+    _ = @import("font/table/hvar.zig");
+    _ = @import("font/table/item_variation_store.zig");
+    _ = @import("font/table/vhea.zig");
+    _ = @import("font/table/vmtx.zig");
+    _ = @import("font/table/vvar.zig");
+    _ = @import("font/table/mvar.zig");
+    _ = @import("font/table/stat.zig");
     _ = @import("font/charstring.zig");
     _ = @import("raster/outline.zig");
     _ = @import("raster/scanline.zig");

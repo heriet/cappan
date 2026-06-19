@@ -16,6 +16,15 @@ const cpal_mod = @import("table/cpal.zig");
 const cblc_mod = @import("table/cblc.zig");
 const cbdt_mod = @import("table/cbdt.zig");
 const name_mod = @import("table/name.zig");
+const fvar_mod = @import("table/fvar.zig");
+const gvar_mod = @import("table/gvar.zig");
+const avar_mod = @import("table/avar.zig");
+const hvar_mod = @import("table/hvar.zig");
+const vhea_mod = @import("table/vhea.zig");
+const vmtx_mod = @import("table/vmtx.zig");
+const vvar_mod = @import("table/vvar.zig");
+const mvar_mod = @import("table/mvar.zig");
+const stat_mod = @import("table/stat.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -44,6 +53,15 @@ pub const Font = struct {
     cblc: ?cblc_mod.CblcTable,
     cbdt: ?cbdt_mod.CbdtTable,
     name: ?name_mod.NameTable,
+    fvar: ?fvar_mod.FvarTable,
+    gvar: ?gvar_mod.GvarTable,
+    avar: ?avar_mod.AvarTable,
+    hvar: ?hvar_mod.HvarTable,
+    vhea: ?vhea_mod.VheaTable,
+    vmtx: ?vmtx_mod.VmtxTable,
+    vvar: ?vvar_mod.VvarTable,
+    mvar: ?mvar_mod.MvarTable,
+    stat: ?stat_mod.StatTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -224,6 +242,88 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const fvar_table: ?fvar_mod.FvarTable = blk: {
+            const fvar_record = parser.findTable(offset_table, "fvar".*);
+            if (fvar_record) |rec| {
+                const fvar_data = try parser.getTableData(data, rec);
+                break :blk fvar_mod.parse(fvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const gvar_table: ?gvar_mod.GvarTable = blk: {
+            const gvar_record = parser.findTable(offset_table, "gvar".*);
+            if (gvar_record) |rec| {
+                const gvar_data = try parser.getTableData(data, rec);
+                break :blk gvar_mod.parse(gvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const avar_table: ?avar_mod.AvarTable = blk: {
+            const avar_record = parser.findTable(offset_table, "avar".*);
+            if (avar_record) |rec| {
+                const avar_data = try parser.getTableData(data, rec);
+                break :blk avar_mod.parse(avar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const hvar_table: ?hvar_mod.HvarTable = blk: {
+            const hvar_record = parser.findTable(offset_table, "HVAR".*);
+            if (hvar_record) |rec| {
+                const hvar_data = try parser.getTableData(data, rec);
+                break :blk hvar_mod.parse(hvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const vhea_table: ?vhea_mod.VheaTable = blk: {
+            const vhea_record = parser.findTable(offset_table, "vhea".*);
+            if (vhea_record) |rec| {
+                const vhea_data = try parser.getTableData(data, rec);
+                break :blk vhea_mod.parse(vhea_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const vmtx_table: ?vmtx_mod.VmtxTable = blk: {
+            if (vhea_table) |vhea| {
+                const vmtx_record = parser.findTable(offset_table, "vmtx".*);
+                if (vmtx_record) |rec| {
+                    const vmtx_data = try parser.getTableData(data, rec);
+                    break :blk vmtx_mod.parse(vmtx_data, vhea.number_of_v_metrics);
+                }
+            }
+            break :blk null;
+        };
+        const vvar_table: ?vvar_mod.VvarTable = blk: {
+            const vvar_record = parser.findTable(offset_table, "VVAR".*);
+            if (vvar_record) |rec| {
+                const vvar_data = try parser.getTableData(data, rec);
+                break :blk vvar_mod.parse(vvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const mvar_table: ?mvar_mod.MvarTable = blk: {
+            const mvar_record = parser.findTable(offset_table, "MVAR".*);
+            if (mvar_record) |rec| {
+                const mvar_data = try parser.getTableData(data, rec);
+                break :blk mvar_mod.parse(mvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
+        const stat_table: ?stat_mod.StatTable = blk: {
+            const stat_record = parser.findTable(offset_table, "STAT".*);
+            if (stat_record) |rec| {
+                const stat_data = try parser.getTableData(data, rec);
+                break :blk stat_mod.parse(stat_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -244,6 +344,15 @@ pub const Font = struct {
             .cblc = cblc_table,
             .cbdt = cbdt_table,
             .name = name_table,
+            .fvar = fvar_table,
+            .gvar = gvar_table,
+            .avar = avar_table,
+            .hvar = hvar_table,
+            .vhea = vhea_table,
+            .vmtx = vmtx_table,
+            .vvar = vvar_table,
+            .mvar = mvar_table,
+            .stat = stat_table,
         };
     }
 
@@ -276,6 +385,86 @@ pub const Font = struct {
 
     pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {
         return self.hmtx.getMetrics(glyph_id);
+    }
+
+    fn adjustCoordsForVariation(
+        self: Font,
+        normalized_coords: []const f32,
+        stack_buf: []f32,
+    ) !struct { coords: []f32, allocated: bool } {
+        var adjusted: []f32 = undefined;
+        var allocated = false;
+        if (normalized_coords.len <= stack_buf.len) {
+            @memcpy(stack_buf[0..normalized_coords.len], normalized_coords);
+            adjusted = stack_buf[0..normalized_coords.len];
+        } else {
+            const heap = try self.allocator.alloc(f32, normalized_coords.len);
+            @memcpy(heap, normalized_coords);
+            adjusted = heap;
+            allocated = true;
+        }
+
+        if (self.avar) |avar| {
+            try avar.mapNormalizedCoords(adjusted);
+        }
+
+        return .{ .coords = adjusted, .allocated = allocated };
+    }
+
+    pub fn getHMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !hmtx_mod.HMetrics {
+        var metrics = try self.hmtx.getMetrics(glyph_id);
+        if (self.hvar) |hvar| {
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
+
+            const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adj.coords);
+            const new_aw = @as(i32, metrics.advance_width) + aw_delta;
+            metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
+
+            const lsb_delta = try hvar.getLsbDelta(glyph_id, adj.coords);
+            const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
+            metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        }
+        return metrics;
+    }
+
+    pub fn getVMetrics(self: Font, glyph_id: u16) !?vmtx_mod.VMetrics {
+        if (self.vmtx) |vmtx| return try vmtx.getMetrics(glyph_id);
+        return null;
+    }
+
+    pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
+        var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
+        if (self.vvar) |vvar| {
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
+
+            const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adj.coords);
+            const new_ah = @as(i32, metrics.advance_height) + ah_delta;
+            metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
+
+            const tsb_delta = try vvar.getTsbDelta(glyph_id, adj.coords);
+            const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
+            metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        }
+        return metrics;
+    }
+
+    pub fn getMetricDelta(self: Font, tag: [4]u8, normalized_coords: []const f32) !i32 {
+        if (self.mvar) |mvar| {
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
+
+            return mvar.getMetricDelta(tag, adj.coords);
+        }
+        return 0;
+    }
+
+    pub fn getStatTable(self: Font) ?stat_mod.StatTable {
+        return self.stat;
     }
 
     pub fn getUnitsPerEm(self: Font) u16 {
@@ -404,6 +593,114 @@ pub const Font = struct {
         }
         return null;
     }
+
+    pub fn isVariableFont(self: Font) bool {
+        return self.fvar != null;
+    }
+
+    pub fn getAxisCount(self: Font) u16 {
+        if (self.fvar) |fvar| return fvar.getAxisCount();
+        return 0;
+    }
+
+    pub fn getAxis(self: Font, index: u16) !fvar_mod.AxisRecord {
+        if (self.fvar) |fvar| return fvar.getAxis(index);
+        return error.InvalidAxisIndex;
+    }
+
+    pub fn getInstanceCount(self: Font) u16 {
+        if (self.fvar) |fvar| return fvar.getInstanceCount();
+        return 0;
+    }
+
+    pub fn getInstance(self: Font, allocator: std.mem.Allocator, index: u16) !fvar_mod.NamedInstance {
+        if (self.fvar) |fvar| return fvar.getInstance(allocator, index);
+        return error.InvalidInstanceIndex;
+    }
+
+    pub fn getGlyphOutlineWithVariation(
+        self: Font,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        normalized_coords: []const f32,
+    ) !?glyph_mod.GlyphOutline {
+        var buf: [16]f32 = undefined;
+        const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+        defer if (adj.allocated) self.allocator.free(adj.coords);
+
+        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, adj.coords, 0);
+    }
+
+    fn getGlyphOutlineWithVariationRecursive(
+        self: Font,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        adjusted_coords: []const f32,
+        depth: u32,
+    ) !?glyph_mod.GlyphOutline {
+        if (depth > 10) return error.CompoundGlyphTooDeep;
+
+        const glyf_table = self.glyf orelse return null;
+        const loca_table = self.loca orelse return null;
+
+        if (try glyf_table.getComponentInfos(allocator, glyph_id, loca_table)) |components_slice| {
+            const components = components_slice;
+            defer allocator.free(components);
+
+            if (self.gvar) |gvar| {
+                try gvar.applyCompoundDeltas(allocator, glyph_id, components, adjusted_coords);
+            }
+
+            var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
+            defer all_contours.deinit(allocator);
+
+            for (components) |comp| {
+                if (try self.getGlyphOutlineWithVariationRecursive(allocator, comp.glyph_id, adjusted_coords, depth + 1)) |component_outline_const| {
+                    var component_outline = component_outline_const;
+                    defer component_outline.deinit();
+                    for (component_outline.contours) |contour| {
+                        const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
+                        for (contour.points, 0..) |pt, i| {
+                            if (comp.has_transform) {
+                                const fx = @as(f32, @floatFromInt(pt.x));
+                                const fy = @as(f32, @floatFromInt(pt.y));
+                                new_points[i] = .{
+                                    .x = @as(i16, @intFromFloat(@round(comp.mat_a * fx + comp.mat_c * fy))) + comp.dx,
+                                    .y = @as(i16, @intFromFloat(@round(comp.mat_b * fx + comp.mat_d * fy))) + comp.dy,
+                                    .on_curve = pt.on_curve,
+                                };
+                            } else {
+                                new_points[i] = .{
+                                    .x = pt.x + comp.dx,
+                                    .y = pt.y + comp.dy,
+                                    .on_curve = pt.on_curve,
+                                };
+                            }
+                        }
+                        try all_contours.append(allocator, .{ .points = new_points });
+                    }
+                }
+            }
+
+            const loc = try loca_table.getGlyphLocation(glyph_id);
+            const glyph_data = glyf_table.data[loc.offset..@as(usize, loc.offset) + @as(usize, loc.length)];
+            const contours = try all_contours.toOwnedSlice(allocator);
+            return .{
+                .contours = contours,
+                .x_min = try parser.readI16(glyph_data, 2),
+                .y_min = try parser.readI16(glyph_data, 4),
+                .x_max = try parser.readI16(glyph_data, 6),
+                .y_max = try parser.readI16(glyph_data, 8),
+                .allocator = allocator,
+            };
+        } else {
+            var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
+            if (self.gvar) |gvar| {
+                try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
+            }
+            return outline;
+        }
+    }
 };
 
 test "Font API integration test" {
@@ -526,4 +823,44 @@ test "Font API WOFF2 integration test" {
     var outline = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
     defer outline.deinit();
     try std.testing.expect(outline.contours.len > 0);
+}
+
+test "Variable Font fvar parsing" {
+    const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expect(font.isVariableFont());
+    try std.testing.expectEqual(@as(u16, 1), font.getAxisCount());
+
+    const axis = try font.getAxis(0);
+    try std.testing.expect(std.mem.eql(u8, &axis.tag, "wght"));
+}
+
+test "Variable Font gvar apply deltas" {
+    const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_id = try font.getGlyphId(0x0041);
+
+    var outline_default = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
+    defer outline_default.deinit();
+
+    const normalized = [_]f32{1.0};
+    var outline_bold = (try font.getGlyphOutlineWithVariation(std.testing.allocator, glyph_id, &normalized)) orelse return error.TableNotFound;
+    defer outline_bold.deinit();
+
+    try std.testing.expectEqual(outline_default.contours.len, outline_bold.contours.len);
+
+    var differs = false;
+    for (outline_default.contours, outline_bold.contours) |dc, bc| {
+        for (dc.points, bc.points) |dp, bp| {
+            if (dp.x != bp.x or dp.y != bp.y) {
+                differs = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(differs);
 }
