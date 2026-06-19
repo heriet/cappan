@@ -23,6 +23,7 @@ const hvar_mod = @import("table/hvar.zig");
 const vhea_mod = @import("table/vhea.zig");
 const vmtx_mod = @import("table/vmtx.zig");
 const vvar_mod = @import("table/vvar.zig");
+const mvar_mod = @import("table/mvar.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -58,6 +59,7 @@ pub const Font = struct {
     vhea: ?vhea_mod.VheaTable,
     vmtx: ?vmtx_mod.VmtxTable,
     vvar: ?vvar_mod.VvarTable,
+    mvar: ?mvar_mod.MvarTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -302,6 +304,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const mvar_table: ?mvar_mod.MvarTable = blk: {
+            const mvar_record = parser.findTable(offset_table, "MVAR".*);
+            if (mvar_record) |rec| {
+                const mvar_data = try parser.getTableData(data, rec);
+                break :blk mvar_mod.parse(mvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -329,6 +340,7 @@ pub const Font = struct {
             .vhea = vhea_table,
             .vmtx = vmtx_table,
             .vvar = vvar_table,
+            .mvar = mvar_table,
         };
     }
 
@@ -430,6 +442,31 @@ pub const Font = struct {
             metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
         }
         return metrics;
+    }
+
+    pub fn getMetricDelta(self: Font, tag: [4]u8, normalized_coords: []const f32) !i32 {
+        if (self.mvar) |mvar| {
+            var adjusted_coords_buf: [16]f32 = undefined;
+            var adjusted: []f32 = undefined;
+            var allocated = false;
+            if (normalized_coords.len <= 16) {
+                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
+                adjusted = adjusted_coords_buf[0..normalized_coords.len];
+            } else {
+                const heap = try self.allocator.alloc(f32, normalized_coords.len);
+                @memcpy(heap, normalized_coords);
+                adjusted = heap;
+                allocated = true;
+            }
+            defer if (allocated) self.allocator.free(adjusted);
+
+            if (self.avar) |avar| {
+                try avar.mapNormalizedCoords(adjusted);
+            }
+
+            return mvar.getMetricDelta(tag, adjusted);
+        }
+        return 0;
     }
 
     pub fn getUnitsPerEm(self: Font) u16 {

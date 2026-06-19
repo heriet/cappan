@@ -34,6 +34,7 @@ pub const font = struct {
         pub const vhea = @import("font/table/vhea.zig");
         pub const vmtx = @import("font/table/vmtx.zig");
         pub const vvar = @import("font/table/vvar.zig");
+        pub const mvar = @import("font/table/mvar.zig");
     };
 };
 
@@ -93,6 +94,7 @@ test {
     _ = @import("font/table/vhea.zig");
     _ = @import("font/table/vmtx.zig");
     _ = @import("font/table/vvar.zig");
+    _ = @import("font/table/mvar.zig");
     _ = @import("font/charstring.zig");
     _ = @import("raster/outline.zig");
     _ = @import("raster/scanline.zig");
