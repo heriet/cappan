@@ -18,6 +18,7 @@ const cbdt_mod = @import("table/cbdt.zig");
 const name_mod = @import("table/name.zig");
 const fvar_mod = @import("table/fvar.zig");
 const gvar_mod = @import("table/gvar.zig");
+const avar_mod = @import("table/avar.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -48,6 +49,7 @@ pub const Font = struct {
     name: ?name_mod.NameTable,
     fvar: ?fvar_mod.FvarTable,
     gvar: ?gvar_mod.GvarTable,
+    avar: ?avar_mod.AvarTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -246,6 +248,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const avar_table: ?avar_mod.AvarTable = blk: {
+            const avar_record = parser.findTable(offset_table, "avar".*);
+            if (avar_record) |rec| {
+                const avar_data = try parser.getTableData(data, rec);
+                break :blk avar_mod.parse(avar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -268,6 +279,7 @@ pub const Font = struct {
             .name = name_table,
             .fvar = fvar_table,
             .gvar = gvar_table,
+            .avar = avar_table,
         };
     }
 
@@ -449,9 +461,17 @@ pub const Font = struct {
         glyph_id: u16,
         normalized_coords: []const f32,
     ) !?glyph_mod.GlyphOutline {
+        const adjusted_coords = try allocator.alloc(f32, normalized_coords.len);
+        defer allocator.free(adjusted_coords);
+        @memcpy(adjusted_coords, normalized_coords);
+
+        if (self.avar) |avar| {
+            try avar.mapNormalizedCoords(adjusted_coords);
+        }
+
         var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
         if (self.gvar) |gvar| {
-            try gvar.applyDeltas(allocator, glyph_id, &outline, normalized_coords);
+            try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
         }
         return outline;
     }

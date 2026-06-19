@@ -33,7 +33,7 @@ pyftsubset "$SOURCE_VF" \
   --output-file="$OUTPUT" \
   --unicodes="U+0041-0043,U+0061-0063,U+0020-007E" \
   --layout-features="" \
-  --drop-tables="DSIG,GPOS,GSUB,GDEF,BASE,MATH,STAT,MVAR,HVAR,VVAR,avar,cvar"
+  --drop-tables="DSIG,GPOS,GSUB,GDEF,BASE,MATH,STAT,MVAR,VVAR,cvar"
 
 echo "  OK: SourceSans3VF-Subset.ttf ($(wc -c < "$OUTPUT") bytes)"
 echo "Done."
