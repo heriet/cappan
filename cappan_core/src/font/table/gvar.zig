@@ -248,6 +248,7 @@ const UnpackPointsResult = struct {
 
 fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: usize) !UnpackPointsResult {
     var pos = offset;
+    if (pos >= data.len) return error.UnexpectedEof;
     const count_byte = try parser.readU8(data, pos);
     pos += 1;
     var count: u16 = undefined;
@@ -255,6 +256,7 @@ fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: us
         return .{ .points = null, .new_offset = pos };
     }
     if (count_byte & 0x80 != 0) {
+        if (pos >= data.len) return error.UnexpectedEof;
         const next = try parser.readU8(data, pos);
         pos += 1;
         count = (@as(u16, count_byte & 0x7F) << 8) | @as(u16, next);
@@ -267,6 +269,7 @@ fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: us
     var i: usize = 0;
     var accumulated: u16 = 0;
     while (i < count) {
+        if (pos >= data.len) return error.UnexpectedEof;
         const control = try parser.readU8(data, pos);
         pos += 1;
         const run_count: usize = @as(usize, control & 0x7F) + 1;
@@ -275,9 +278,11 @@ fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: us
         for (0..run_count) |_| {
             if (i >= count) break;
             if (is_word) {
+                if (pos + 2 > data.len) return error.UnexpectedEof;
                 accumulated += try parser.readU16(data, pos);
                 pos += 2;
             } else {
+                if (pos >= data.len) return error.UnexpectedEof;
                 accumulated += @as(u16, try parser.readU8(data, pos));
                 pos += 1;
             }
