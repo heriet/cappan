@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
+const ivs = @import("item_variation_store.zig");
 
 pub const MvarTable = struct {
     data: []const u8,
@@ -24,7 +25,7 @@ pub const MvarTable = struct {
             if (order == .eq) {
                 const outer = try parser.readU16(self.data, rec_offset + 4);
                 const inner = try parser.readU16(self.data, rec_offset + 6);
-                return self.getItemDelta(outer, inner, normalized_coords);
+                return ivs.getItemDelta(self.data, @as(usize, self.item_variation_store_offset), outer, inner, normalized_coords);
             } else if (order == .lt) {
                 low = mid + 1;
             } else {
@@ -32,112 +33,6 @@ pub const MvarTable = struct {
             }
         }
         return 0; // Tag not found -- no variation for this metric
-    }
-
-    fn getItemDelta(self: MvarTable, outer_index: u16, inner_index: u16, normalized_coords: []const f32) !i32 {
-        const store_offset = @as(usize, self.item_variation_store_offset);
-        // ItemVariationStore header
-        // format: u16 at store_offset
-        const region_list_offset_raw = try parser.readU32(self.data, store_offset + 2);
-        const region_list_offset = store_offset + @as(usize, region_list_offset_raw);
-        const item_data_count = try parser.readU16(self.data, store_offset + 6);
-
-        if (outer_index >= item_data_count) return 0;
-
-        // Get ItemVariationData offset
-        const item_data_offset_raw = try parser.readU32(self.data, store_offset + 8 + @as(usize, outer_index) * 4);
-        const item_data_offset = store_offset + @as(usize, item_data_offset_raw);
-
-        // Parse ItemVariationData
-        const item_count = try parser.readU16(self.data, item_data_offset);
-        if (inner_index >= item_count) return 0;
-
-        const word_delta_count_raw = try parser.readU16(self.data, item_data_offset + 2);
-        const long_words = (word_delta_count_raw & 0x8000) != 0;
-        const word_delta_count: u16 = word_delta_count_raw & 0x7FFF;
-        const region_index_count = try parser.readU16(self.data, item_data_offset + 4);
-
-        // Read region indices
-        const region_indices_offset = item_data_offset + 6;
-
-        // Calculate delta row offset
-        const long_size: usize = if (long_words) 4 else 2;
-        const short_size: usize = if (long_words) 2 else 1;
-        const row_size = @as(usize, word_delta_count) * long_size + @as(usize, region_index_count -| word_delta_count) * short_size;
-        const delta_sets_offset = region_indices_offset + @as(usize, region_index_count) * 2;
-        const row_offset = delta_sets_offset + @as(usize, inner_index) * row_size;
-
-        // Read VariationRegionList
-        const axis_count = try parser.readU16(self.data, region_list_offset);
-
-        // Compute delta
-        var delta: f32 = 0.0;
-        var col_offset = row_offset;
-        for (0..region_index_count) |col| {
-            // Read delta value
-            var delta_value: i32 = undefined;
-            if (col < word_delta_count) {
-                if (long_words) {
-                    delta_value = try parser.readI32(self.data, col_offset);
-                    col_offset += 4;
-                } else {
-                    delta_value = @as(i32, try parser.readI16(self.data, col_offset));
-                    col_offset += 2;
-                }
-            } else {
-                if (long_words) {
-                    delta_value = @as(i32, try parser.readI16(self.data, col_offset));
-                    col_offset += 2;
-                } else {
-                    delta_value = @as(i32, try parser.readI8(self.data, col_offset));
-                    col_offset += 1;
-                }
-            }
-
-            if (delta_value == 0) continue;
-
-            // Get region index
-            const region_idx = try parser.readU16(self.data, region_indices_offset + col * 2);
-
-            // Compute region scalar
-            var scalar: f32 = 1.0;
-            const region_offset = region_list_offset + 4 + @as(usize, region_idx) * @as(usize, axis_count) * 6;
-            for (0..@as(usize, axis_count)) |axis| {
-                const axis_offset = region_offset + axis * 6;
-                const start = try parser.readF2Dot14(self.data, axis_offset);
-                const peak = try parser.readF2Dot14(self.data, axis_offset + 2);
-                const end_val = try parser.readF2Dot14(self.data, axis_offset + 4);
-
-                if (peak == 0.0) continue;
-
-                const coord = if (axis < normalized_coords.len) normalized_coords[axis] else 0.0;
-
-                if (coord == peak) continue;
-
-                if (coord <= start or coord >= end_val) {
-                    scalar = 0.0;
-                    break;
-                }
-
-                if (coord < peak) {
-                    if (peak == start) {
-                        scalar = 0.0;
-                        break;
-                    }
-                    scalar *= (coord - start) / (peak - start);
-                } else {
-                    if (peak == end_val) {
-                        scalar = 0.0;
-                        break;
-                    }
-                    scalar *= (end_val - coord) / (end_val - peak);
-                }
-            }
-
-            delta += @as(f32, @floatFromInt(delta_value)) * scalar;
-        }
-
-        return @as(i32, @intFromFloat(@round(delta)));
     }
 };
 

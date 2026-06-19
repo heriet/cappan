@@ -387,32 +387,42 @@ pub const Font = struct {
         return self.hmtx.getMetrics(glyph_id);
     }
 
+    fn adjustCoordsForVariation(
+        self: Font,
+        normalized_coords: []const f32,
+        stack_buf: []f32,
+    ) !struct { coords: []f32, allocated: bool } {
+        var adjusted: []f32 = undefined;
+        var allocated = false;
+        if (normalized_coords.len <= stack_buf.len) {
+            @memcpy(stack_buf[0..normalized_coords.len], normalized_coords);
+            adjusted = stack_buf[0..normalized_coords.len];
+        } else {
+            const heap = try self.allocator.alloc(f32, normalized_coords.len);
+            @memcpy(heap, normalized_coords);
+            adjusted = heap;
+            allocated = true;
+        }
+
+        if (self.avar) |avar| {
+            try avar.mapNormalizedCoords(adjusted);
+        }
+
+        return .{ .coords = adjusted, .allocated = allocated };
+    }
+
     pub fn getHMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !hmtx_mod.HMetrics {
         var metrics = try self.hmtx.getMetrics(glyph_id);
         if (self.hvar) |hvar| {
-            var adjusted_coords_buf: [16]f32 = undefined;
-            var adjusted: []f32 = undefined;
-            var allocated = false;
-            if (normalized_coords.len <= 16) {
-                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
-                adjusted = adjusted_coords_buf[0..normalized_coords.len];
-            } else {
-                const heap = try self.allocator.alloc(f32, normalized_coords.len);
-                @memcpy(heap, normalized_coords);
-                adjusted = heap;
-                allocated = true;
-            }
-            defer if (allocated) self.allocator.free(adjusted);
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
 
-            if (self.avar) |avar| {
-                try avar.mapNormalizedCoords(adjusted);
-            }
-
-            const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adjusted);
+            const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adj.coords);
             const new_aw = @as(i32, metrics.advance_width) + aw_delta;
             metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
 
-            const lsb_delta = try hvar.getLsbDelta(glyph_id, adjusted);
+            const lsb_delta = try hvar.getLsbDelta(glyph_id, adj.coords);
             const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
             metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
         }
@@ -427,29 +437,15 @@ pub const Font = struct {
     pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
         var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
         if (self.vvar) |vvar| {
-            var adjusted_coords_buf: [16]f32 = undefined;
-            var adjusted: []f32 = undefined;
-            var allocated = false;
-            if (normalized_coords.len <= 16) {
-                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
-                adjusted = adjusted_coords_buf[0..normalized_coords.len];
-            } else {
-                const heap = try self.allocator.alloc(f32, normalized_coords.len);
-                @memcpy(heap, normalized_coords);
-                adjusted = heap;
-                allocated = true;
-            }
-            defer if (allocated) self.allocator.free(adjusted);
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
 
-            if (self.avar) |avar| {
-                try avar.mapNormalizedCoords(adjusted);
-            }
-
-            const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adjusted);
+            const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adj.coords);
             const new_ah = @as(i32, metrics.advance_height) + ah_delta;
             metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
 
-            const tsb_delta = try vvar.getTsbDelta(glyph_id, adjusted);
+            const tsb_delta = try vvar.getTsbDelta(glyph_id, adj.coords);
             const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
             metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
         }
@@ -458,25 +454,11 @@ pub const Font = struct {
 
     pub fn getMetricDelta(self: Font, tag: [4]u8, normalized_coords: []const f32) !i32 {
         if (self.mvar) |mvar| {
-            var adjusted_coords_buf: [16]f32 = undefined;
-            var adjusted: []f32 = undefined;
-            var allocated = false;
-            if (normalized_coords.len <= 16) {
-                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
-                adjusted = adjusted_coords_buf[0..normalized_coords.len];
-            } else {
-                const heap = try self.allocator.alloc(f32, normalized_coords.len);
-                @memcpy(heap, normalized_coords);
-                adjusted = heap;
-                allocated = true;
-            }
-            defer if (allocated) self.allocator.free(adjusted);
+            var buf: [16]f32 = undefined;
+            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+            defer if (adj.allocated) self.allocator.free(adj.coords);
 
-            if (self.avar) |avar| {
-                try avar.mapNormalizedCoords(adjusted);
-            }
-
-            return mvar.getMetricDelta(tag, adjusted);
+            return mvar.getMetricDelta(tag, adj.coords);
         }
         return 0;
     }
