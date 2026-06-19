@@ -144,13 +144,13 @@ pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inn
             }
 
             if (coord < peak) {
-                if (peak == start) {
+                if (@abs(peak - start) < 1e-10) {
                     scalar = 0.0;
                     break;
                 }
                 scalar *= (coord - start) / (peak - start);
             } else {
-                if (peak == end_val) {
+                if (@abs(end_val - peak) < 1e-10) {
                     scalar = 0.0;
                     break;
                 }
