@@ -305,6 +305,7 @@ fn unpackDeltas(allocator: std.mem.Allocator, data: []const u8, offset: usize, c
     var pos = offset;
     var i: usize = 0;
     while (i < count) {
+        if (pos >= data.len) return error.UnexpectedEof;
         const control = try parser.readU8(data, pos);
         pos += 1;
         const run_count: usize = @as(usize, control & 0x3F) + 1;
@@ -320,6 +321,7 @@ fn unpackDeltas(allocator: std.mem.Allocator, data: []const u8, offset: usize, c
         } else if (is_word) {
             for (0..run_count) |_| {
                 if (i >= count) break;
+                if (pos + 2 > data.len) return error.UnexpectedEof;
                 deltas[i] = try parser.readI16(data, pos);
                 pos += 2;
                 i += 1;
@@ -327,6 +329,7 @@ fn unpackDeltas(allocator: std.mem.Allocator, data: []const u8, offset: usize, c
         } else {
             for (0..run_count) |_| {
                 if (i >= count) break;
+                if (pos >= data.len) return error.UnexpectedEof;
                 deltas[i] = @as(i16, try parser.readI8(data, pos));
                 pos += 1;
                 i += 1;
