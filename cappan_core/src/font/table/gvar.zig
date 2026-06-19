@@ -125,6 +125,8 @@ pub const GvarTable = struct {
             defer allocator.free(peak_coords);
 
             if (tuple_index & EMBEDDED_PEAK_TUPLE != 0) {
+                const peak_size = @as(usize, self.axis_count) * 2;
+                if (header_offset + peak_size > glyph_var_data.len) return error.UnexpectedEof;
                 for (0..self.axis_count) |i| {
                     peak_coords[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
                     header_offset += 2;
@@ -145,6 +147,8 @@ pub const GvarTable = struct {
             defer if (end_coords) |ec| allocator.free(ec);
 
             if (tuple_index & INTERMEDIATE_REGION != 0) {
+                const region_size = @as(usize, self.axis_count) * 4;
+                if (header_offset + region_size > glyph_var_data.len) return error.UnexpectedEof;
                 start_coords = try allocator.alloc(f32, self.axis_count);
                 for (0..self.axis_count) |i| {
                     start_coords.?[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
