@@ -19,6 +19,7 @@ const name_mod = @import("table/name.zig");
 const fvar_mod = @import("table/fvar.zig");
 const gvar_mod = @import("table/gvar.zig");
 const avar_mod = @import("table/avar.zig");
+const hvar_mod = @import("table/hvar.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -50,6 +51,7 @@ pub const Font = struct {
     fvar: ?fvar_mod.FvarTable,
     gvar: ?gvar_mod.GvarTable,
     avar: ?avar_mod.AvarTable,
+    hvar: ?hvar_mod.HvarTable,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -257,6 +259,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const hvar_table: ?hvar_mod.HvarTable = blk: {
+            const hvar_record = parser.findTable(offset_table, "HVAR".*);
+            if (hvar_record) |rec| {
+                const hvar_data = try parser.getTableData(data, rec);
+                break :blk hvar_mod.parse(hvar_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -280,6 +291,7 @@ pub const Font = struct {
             .fvar = fvar_table,
             .gvar = gvar_table,
             .avar = avar_table,
+            .hvar = hvar_table,
         };
     }
 
@@ -312,6 +324,38 @@ pub const Font = struct {
 
     pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {
         return self.hmtx.getMetrics(glyph_id);
+    }
+
+    pub fn getHMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !hmtx_mod.HMetrics {
+        var metrics = try self.hmtx.getMetrics(glyph_id);
+        if (self.hvar) |hvar| {
+            var adjusted_coords_buf: [16]f32 = undefined;
+            var adjusted: []f32 = undefined;
+            var allocated = false;
+            if (normalized_coords.len <= 16) {
+                @memcpy(adjusted_coords_buf[0..normalized_coords.len], normalized_coords);
+                adjusted = adjusted_coords_buf[0..normalized_coords.len];
+            } else {
+                const heap = try self.allocator.alloc(f32, normalized_coords.len);
+                @memcpy(heap, normalized_coords);
+                adjusted = heap;
+                allocated = true;
+            }
+            defer if (allocated) self.allocator.free(adjusted);
+
+            if (self.avar) |avar| {
+                try avar.mapNormalizedCoords(adjusted);
+            }
+
+            const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adjusted);
+            const new_aw = @as(i32, metrics.advance_width) + aw_delta;
+            metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
+
+            const lsb_delta = try hvar.getLsbDelta(glyph_id, adjusted);
+            const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
+            metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        }
+        return metrics;
     }
 
     pub fn getUnitsPerEm(self: Font) u16 {
