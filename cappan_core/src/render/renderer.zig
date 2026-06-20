@@ -2,9 +2,14 @@ const std = @import("std");
 const font_mod = @import("../font/font.zig");
 const shaper = @import("../layout/shaper.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
+const outline_mod = @import("../raster/outline.zig");
+const scanline_mod = @import("../raster/scanline.zig");
+const stroker_mod = @import("../raster/stroker.zig");
 const rgba_bitmap_mod = @import("rgba_bitmap.zig");
 const gamma_mod = @import("gamma.zig");
 const png_decoder_mod = @import("../image/png_decoder.zig");
+const paint_mod = @import("paint.zig");
+const glyph_mod = @import("../font/glyph.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -19,6 +24,7 @@ pub const RenderOptions = struct {
     max_width: ?f32 = null,
     text_align: shaper.TextAlign = .left,
     lcd_rendering: bool = false,
+    paint_stack: ?[]const paint_mod.PaintOperation = null,
 };
 
 const CachedRaster = struct {
@@ -43,7 +49,21 @@ pub fn glyphCacheKey(font_index: u8, glyph_id: u16) u32 {
     return (@as(u32, font_index) << 16) | @as(u32, glyph_id);
 }
 
+const PaintOpKind = enum(u8) { fill, stroke };
+
+const PaintCacheKey = struct {
+    font_index: u8,
+    glyph_id: u16,
+    op_kind: PaintOpKind,
+    stroke_width_q: u16,
+    stroke_position: stroker_mod.StrokePosition,
+};
+
 pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !rgba_bitmap_mod.RgbaBitmap {
+    if (options.paint_stack) |paint_stack| {
+        return renderTextPaintStack(allocator, fonts, text, options, paint_stack);
+    }
+
     var layout = try shaper.layoutText(allocator, fonts, text, .{
         .pixel_size = options.pixel_size,
         .max_width = options.max_width,
@@ -245,6 +265,224 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     }
 
     return bitmap;
+}
+
+fn renderTextPaintStack(
+    allocator: std.mem.Allocator,
+    fonts: []const font_mod.Font,
+    text: []const u8,
+    options: RenderOptions,
+    paint_stack: []const paint_mod.PaintOperation,
+) !rgba_bitmap_mod.RgbaBitmap {
+    var layout = try shaper.layoutText(allocator, fonts, text, .{
+        .pixel_size = options.pixel_size,
+        .max_width = options.max_width,
+        .text_align = options.text_align,
+    });
+    defer layout.deinit();
+
+    var max_stroke_expansion: f32 = 0.0;
+    const max_expansion_limit: f32 = 4096.0;
+    for (paint_stack) |op| {
+        switch (op) {
+            .fill => {},
+            .stroke => |stroke| {
+                const width = stroke.width.resolveToPixels(options.pixel_size);
+                if (std.math.isNan(width) or std.math.isInf(width)) continue;
+                const expansion = switch (stroke.position) {
+                    .center => width * 0.5,
+                    .outside => width,
+                    .inside => 0.0,
+                };
+                max_stroke_expansion = @max(max_stroke_expansion, expansion);
+            },
+        }
+    }
+    max_stroke_expansion = @min(max_stroke_expansion, max_expansion_limit);
+
+    const extended_padding = options.padding + @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
+    const pad = @as(f32, @floatFromInt(extended_padding));
+
+    const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
+    const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+
+    if (bmp_width == 0 or bmp_height == 0) {
+        return rgba_bitmap_mod.RgbaBitmap.init(allocator, 1, 1, options.bg_color);
+    }
+
+    var bitmap = try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, options.bg_color);
+    errdefer bitmap.deinit();
+
+    const base_baseline_y = pad + layout.ascender_px;
+
+    var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
+    defer {
+        var it = paint_cache.valueIterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.pixels);
+        }
+        paint_cache.deinit(allocator);
+    }
+
+    for (layout.positions) |pos| {
+        const glyph_font = fonts[pos.font_index];
+        const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
+
+        for (paint_stack) |op| {
+            const cache_key = paintCacheKey(pos.font_index, pos.glyph_id, op, options.pixel_size);
+
+            if (paint_cache.get(cache_key)) |cached| {
+                if (cached.width == 0 or cached.height == 0) continue;
+                blendRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, paintColor(op), options.gamma_correction, options.fractional_positioning);
+                continue;
+            }
+
+            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
+            if (outline_opt == null) {
+                const empty_pixels = try allocator.alloc(u8, 0);
+                try paint_cache.put(allocator, cache_key, .{
+                    .pixels = empty_pixels,
+                    .width = 0,
+                    .height = 0,
+                    .offset_x = 0,
+                    .offset_y = 0,
+                });
+                continue;
+            }
+            var outline = outline_opt.?;
+            defer outline.deinit();
+
+            const entry = switch (op) {
+                .fill => blk: {
+                    const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding);
+                    break :blk CachedRaster{
+                        .pixels = glyph_result.pixels,
+                        .width = glyph_result.width,
+                        .height = glyph_result.height,
+                        .offset_x = glyph_result.offset_x,
+                        .offset_y = glyph_result.offset_y,
+                    };
+                },
+                .stroke => |stroke| try rasterizeStrokeGlyph(allocator, outline, glyph_scale, extended_padding, stroke, options.pixel_size),
+            };
+            errdefer allocator.free(entry.pixels);
+            try paint_cache.put(allocator, cache_key, entry);
+
+            if (entry.width == 0 or entry.height == 0) continue;
+            blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, paintColor(op), options.gamma_correction, options.fractional_positioning);
+        }
+    }
+
+    return bitmap;
+}
+
+fn paintCacheKey(font_index: u8, glyph_id: u16, op: paint_mod.PaintOperation, pixel_size: f32) PaintCacheKey {
+    return switch (op) {
+        .fill => .{
+            .font_index = font_index,
+            .glyph_id = glyph_id,
+            .op_kind = .fill,
+            .stroke_width_q = 0,
+            .stroke_position = .center,
+        },
+        .stroke => |stroke| .{
+            .font_index = font_index,
+            .glyph_id = glyph_id,
+            .op_kind = .stroke,
+            .stroke_width_q = quantizedStrokeWidth(stroke.width.resolveToPixels(pixel_size)),
+            .stroke_position = stroke.position,
+        },
+    };
+}
+
+fn quantizedStrokeWidth(width: f32) u16 {
+    if (width <= 0.0) return 0;
+    const q = @round(width * 4.0);
+    if (q >= @as(f32, @floatFromInt(std.math.maxInt(u16)))) return std.math.maxInt(u16);
+    return @intFromFloat(q);
+}
+
+fn paintColor(op: paint_mod.PaintOperation) rgba_bitmap_mod.Color {
+    return switch (op) {
+        .fill => |fill| applyOpacity(fill.color, fill.opacity),
+        .stroke => |stroke| applyOpacity(stroke.color, stroke.opacity),
+    };
+}
+
+fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Color {
+    const clamped = @max(0.0, @min(1.0, opacity));
+    return .{
+        .r = color.r,
+        .g = color.g,
+        .b = color.b,
+        .a = @intFromFloat(@round(@as(f32, @floatFromInt(color.a)) * clamped)),
+    };
+}
+
+fn rasterizeStrokeGlyph(
+    allocator: std.mem.Allocator,
+    glyph_outline: glyph_mod.GlyphOutline,
+    scale: f32,
+    padding: u32,
+    stroke: paint_mod.StrokePaint,
+    pixel_size: f32,
+) !CachedRaster {
+    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
+    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale;
+    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale;
+    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale;
+
+    const glyph_width = @max(0.0, x_max_px - x_min_px);
+    const glyph_height = @max(0.0, y_max_px - y_min_px);
+
+    const pad_f = @as(f32, @floatFromInt(padding));
+    const max_dim: f32 = 16384.0;
+    const w_f = @ceil(glyph_width + pad_f * 2);
+    const h_f = @ceil(glyph_height + pad_f * 2);
+    const width: u32 = if (w_f > max_dim or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
+    const height: u32 = if (h_f > max_dim or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
+
+    if (width == 0 or height == 0) {
+        return .{
+            .pixels = try allocator.alloc(u8, 0),
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+        };
+    }
+
+    const offset_x = -x_min_px + pad_f;
+    const offset_y = y_max_px + pad_f;
+
+    const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, offset_x, offset_y);
+    defer outline_mod.freeScaledContours(allocator, scaled);
+
+    var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
+    defer all_segments.deinit(allocator);
+
+    const width_px = stroke.width.resolveToPixels(pixel_size);
+    for (scaled) |contour_points| {
+        const segs = try outline_mod.flattenContour(allocator, contour_points);
+        defer allocator.free(segs);
+
+        const stroke_segments = try stroker_mod.generateStrokeOutline(allocator, segs, width_px, stroke.join, stroke.position, stroke.miter_limit);
+        defer allocator.free(stroke_segments);
+        try all_segments.appendSlice(allocator, stroke_segments);
+    }
+
+    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height);
+
+    return .{
+        .pixels = pixels,
+        .width = width,
+        .height = height,
+        .offset_x = offset_x,
+        .offset_y = offset_y,
+    };
 }
 
 fn blendSubpixel(
@@ -452,6 +690,45 @@ test "render text with red fg color" {
         }
     }
     try std.testing.expect(has_red_pixel);
+}
+
+test "render text with paint stack outside stroke and fill" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const red = rgba_bitmap_mod.Color{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    const paint_stack = [_]paint_mod.PaintOperation{
+        .{ .stroke = .{ .color = red, .width = .{ .px = 6.0 }, .position = .outside } },
+        .{ .fill = .{ .color = rgba_bitmap_mod.Color.black } },
+    };
+
+    var base = try renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{ .pixel_size = 32 });
+    defer base.deinit();
+
+    var bitmap = try renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = 32,
+        .bg_color = rgba_bitmap_mod.Color.white,
+        .paint_stack = &paint_stack,
+    });
+    defer bitmap.deinit();
+
+    try std.testing.expect(bitmap.width >= base.width + 12);
+    try std.testing.expect(bitmap.height >= base.height + 12);
+
+    var has_red = false;
+    var has_dark = false;
+    var i: usize = 0;
+    while (i < bitmap.pixels.len) : (i += 4) {
+        const r = bitmap.pixels[i];
+        const g = bitmap.pixels[i + 1];
+        const b = bitmap.pixels[i + 2];
+        if (r > 200 and g < 120 and b < 120) has_red = true;
+        if (r < 80 and g < 80 and b < 80) has_dark = true;
+    }
+
+    try std.testing.expect(has_red);
+    try std.testing.expect(has_dark);
 }
 
 test "render text with repeated characters uses cache" {
