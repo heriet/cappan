@@ -27,9 +27,6 @@ pub fn generateStrokeOutline(
 ) ![]Segment {
     if (segments.len == 0 or !(width > 0.0)) return try allocator.alloc(Segment, 0);
 
-    const offsets = try allocator.alloc(OffsetSegment, segments.len);
-    defer allocator.free(offsets);
-
     const outer_offset: f32 = switch (position) {
         .center => width * 0.5,
         .outside => width,
@@ -41,29 +38,20 @@ pub fn generateStrokeOutline(
         .inside => -width,
     };
 
-    for (segments, 0..) |seg, i| {
+    var offset_list: std.ArrayList(OffsetSegment) = .empty;
+    defer offset_list.deinit(allocator);
+
+    for (segments) |seg| {
         const dx = seg.x1 - seg.x0;
         const dy = seg.y1 - seg.y0;
         const len = @sqrt(dx * dx + dy * dy);
-        if (len <= 0.0001) {
-            offsets[i] = .{
-                .outer = seg,
-                .inner = seg,
-                .x0 = seg.x0,
-                .y0 = seg.y0,
-                .x1 = seg.x1,
-                .y1 = seg.y1,
-                .dir_x = 0.0,
-                .dir_y = 0.0,
-            };
-            continue;
-        }
+        if (len <= 0.0001) continue;
 
         const dir_x = dx / len;
         const dir_y = dy / len;
         const nx = -dy / len;
         const ny = dx / len;
-        offsets[i] = .{
+        try offset_list.append(allocator, .{
             .outer = offsetSegment(seg, nx, ny, outer_offset),
             .inner = offsetSegment(seg, nx, ny, inner_offset),
             .x0 = seg.x0,
@@ -72,8 +60,11 @@ pub fn generateStrokeOutline(
             .y1 = seg.y1,
             .dir_x = dir_x,
             .dir_y = dir_y,
-        };
+        });
     }
+
+    const offsets = offset_list.items;
+    if (offsets.len == 0) return try allocator.alloc(Segment, 0);
 
     var out: std.ArrayList(Segment) = .empty;
     errdefer out.deinit(allocator);
