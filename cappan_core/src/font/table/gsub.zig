@@ -1,12 +1,20 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
 const otlayout = @import("otlayout.zig");
+const gdef_mod = @import("gdef.zig");
+
+fn shouldSkipGlyph(gdef: ?gdef_mod.GdefTable, glyph_id: u16, lookup_flag: u16) bool {
+    if (lookup_flag & 0xFFFE == 0) return false;
+    const g = gdef orelse return false;
+    return g.shouldSkipGlyph(glyph_id, lookup_flag, null);
+}
 
 pub const GsubTable = struct {
     data: []const u8,
     script_list_offset: u16,
     feature_list_offset: u16,
     lookup_list_offset: u16,
+    gdef: ?gdef_mod.GdefTable,
 
     pub fn applyFeatures(
         self: GsubTable,
@@ -64,10 +72,10 @@ pub const GsubTable = struct {
             }
 
             switch (effective_type) {
-                1 => applySingleSubst(self.data, effective_offset, glyphs),
-                2 => try applyMultipleSubst(self.data, effective_offset, glyphs, allocator),
-                3 => applyAlternateSubst(self.data, effective_offset, glyphs),
-                4 => applyLigatureSubst(self.data, effective_offset, glyphs),
+                1 => applySingleSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
+                2 => try applyMultipleSubst(self.data, effective_offset, glyphs, allocator, self.gdef, info.lookup_flag),
+                3 => applyAlternateSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
+                4 => applyLigatureSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
                 5 => try self.applyContextSubst(allocator, effective_offset, glyphs),
                 6 => try self.applyChainingContextSubst(allocator, effective_offset, glyphs),
                 else => {},
@@ -785,16 +793,16 @@ pub const GsubTable = struct {
 
             switch (effective_type) {
                 1 => {
-                    if (applySingleSubstAtPos(self.data, effective_offset, glyphs, pos)) return;
+                    if (applySingleSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
                 },
                 2 => {
-                    if (try applyMultipleSubstAtPos(self.data, effective_offset, glyphs, pos, allocator)) return;
+                    if (try applyMultipleSubstAtPos(self.data, effective_offset, glyphs, pos, allocator, self.gdef, info.lookup_flag)) return;
                 },
                 3 => {
-                    if (applyAlternateSubstAtPos(self.data, effective_offset, glyphs, pos)) return;
+                    if (applyAlternateSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
                 },
                 4 => {
-                    if (applyLigatureSubstAtPos(self.data, effective_offset, glyphs, pos)) return;
+                    if (applyLigatureSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
                 },
                 else => {},
             }
@@ -802,7 +810,7 @@ pub const GsubTable = struct {
     }
 };
 
-fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16)) void {
+fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
     if (subtable_offset + 6 > data.len) return;
     const format = parser.readU16(data, subtable_offset) catch return;
     const cov_offset = parser.readU16(data, subtable_offset + 2) catch return;
@@ -813,6 +821,7 @@ fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Array
             const delta_raw = parser.readI16(data, subtable_offset + 4) catch return;
             const delta: i32 = delta_raw;
             for (glyphs.items) |*g| {
+                if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
                 if (coverage.getCoverageIndex(g.*) != null) {
                     const new_id = @as(i32, g.*) + delta;
                     g.* = @intCast(@as(u32, @bitCast(new_id)) & 0xFFFF);
@@ -822,6 +831,7 @@ fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Array
         2 => {
             const glyph_count = parser.readU16(data, subtable_offset + 4) catch return;
             for (glyphs.items) |*g| {
+                if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
                 const cov_idx = coverage.getCoverageIndex(g.*) orelse continue;
                 if (cov_idx >= glyph_count) continue;
                 const sub_offset = subtable_offset + 6 + @as(usize, cov_idx) * 2;
@@ -833,7 +843,7 @@ fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Array
     }
 }
 
-fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16)) void {
+fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
     if (subtable_offset + 6 > data.len) return;
     const format = parser.readU16(data, subtable_offset) catch return;
     if (format != 1) return;
@@ -845,6 +855,10 @@ fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Arr
     var i: usize = 0;
     while (i < glyphs.items.len) {
         const glyph_id = glyphs.items[i];
+        if (shouldSkipGlyph(gdef, glyph_id, lookup_flag)) {
+            i += 1;
+            continue;
+        }
         const cov_idx = coverage.getCoverageIndex(glyph_id) orelse {
             i += 1;
             continue;
@@ -925,7 +939,7 @@ fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Arr
     }
 }
 
-fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), allocator: std.mem.Allocator) !void {
+fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) !void {
     if (subtable_offset + 6 > data.len) return;
     const format = parser.readU16(data, subtable_offset) catch return;
     if (format != 1) return;
@@ -938,6 +952,7 @@ fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Arr
     while (i > 0) {
         i -= 1;
         const glyph_id = glyphs.items[i];
+        if (shouldSkipGlyph(gdef, glyph_id, lookup_flag)) continue;
         const cov_idx = coverage.getCoverageIndex(glyph_id) orelse continue;
         if (cov_idx >= seq_count) continue;
 
@@ -966,7 +981,7 @@ fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Arr
     }
 }
 
-fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16)) void {
+fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
     if (subtable_offset + 6 > data.len) return;
     const format = parser.readU16(data, subtable_offset) catch return;
     if (format != 1) return;
@@ -976,6 +991,7 @@ fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Ar
     const alt_set_count = parser.readU16(data, subtable_offset + 4) catch return;
 
     for (glyphs.items) |*g| {
+        if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
         const cov_idx = coverage.getCoverageIndex(g.*) orelse continue;
         if (cov_idx >= alt_set_count) continue;
 
@@ -993,8 +1009,9 @@ fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.Ar
     }
 }
 
-fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize) bool {
+fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
     if (pos >= glyphs.items.len) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     const cov_offset = parser.readU16(data, subtable_offset + 2) catch return false;
@@ -1021,8 +1038,9 @@ fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.
     }
 }
 
-fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, allocator: std.mem.Allocator) !bool {
+fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) !bool {
     if (pos >= glyphs.items.len) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -1061,8 +1079,9 @@ fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *st
     return true;
 }
 
-fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize) bool {
+fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
     if (pos >= glyphs.items.len) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -1088,8 +1107,9 @@ fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *s
     return true;
 }
 
-fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize) bool {
+fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
     if (pos >= glyphs.items.len) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -1156,7 +1176,7 @@ fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *st
     return false;
 }
 
-pub fn parse(data: []const u8) !GsubTable {
+pub fn parse(data: []const u8, gdef: ?gdef_mod.GdefTable) !GsubTable {
     if (data.len < 10) return error.UnexpectedEof;
     const major_version = try parser.readU16(data, 0);
     if (major_version != 1) return error.InvalidVersion;
@@ -1166,6 +1186,7 @@ pub fn parse(data: []const u8) !GsubTable {
         .script_list_offset = try parser.readU16(data, 4),
         .feature_list_offset = try parser.readU16(data, 6),
         .lookup_list_offset = try parser.readU16(data, 8),
+        .gdef = gdef,
     };
 }
 
@@ -1188,7 +1209,7 @@ test "Single Substitution Format 1: delta" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 10, 15, 20, 30 });
 
-    applySingleSubst(&data, 0, &glyphs);
+    applySingleSubst(&data, 0, &glyphs, null, 0);
 
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[0]);
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[1]);
@@ -1213,7 +1234,7 @@ test "Single Substitution Format 2: direct mapping" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 10, 15, 20 });
 
-    applySingleSubst(&data, 0, &glyphs);
+    applySingleSubst(&data, 0, &glyphs, null, 0);
 
     try std.testing.expectEqual(@as(u16, 100), glyphs.items[0]);
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[1]);
@@ -1240,7 +1261,7 @@ test "Ligature Substitution: f + i -> fi" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 40, 41, 42 });
 
-    applyLigatureSubst(&data, 0, &glyphs);
+    applyLigatureSubst(&data, 0, &glyphs, null, 0);
 
     try std.testing.expectEqual(@as(usize, 2), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 99), glyphs.items[0]);
@@ -1255,7 +1276,7 @@ test "parse GSUB table from DejaVuSans" {
 
     const gsub_record = p.findTable(offset_table, "GSUB".*) orelse return;
     const gsub_data = try p.getTableData(font_data, gsub_record);
-    const gsub = try parse(gsub_data);
+    const gsub = try parse(gsub_data, null);
 
     try std.testing.expect(gsub.script_list_offset > 0);
     try std.testing.expect(gsub.feature_list_offset > 0);
@@ -1329,7 +1350,7 @@ test "Multiple Substitution: 1 glyph to 3 glyphs" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 5, 10, 15 });
 
-    try applyMultipleSubst(&data, 0, &glyphs, std.testing.allocator);
+    try applyMultipleSubst(&data, 0, &glyphs, std.testing.allocator, null, 0);
 
     try std.testing.expectEqual(@as(usize, 5), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
@@ -1357,7 +1378,7 @@ test "Alternate Substitution: glyph 10 to first alternate 100" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 5, 10, 15 });
 
-    applyAlternateSubst(&data, 0, &glyphs);
+    applyAlternateSubst(&data, 0, &glyphs, null, 0);
 
     try std.testing.expectEqual(@as(usize, 3), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
