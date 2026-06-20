@@ -8,6 +8,7 @@ const discover = @import("cappan_discover");
 const Color = cappan_core.render.rgba_bitmap.Color;
 const RgbaBitmap = cappan_core.render.rgba_bitmap.RgbaBitmap;
 const incremental_mod = cappan_core.render.incremental;
+const paint_mod = cappan_core.render.paint;
 const png_mod = @import("image/png.zig");
 const apng_mod = @import("image/apng.zig");
 const bmp_mod = @import("image/bmp.zig");
@@ -58,9 +59,11 @@ const CommonOptions = struct {
     max_width: ?f32 = null,
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
+    paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
+    has_paint_ops: bool = false,
 };
 
-fn parseCommonOption(opts: *CommonOptions, arg: []const u8, args: *std.process.Args.Iterator) bool {
+fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []const u8, args: *std.process.Args.Iterator) bool {
     if (std.mem.eql(u8, arg, "--font")) {
         opts.font_path = args.next();
         return true;
@@ -134,6 +137,42 @@ fn parseCommonOption(opts: *CommonOptions, arg: []const u8, args: *std.process.A
     } else if (std.mem.eql(u8, arg, "--lcd")) {
         opts.lcd_rendering = true;
         return true;
+    } else if (std.mem.eql(u8, arg, "--stroke")) {
+        if (args.next()) |spec| {
+            const comma_pos = std.mem.indexOfScalar(u8, spec, ',') orelse {
+                std.debug.print("Error: invalid stroke '{s}', expected WIDTH,RRGGBB\n", .{spec});
+                return true;
+            };
+            const width_part = spec[0..comma_pos];
+            const color_part = spec[comma_pos + 1 ..];
+            const width = parseStrokeWidth(width_part) orelse {
+                std.debug.print("Error: invalid stroke width '{s}'\n", .{width_part});
+                return true;
+            };
+            const color = parseHexColor(color_part) orelse {
+                std.debug.print("Error: invalid stroke color '{s}', expected RRGGBB\n", .{color_part});
+                return true;
+            };
+            opts.paint_ops.append(allocator, .{ .stroke = .{ .color = color, .width = width } }) catch |err| {
+                std.debug.print("Error: could not store stroke paint operation: {}\n", .{err});
+                return true;
+            };
+            opts.has_paint_ops = true;
+        }
+        return true;
+    } else if (std.mem.eql(u8, arg, "--fill")) {
+        if (args.next()) |hex| {
+            const color = parseHexColor(hex) orelse {
+                std.debug.print("Error: invalid fill color '{s}', expected RRGGBB\n", .{hex});
+                return true;
+            };
+            opts.paint_ops.append(allocator, .{ .fill = .{ .color = color } }) catch |err| {
+                std.debug.print("Error: could not store fill paint operation: {}\n", .{err});
+                return true;
+            };
+            opts.has_paint_ops = true;
+        }
+        return true;
     }
     return false;
 }
@@ -187,12 +226,13 @@ const BitmapRowAdapter = struct {
 
 fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
+    defer common.paint_ops.deinit(allocator);
     var output_path: ?[]const u8 = null;
     var fallback_font_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer fallback_font_paths.deinit(allocator);
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--output")) {
             output_path = args.next();
@@ -242,14 +282,17 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     fonts_list.appendSlice(allocator, fallback_fonts.items) catch return;
     const fonts = fonts_list.items;
 
-    if (common.lcd_rendering) {
+    if (common.lcd_rendering or common.has_paint_ops) {
         var bitmap = cappan_core.render.renderer.renderText(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
             .fg_color = common.fg_color,
             .bg_color = common.bg_color,
-            .lcd_rendering = true,
+            .lcd_rendering = common.lcd_rendering,
+            .gamma_correction = common.gamma_correction,
+            .fractional_positioning = common.fractional_positioning,
             .max_width = common.max_width,
             .text_align = common.text_align,
+            .paint_stack = if (common.has_paint_ops) common.paint_ops.items else null,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -344,6 +387,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
 
 fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
+    defer common.paint_ops.deinit(allocator);
     var output_path: ?[]const u8 = null;
     var output_dir: ?[]const u8 = null;
     var num_frames: u32 = 10;
@@ -360,7 +404,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
     defer fallback_font_paths.deinit(allocator);
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--output")) {
             output_path = args.next();
@@ -664,10 +708,11 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
 
 fn cmdSubset(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common = CommonOptions{};
+    defer common.paint_ops.deinit(allocator);
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--output")) {
             output_path = args.next();
@@ -814,6 +859,7 @@ fn jsonEscapeString(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 
 fn cmdInspect(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
+    defer common.paint_ops.deinit(allocator);
     var show_summary = false;
     var show_tables = false;
     var show_validate = false;
@@ -826,7 +872,7 @@ fn cmdInspect(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.
     var format: OutputFormat = .text;
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--summary")) {
             show_summary = true;
@@ -1346,10 +1392,11 @@ fn cmdInspect(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.
 
 fn cmdSvg(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
+    defer common.paint_ops.deinit(allocator);
     var output_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--output")) {
             output_path = args.next();
@@ -1448,10 +1495,11 @@ fn cmdSvg(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iter
 
 fn cmdMetrics(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
+    defer common.paint_ops.deinit(allocator);
     var compare_path: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (parseCommonOption(&common, arg, args)) {
+        if (parseCommonOption(allocator, &common, arg, args)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--compare")) {
             compare_path = args.next();
@@ -1546,6 +1594,20 @@ fn parseHexColor(hex: []const u8) ?Color {
     return .{ .r = r, .g = g, .b = b, .a = 255 };
 }
 
+fn parseStrokeWidth(width: []const u8) ?paint_mod.StrokeWidth {
+    if (width.len == 0) return null;
+    if (std.mem.endsWith(u8, width, "em")) {
+        const value = std.fmt.parseFloat(f32, width[0 .. width.len - 2]) catch return null;
+        return .{ .em = value };
+    }
+    if (std.mem.endsWith(u8, width, "px")) {
+        const value = std.fmt.parseFloat(f32, width[0 .. width.len - 2]) catch return null;
+        return .{ .px = value };
+    }
+    const value = std.fmt.parseFloat(f32, width) catch return null;
+    return .{ .px = value };
+}
+
 fn getFileExtension(path: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, path, '.')) |dot_pos| {
         return path[dot_pos..];
@@ -1632,6 +1694,8 @@ fn printUsage() void {
         \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
+        \\  --stroke             Add outside stroke paint: WIDTH,RRGGBB (render only)
+        \\  --fill               Add fill paint: RRGGBB (render only)
         \\
         \\render options:
         \\  --output             Output PNG file path
