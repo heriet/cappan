@@ -107,50 +107,28 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
         kern_lookups.deinit(allocator);
     }
 
-    const ll_base = @as(usize, lookup_list_offset);
-    if (ll_base + 2 <= data.len) {
-        const ll_lookup_count = try parser.readU16(data, ll_base);
-        for (kern_lookup_indices.items) |lookup_idx| {
-            if (lookup_idx >= ll_lookup_count) continue;
-            const lo_offset_pos = ll_base + 2 + @as(usize, lookup_idx) * 2;
-            if (lo_offset_pos + 2 > data.len) continue;
-            const lo_offset = try parser.readU16(data, lo_offset_pos);
-            const lo_base = ll_base + @as(usize, lo_offset);
-            if (lo_base + 6 > data.len) continue;
+    for (kern_lookup_indices.items) |lookup_idx| {
+        const info = otlayout.getLookupInfo(data, lookup_list_offset, lookup_idx) orelse continue;
+        if (info.lookup_type != 2) continue; // PairAdjustment only
 
-            // Lookup:
-            // +0: lookupType u16
-            // +2: lookupFlag u16
-            // +4: subTableCount u16
-            // +6: subTableOffsets[subTableCount] u16 (relative to Lookup start)
-            const lookup_type = try parser.readU16(data, lo_base);
-            const subtable_count = try parser.readU16(data, lo_base + 4);
+        var subtables = std.ArrayListUnmanaged(PairPosSubtable).empty;
+        errdefer subtables.deinit(allocator);
 
-            // PairAdjustment = type 2
-            if (lookup_type != 2) continue;
-
-            var subtables = std.ArrayListUnmanaged(PairPosSubtable).empty;
-            errdefer subtables.deinit(allocator);
-
-            var si: usize = 0;
-            while (si < subtable_count) : (si += 1) {
-                const sub_offset_pos = lo_base + 6 + si * 2;
-                if (sub_offset_pos + 2 > data.len) break;
-                const sub_offset = try parser.readU16(data, sub_offset_pos);
-                const sub_abs = lo_base + @as(usize, sub_offset);
-                if (sub_abs + 2 > data.len) break;
-                const pos_format = try parser.readU16(data, sub_abs);
-                if (pos_format != 1 and pos_format != 2) continue;
-                try subtables.append(allocator, .{
-                    .offset = sub_abs,
-                    .format = pos_format,
-                });
-            }
-
-            try kern_lookups.append(allocator, .{
-                .subtables = try subtables.toOwnedSlice(allocator),
+        var si: usize = 0;
+        while (si < info.subtable_count) : (si += 1) {
+            const sub_abs = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
+            if (sub_abs + 2 > data.len) break;
+            const pos_format = parser.readU16(data, sub_abs) catch break;
+            if (pos_format != 1 and pos_format != 2) continue;
+            try subtables.append(allocator, .{
+                .offset = sub_abs,
+                .format = pos_format,
             });
         }
+
+        try kern_lookups.append(allocator, .{
+            .subtables = try subtables.toOwnedSlice(allocator),
+        });
     }
 
     return .{

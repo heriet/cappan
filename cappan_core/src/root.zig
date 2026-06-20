@@ -21,6 +21,7 @@ pub const font = struct {
         pub const kern = @import("font/table/kern.zig");
         pub const otlayout = @import("font/table/otlayout.zig");
         pub const gpos = @import("font/table/gpos.zig");
+        pub const gsub = @import("font/table/gsub.zig");
         pub const cff = @import("font/table/cff.zig");
         pub const colr = @import("font/table/colr.zig");
         pub const cpal = @import("font/table/cpal.zig");
@@ -85,6 +86,7 @@ test {
     _ = @import("font/table/kern.zig");
     _ = @import("font/table/otlayout.zig");
     _ = @import("font/table/gpos.zig");
+    _ = @import("font/table/gsub.zig");
     _ = @import("font/table/cff.zig");
     _ = @import("font/table/colr.zig");
     _ = @import("font/table/cpal.zig");

@@ -186,6 +186,184 @@ pub fn readValueRecord(data: []const u8, offset: usize, value_format: u16) !Valu
 }
 
 // ============================================================
+// Extension Subtable
+// ============================================================
+
+pub const ExtensionSubtable = struct {
+    effective_type: u16,
+    effective_offset: usize,
+};
+
+pub fn parseExtensionSubtable(data: []const u8, subtable_offset: usize) ?ExtensionSubtable {
+    if (subtable_offset + 8 > data.len) return null;
+    const ext_format = parser.readU16(data, subtable_offset) catch return null;
+    if (ext_format != 1) return null;
+    const effective_type = parser.readU16(data, subtable_offset + 2) catch return null;
+    const ext_offset = parser.readU32(data, subtable_offset + 4) catch return null;
+    return .{
+        .effective_type = effective_type,
+        .effective_offset = subtable_offset + @as(usize, ext_offset),
+    };
+}
+
+// ============================================================
+// ScriptList / FeatureList / LookupList helpers
+// ============================================================
+
+pub fn findLangSysOffset(
+    data: []const u8,
+    script_list_offset: u16,
+    script_tag: [4]u8,
+    lang_tag: ?[4]u8,
+) ?usize {
+    const sl_base = @as(usize, script_list_offset);
+    if (sl_base + 2 > data.len) return null;
+    const script_count = parser.readU16(data, sl_base) catch return null;
+
+    var script_base: ?usize = null;
+    var i: usize = 0;
+    while (i < script_count) : (i += 1) {
+        const rec_offset = sl_base + 2 + i * 6;
+        if (rec_offset + 6 > data.len) return null;
+        const tag = data[rec_offset .. rec_offset + 4];
+        if (std.mem.eql(u8, tag, &script_tag)) {
+            const off = parser.readU16(data, rec_offset + 4) catch return null;
+            script_base = sl_base + @as(usize, off);
+            break;
+        }
+    }
+
+    const sb = script_base orelse return null;
+    if (sb + 4 > data.len) return null;
+
+    if (lang_tag) |lt| {
+        const lang_sys_count = parser.readU16(data, sb + 2) catch return null;
+        var li: usize = 0;
+        while (li < lang_sys_count) : (li += 1) {
+            const rec_off = sb + 4 + li * 6;
+            if (rec_off + 6 > data.len) return null;
+            const tag = data[rec_off .. rec_off + 4];
+            if (std.mem.eql(u8, tag, &lt)) {
+                const off = parser.readU16(data, rec_off + 4) catch return null;
+                return sb + @as(usize, off);
+            }
+        }
+    }
+
+    const default_offset = parser.readU16(data, sb) catch return null;
+    if (default_offset == 0) return null;
+    return sb + @as(usize, default_offset);
+}
+
+pub fn collectLookupIndices(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    feature_list_offset: u16,
+    lang_sys_offset: usize,
+    feature_tags: []const [4]u8,
+) ![]u16 {
+    if (lang_sys_offset + 6 > data.len) return allocator.alloc(u16, 0);
+
+    const feature_index_count = try parser.readU16(data, lang_sys_offset + 4);
+    const fl_base = @as(usize, feature_list_offset);
+    if (fl_base + 2 > data.len) return allocator.alloc(u16, 0);
+    const feature_count = parser.readU16(data, fl_base) catch return allocator.alloc(u16, 0);
+
+    var indices = std.ArrayListUnmanaged(u16).empty;
+    defer indices.deinit(allocator);
+
+    var fi: usize = 0;
+    while (fi < feature_index_count) : (fi += 1) {
+        const idx_offset = lang_sys_offset + 6 + fi * 2;
+        if (idx_offset + 2 > data.len) break;
+        const feat_idx = parser.readU16(data, idx_offset) catch break;
+        if (feat_idx >= feature_count) continue;
+
+        const feat_rec_offset = fl_base + 2 + @as(usize, feat_idx) * 6;
+        if (feat_rec_offset + 6 > data.len) continue;
+        const feat_tag = data[feat_rec_offset .. feat_rec_offset + 4];
+
+        var matched = false;
+        for (feature_tags) |wanted| {
+            if (std.mem.eql(u8, feat_tag, &wanted)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) continue;
+
+        const feat_offset = parser.readU16(data, feat_rec_offset + 4) catch continue;
+        const feat_base = fl_base + @as(usize, feat_offset);
+        if (feat_base + 4 > data.len) continue;
+
+        const lookup_count = parser.readU16(data, feat_base + 2) catch continue;
+        var li: usize = 0;
+        while (li < lookup_count) : (li += 1) {
+            const lo_offset = feat_base + 4 + li * 2;
+            if (lo_offset + 2 > data.len) break;
+            const lookup_idx = parser.readU16(data, lo_offset) catch break;
+            try indices.append(allocator, lookup_idx);
+        }
+    }
+
+    std.mem.sort(u16, indices.items, {}, std.sort.asc(u16));
+
+    var write: usize = 0;
+    for (indices.items) |val| {
+        if (write == 0 or indices.items[write - 1] != val) {
+            indices.items[write] = val;
+            write += 1;
+        }
+    }
+
+    const result = try allocator.alloc(u16, write);
+    @memcpy(result, indices.items[0..write]);
+    return result;
+}
+
+pub const LookupInfo = struct {
+    lookup_type: u16,
+    lookup_flag: u16,
+    subtable_count: u16,
+    base_offset: usize,
+};
+
+pub fn getLookupInfo(
+    data: []const u8,
+    lookup_list_offset: u16,
+    lookup_index: u16,
+) ?LookupInfo {
+    const ll_base = @as(usize, lookup_list_offset);
+    if (ll_base + 2 > data.len) return null;
+    const ll_count = parser.readU16(data, ll_base) catch return null;
+    if (lookup_index >= ll_count) return null;
+
+    const lo_offset_pos = ll_base + 2 + @as(usize, lookup_index) * 2;
+    if (lo_offset_pos + 2 > data.len) return null;
+    const lo_offset = parser.readU16(data, lo_offset_pos) catch return null;
+    const lo_base = ll_base + @as(usize, lo_offset);
+    if (lo_base + 6 > data.len) return null;
+
+    return .{
+        .lookup_type = parser.readU16(data, lo_base) catch return null,
+        .lookup_flag = parser.readU16(data, lo_base + 2) catch return null,
+        .subtable_count = parser.readU16(data, lo_base + 4) catch return null,
+        .base_offset = lo_base,
+    };
+}
+
+pub fn getSubtableOffset(
+    data: []const u8,
+    lookup_base_offset: usize,
+    subtable_index: usize,
+) ?usize {
+    const sub_offset_pos = lookup_base_offset + 6 + subtable_index * 2;
+    if (sub_offset_pos + 2 > data.len) return null;
+    const sub_offset = parser.readU16(data, sub_offset_pos) catch return null;
+    return lookup_base_offset + @as(usize, sub_offset);
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
