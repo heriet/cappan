@@ -16,6 +16,7 @@ const gamma_mod = @import("gamma.zig");
 const outline_mod = @import("../raster/outline.zig");
 const scanline_mod = @import("../raster/scanline.zig");
 const glyphCacheKey = @import("renderer.zig").glyphCacheKey;
+const glyph_reveal_mod = @import("glyph_reveal.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -30,40 +31,9 @@ pub const SkeletonGrowOptions = skeleton_grow_mod.SkeletonGrowOptions;
 pub const TangentFlowOptions = tangent_flow_mod.TangentFlowOptions;
 pub const Easing = easing_mod.Easing;
 
-pub const GlyphInfo = struct {
-    glyph_id: u16,
-    x_min: f32,
-    y_min: f32,
-    x_max: f32,
-    y_max: f32,
-    num_contours: u16,
-};
-
-pub const CustomReveal = struct {
-    context: *anyopaque,
-    revealFn: *const fn (
-        context: *anyopaque,
-        full_coverage: []const u8,
-        output: []u8,
-        width: u32,
-        height: u32,
-        glyph_info: GlyphInfo,
-        progress: f32,
-    ) void,
-    deinitFn: ?*const fn (context: *anyopaque) void,
-};
-
-pub const RevealStrategy = union(enum) {
-    contour_trace: contour_trace_mod.ContourTraceOptions,
-    sweep: SweepOptions,
-    fade: void,
-    medial_axis: medial_axis_mod.MedialAxisOptions,
-    distance_field: distance_field_mod.DistanceFieldOptions,
-    extrema_wave: extrema_wave_mod.ExtremaWaveOptions,
-    skeleton_grow: skeleton_grow_mod.SkeletonGrowOptions,
-    tangent_flow: tangent_flow_mod.TangentFlowOptions,
-    custom: CustomReveal,
-};
+pub const GlyphInfo = glyph_reveal_mod.GlyphInfo;
+pub const CustomReveal = glyph_reveal_mod.CustomReveal;
+pub const RevealStrategy = glyph_reveal_mod.RevealStrategy;
 
 pub const Timing = union(enum) {
     simultaneous,

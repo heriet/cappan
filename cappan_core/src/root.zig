@@ -59,6 +59,7 @@ pub const render = struct {
     pub const gamma = @import("render/gamma.zig");
     pub const renderer = @import("render/renderer.zig");
     pub const incremental = @import("render/incremental.zig");
+    pub const glyph_reveal = @import("render/glyph_reveal.zig");
 };
 
 pub const image = struct {
@@ -113,6 +114,7 @@ test {
     _ = @import("render/gamma.zig");
     _ = @import("render/renderer.zig");
     _ = @import("render/incremental.zig");
+    _ = @import("render/glyph_reveal.zig");
     _ = @import("render/reveal/sweep.zig");
     _ = @import("render/reveal/fade.zig");
     _ = @import("render/reveal/contour_trace.zig");
