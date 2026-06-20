@@ -65,6 +65,67 @@ pub const GlyphRevealContext = struct {
     reveal_map: ?[]f32,
     glyph_info: GlyphInfo,
 
+    pub fn initFromOutline(
+        allocator: std.mem.Allocator,
+        strategy: RevealStrategy,
+        glyph_info: GlyphInfo,
+        coverage: []const u8,
+        width: u32,
+        height: u32,
+        outline: ?glyph_mod.GlyphOutline,
+        scale: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) !GlyphRevealContext {
+        var animation: ?contour_trace_mod.GlyphAnimation = null;
+        if (strategy == .contour_trace) {
+            if (outline) |o| {
+                const scaled = try outline_mod.scaleOutline(allocator, o, scale, offset_x, offset_y);
+                defer outline_mod.freeScaledContours(allocator, scaled);
+                animation = try contour_trace_mod.buildAnimation(allocator, scaled, strategy.contour_trace);
+            }
+        }
+        errdefer if (animation) |*anim| anim.deinit();
+
+        var ma_animation: ?medial_axis_mod.MedialAxisAnimation = null;
+        if (strategy == .medial_axis) {
+            ma_animation = try medial_axis_mod.buildAnimation(allocator, coverage, width, height, strategy.medial_axis);
+        }
+        errdefer if (ma_animation) |*anim| anim.deinit();
+
+        var reveal_map_data: ?[]f32 = null;
+        if (strategy == .distance_field) {
+            reveal_map_data = try distance_field_mod.buildRevealMap(allocator, coverage, width, height);
+        }
+        if (strategy == .extrema_wave) {
+            if (outline) |o| {
+                const scaled = try outline_mod.scaleOutline(allocator, o, scale, offset_x, offset_y);
+                defer outline_mod.freeScaledContours(allocator, scaled);
+                reveal_map_data = try extrema_wave_mod.buildRevealMap(allocator, scaled, coverage, width, height, strategy.extrema_wave);
+            }
+        }
+        if (strategy == .skeleton_grow) {
+            reveal_map_data = try skeleton_grow_mod.buildRevealMap(allocator, coverage, width, height);
+        }
+        if (strategy == .tangent_flow) {
+            if (outline) |o| {
+                const scaled = try outline_mod.scaleOutline(allocator, o, scale, offset_x, offset_y);
+                defer outline_mod.freeScaledContours(allocator, scaled);
+                reveal_map_data = try tangent_flow_mod.buildRevealMap(allocator, scaled, coverage, width, height, strategy.tangent_flow);
+            }
+        }
+        errdefer if (reveal_map_data) |m| allocator.free(m);
+
+        return .{
+            .allocator = allocator,
+            .strategy = strategy,
+            .animation = animation,
+            .medial_axis_animation = ma_animation,
+            .reveal_map = reveal_map_data,
+            .glyph_info = glyph_info,
+        };
+    }
+
     pub fn init(
         allocator: std.mem.Allocator,
         font: font_mod.Font,
@@ -108,59 +169,7 @@ pub const GlyphRevealContext = struct {
             offset_y = y_max_px + pad_f;
         }
 
-        var animation: ?contour_trace_mod.GlyphAnimation = null;
-        if (strategy == .contour_trace) {
-            if (outline_opt) |outline| {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, scale, offset_x, offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                animation = try contour_trace_mod.buildAnimation(allocator, scaled, strategy.contour_trace);
-            }
-        }
-        errdefer if (animation) |*anim| anim.deinit();
-
-        var ma_animation: ?medial_axis_mod.MedialAxisAnimation = null;
-        if (strategy == .medial_axis) {
-            ma_animation = try medial_axis_mod.buildAnimation(
-                allocator,
-                coverage,
-                width,
-                height,
-                strategy.medial_axis,
-            );
-        }
-        errdefer if (ma_animation) |*anim| anim.deinit();
-
-        var reveal_map_data: ?[]f32 = null;
-        if (strategy == .distance_field) {
-            reveal_map_data = try distance_field_mod.buildRevealMap(allocator, coverage, width, height);
-        }
-        if (strategy == .extrema_wave) {
-            if (outline_opt) |outline| {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, scale, offset_x, offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                reveal_map_data = try extrema_wave_mod.buildRevealMap(allocator, scaled, coverage, width, height, strategy.extrema_wave);
-            }
-        }
-        if (strategy == .skeleton_grow) {
-            reveal_map_data = try skeleton_grow_mod.buildRevealMap(allocator, coverage, width, height);
-        }
-        if (strategy == .tangent_flow) {
-            if (outline_opt) |outline| {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, scale, offset_x, offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                reveal_map_data = try tangent_flow_mod.buildRevealMap(allocator, scaled, coverage, width, height, strategy.tangent_flow);
-            }
-        }
-        errdefer if (reveal_map_data) |m| allocator.free(m);
-
-        return .{
-            .allocator = allocator,
-            .strategy = strategy,
-            .animation = animation,
-            .medial_axis_animation = ma_animation,
-            .reveal_map = reveal_map_data,
-            .glyph_info = info,
-        };
+        return initFromOutline(allocator, strategy, info, coverage, width, height, outline_opt, scale, offset_x, offset_y);
     }
 
     pub fn apply(

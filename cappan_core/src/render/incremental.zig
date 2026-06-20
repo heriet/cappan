@@ -3,32 +3,21 @@ const font_mod = @import("../font/font.zig");
 const shaper = @import("../layout/shaper.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const rgba_bitmap_mod = @import("rgba_bitmap.zig");
-const sweep_mod = @import("reveal/sweep.zig");
-const fade_mod = @import("reveal/fade.zig");
-const contour_trace_mod = @import("reveal/contour_trace.zig");
-const medial_axis_mod = @import("reveal/medial_axis.zig");
-const distance_field_mod = @import("reveal/distance_field.zig");
-const extrema_wave_mod = @import("reveal/extrema_wave.zig");
-const skeleton_grow_mod = @import("reveal/skeleton_grow.zig");
-const tangent_flow_mod = @import("reveal/tangent_flow.zig");
 const easing_mod = @import("easing.zig");
-const gamma_mod = @import("gamma.zig");
-const outline_mod = @import("../raster/outline.zig");
-const scanline_mod = @import("../raster/scanline.zig");
 const glyphCacheKey = @import("renderer.zig").glyphCacheKey;
 const glyph_reveal_mod = @import("glyph_reveal.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
-pub const SweepDirection = sweep_mod.SweepDirection;
-pub const SweepOptions = sweep_mod.SweepOptions;
-pub const ContourTraceOptions = contour_trace_mod.ContourTraceOptions;
-pub const ContourOrdering = contour_trace_mod.ContourOrdering;
-pub const MedialAxisOptions = medial_axis_mod.MedialAxisOptions;
-pub const DistanceFieldOptions = distance_field_mod.DistanceFieldOptions;
-pub const ExtremaWaveOptions = extrema_wave_mod.ExtremaWaveOptions;
-pub const SkeletonGrowOptions = skeleton_grow_mod.SkeletonGrowOptions;
-pub const TangentFlowOptions = tangent_flow_mod.TangentFlowOptions;
+pub const SweepDirection = glyph_reveal_mod.SweepDirection;
+pub const SweepOptions = glyph_reveal_mod.SweepOptions;
+pub const ContourTraceOptions = glyph_reveal_mod.ContourTraceOptions;
+pub const ContourOrdering = glyph_reveal_mod.ContourOrdering;
+pub const MedialAxisOptions = glyph_reveal_mod.MedialAxisOptions;
+pub const DistanceFieldOptions = glyph_reveal_mod.DistanceFieldOptions;
+pub const ExtremaWaveOptions = glyph_reveal_mod.ExtremaWaveOptions;
+pub const SkeletonGrowOptions = glyph_reveal_mod.SkeletonGrowOptions;
+pub const TangentFlowOptions = glyph_reveal_mod.TangentFlowOptions;
 pub const Easing = easing_mod.Easing;
 
 pub const GlyphInfo = glyph_reveal_mod.GlyphInfo;
@@ -48,10 +37,7 @@ const CachedGlyph = struct {
     height: u32,
     offset_x: f32,
     offset_y: f32,
-    info: GlyphInfo,
-    animation: ?contour_trace_mod.GlyphAnimation,
-    medial_axis_animation: ?medial_axis_mod.MedialAxisAnimation,
-    reveal_map: ?[]f32,
+    reveal_context: ?glyph_reveal_mod.GlyphRevealContext,
     complexity: f32,
 };
 
@@ -115,14 +101,8 @@ pub const IncrementalRenderer = struct {
             var it = glyph_cache.valueIterator();
             while (it.next()) |entry| {
                 allocator.free(entry.pixels);
-                if (entry.animation) |*anim| {
-                    anim.deinit();
-                }
-                if (entry.medial_axis_animation) |*anim| {
-                    anim.deinit();
-                }
-                if (entry.reveal_map) |m| {
-                    allocator.free(m);
+                if (entry.reveal_context) |*ctx| {
+                    ctx.deinit();
                 }
             }
             glyph_cache.deinit(allocator);
@@ -146,17 +126,7 @@ pub const IncrementalRenderer = struct {
                     .height = 0,
                     .offset_x = 0,
                     .offset_y = 0,
-                    .info = .{
-                        .glyph_id = pos.glyph_id,
-                        .x_min = 0,
-                        .y_min = 0,
-                        .x_max = 0,
-                        .y_max = 0,
-                        .num_contours = 0,
-                    },
-                    .animation = null,
-                    .medial_axis_animation = null,
-                    .reveal_map = null,
+                    .reveal_context = null,
                     .complexity = 1.0,
                 });
                 continue;
@@ -177,68 +147,27 @@ pub const IncrementalRenderer = struct {
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
 
-            var animation: ?contour_trace_mod.GlyphAnimation = null;
-            if (options.strategy == .contour_trace) {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, glyph_scale, glyph_result.offset_x, glyph_result.offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                animation = try contour_trace_mod.buildAnimation(allocator, scaled, options.strategy.contour_trace);
+            var glyph_strategy = options.strategy;
+            switch (glyph_strategy) {
+                .custom => |*c| {
+                    c.deinitFn = null;
+                },
+                else => {},
             }
-            errdefer if (animation) |*anim| anim.deinit();
 
-            var ma_animation: ?medial_axis_mod.MedialAxisAnimation = null;
-            if (options.strategy == .medial_axis) {
-                ma_animation = try medial_axis_mod.buildAnimation(
-                    allocator,
-                    glyph_result.pixels,
-                    glyph_result.width,
-                    glyph_result.height,
-                    options.strategy.medial_axis,
-                );
-            }
-            errdefer if (ma_animation) |*anim| anim.deinit();
-
-            var reveal_map_data: ?[]f32 = null;
-            if (options.strategy == .distance_field) {
-                reveal_map_data = try distance_field_mod.buildRevealMap(
-                    allocator,
-                    glyph_result.pixels,
-                    glyph_result.width,
-                    glyph_result.height,
-                );
-            }
-            if (options.strategy == .extrema_wave) {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, glyph_scale, glyph_result.offset_x, glyph_result.offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                reveal_map_data = try extrema_wave_mod.buildRevealMap(
-                    allocator,
-                    scaled,
-                    glyph_result.pixels,
-                    glyph_result.width,
-                    glyph_result.height,
-                    options.strategy.extrema_wave,
-                );
-            }
-            if (options.strategy == .skeleton_grow) {
-                reveal_map_data = try skeleton_grow_mod.buildRevealMap(
-                    allocator,
-                    glyph_result.pixels,
-                    glyph_result.width,
-                    glyph_result.height,
-                );
-            }
-            if (options.strategy == .tangent_flow) {
-                const scaled = try outline_mod.scaleOutline(allocator, outline, glyph_scale, glyph_result.offset_x, glyph_result.offset_y);
-                defer outline_mod.freeScaledContours(allocator, scaled);
-                reveal_map_data = try tangent_flow_mod.buildRevealMap(
-                    allocator,
-                    scaled,
-                    glyph_result.pixels,
-                    glyph_result.width,
-                    glyph_result.height,
-                    options.strategy.tangent_flow,
-                );
-            }
-            errdefer if (reveal_map_data) |m| allocator.free(m);
+            var reveal_ctx = try glyph_reveal_mod.GlyphRevealContext.initFromOutline(
+                allocator,
+                glyph_strategy,
+                info,
+                glyph_result.pixels,
+                glyph_result.width,
+                glyph_result.height,
+                outline,
+                glyph_scale,
+                glyph_result.offset_x,
+                glyph_result.offset_y,
+            );
+            errdefer reveal_ctx.deinit();
 
             var total_points: usize = 0;
             for (outline.contours) |contour| {
@@ -252,10 +181,7 @@ pub const IncrementalRenderer = struct {
                 .height = glyph_result.height,
                 .offset_x = glyph_result.offset_x,
                 .offset_y = glyph_result.offset_y,
-                .info = info,
-                .animation = animation,
-                .medial_axis_animation = ma_animation,
-                .reveal_map = reveal_map_data,
+                .reveal_context = reveal_ctx,
                 .complexity = complexity,
             });
         }
@@ -318,14 +244,8 @@ pub const IncrementalRenderer = struct {
         var it = self.glyph_cache.valueIterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.pixels);
-            if (entry.animation) |*anim| {
-                anim.deinit();
-            }
-            if (entry.medial_axis_animation) |*anim| {
-                anim.deinit();
-            }
-            if (entry.reveal_map) |m| {
-                self.allocator.free(m);
+            if (entry.reveal_context) |*ctx| {
+                ctx.deinit();
             }
         }
         self.glyph_cache.deinit(self.allocator);
@@ -375,70 +295,10 @@ pub const IncrementalRenderer = struct {
         if (pixel_count == 0) return cached.pixels[0..0];
 
         const output = self.temp_coverage[0..pixel_count];
-
-        switch (self.strategy) {
-            .contour_trace => {
-                if (cached.animation) |anim| {
-                    const partial = try contour_trace_mod.getPartialSegments(self.allocator, anim, glyph_prog);
-                    defer self.allocator.free(partial);
-                    const raster_pixels = try scanline_mod.rasterize(self.allocator, partial, cached.width, cached.height);
-                    defer self.allocator.free(raster_pixels);
-                    @memcpy(output, raster_pixels);
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .sweep => |opts| {
-                sweep_mod.apply(cached.pixels[0..pixel_count], output, cached.width, cached.height, glyph_prog, opts);
-            },
-            .fade => {
-                fade_mod.apply(cached.pixels[0..pixel_count], output, glyph_prog);
-            },
-            .medial_axis => {
-                if (cached.medial_axis_animation) |anim| {
-                    medial_axis_mod.renderAtProgress(
-                        anim,
-                        cached.pixels[0..pixel_count],
-                        output,
-                        cached.width,
-                        cached.height,
-                        glyph_prog,
-                    );
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .distance_field => {
-                if (cached.reveal_map) |rm| {
-                    distance_field_mod.apply(cached.pixels[0..pixel_count], output, rm, glyph_prog);
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .extrema_wave => {
-                if (cached.reveal_map) |rm| {
-                    distance_field_mod.apply(cached.pixels[0..pixel_count], output, rm, glyph_prog);
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .skeleton_grow => {
-                if (cached.reveal_map) |rm| {
-                    distance_field_mod.apply(cached.pixels[0..pixel_count], output, rm, glyph_prog);
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .tangent_flow => {
-                if (cached.reveal_map) |rm| {
-                    distance_field_mod.apply(cached.pixels[0..pixel_count], output, rm, glyph_prog);
-                } else {
-                    @memset(output, 0);
-                }
-            },
-            .custom => |c| {
-                c.revealFn(c.context, cached.pixels[0..pixel_count], output, cached.width, cached.height, cached.info, glyph_prog);
-            },
+        if (cached.reveal_context) |ctx| {
+            try ctx.apply(cached.pixels[0..pixel_count], output, cached.width, cached.height, glyph_prog);
+        } else {
+            @memset(output, 0);
         }
         return output;
     }
