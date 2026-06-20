@@ -10,6 +10,7 @@ const glyf_mod = @import("table/glyf.zig");
 const hmtx_mod = @import("table/hmtx.zig");
 const kern_mod = @import("table/kern.zig");
 const gpos_mod = @import("table/gpos.zig");
+const gsub_mod = @import("table/gsub.zig");
 const cff_mod = @import("table/cff.zig");
 const colr_mod = @import("table/colr.zig");
 const cpal_mod = @import("table/cpal.zig");
@@ -47,6 +48,7 @@ pub const Font = struct {
     hmtx: hmtx_mod.HmtxTable,
     kern: ?kern_mod.KernTable,
     gpos: ?gpos_mod.GposTable,
+    gsub: ?gsub_mod.GsubTable,
     cff: ?cff_mod.CffTable,
     colr: ?colr_mod.ColrTable,
     cpal: ?cpal_mod.CpalTable,
@@ -197,6 +199,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const gsub_table: ?gsub_mod.GsubTable = blk: {
+            const gsub_record = parser.findTable(offset_table, "GSUB".*);
+            if (gsub_record) |rec| {
+                const gsub_data = try parser.getTableData(data, rec);
+                break :blk gsub_mod.parse(gsub_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         const colr_table: ?colr_mod.ColrTable = blk: {
             const colr_record = parser.findTable(offset_table, "COLR".*);
             if (colr_record) |rec| {
@@ -338,6 +349,7 @@ pub const Font = struct {
             .hmtx = hmtx,
             .kern = kern_table,
             .gpos = gpos_table,
+            .gsub = gsub_table,
             .cff = cff_table,
             .colr = colr_table,
             .cpal = cpal_table,
@@ -492,6 +504,26 @@ pub const Font = struct {
             return kern.getKerning(left_glyph, right_glyph);
         }
         return 0;
+    }
+
+    pub fn getGsubTable(self: Font) ?gsub_mod.GsubTable {
+        return self.gsub;
+    }
+
+    pub fn applyGsubFeatures(
+        self: Font,
+        allocator: std.mem.Allocator,
+        script_tag: [4]u8,
+        lang_tag: ?[4]u8,
+        feature_tags: []const [4]u8,
+        glyphs: []const u16,
+    ) ![]u16 {
+        if (self.gsub) |gsub| {
+            return gsub.applyFeatures(allocator, script_tag, lang_tag, feature_tags, glyphs);
+        }
+        const result = try allocator.alloc(u16, glyphs.len);
+        @memcpy(result, glyphs);
+        return result;
     }
 
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {
