@@ -613,6 +613,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .easing = easing,
         .max_width = common.max_width,
         .text_align = common.text_align,
+        .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;

@@ -27,7 +27,7 @@ pub const RenderOptions = struct {
     paint_stack: ?[]const paint_mod.PaintOperation = null,
 };
 
-const CachedRaster = struct {
+pub const CachedRaster = struct {
     pixels: []u8,
     width: u32,
     height: u32,
@@ -479,7 +479,7 @@ fn compositeWithOpacity(dst: *rgba_bitmap_mod.RgbaBitmap, src: rgba_bitmap_mod.R
     }
 }
 
-fn rasterizeStrokeGlyph(
+pub fn rasterizeStrokeGlyph(
     allocator: std.mem.Allocator,
     glyph_outline: glyph_mod.GlyphOutline,
     scale: f32,

@@ -57,4 +57,28 @@ paint_render stroke_neon \
   --stroke "3px,00FFFF,opacity=0.7" \
   --fill "FFFFFF"
 
+FPS=24
+FRAMES=144
+HOLD=24
+
+paint_animate() {
+  local name="$1"; shift
+  echo "Generating $name..."
+  $CAPPAN animate \
+    --font "$FONT" --text "$TEXT" --size "$SIZE" \
+    --frames "$FRAMES" --fps "$FPS" --hold "$HOLD" \
+    "$@" \
+    --output "$OUT/$name.png"
+}
+
+paint_animate stroke_sweep_ltr_seq \
+  --strategy sweep --sweep-direction left-to-right --timing sequential \
+  --stroke "4px,000000" \
+  --fill "F05030"
+
+paint_animate stroke_contour_writing_seq \
+  --strategy contour-trace --contour-ordering writing-order --timing sequential \
+  --stroke "4px,000000" \
+  --fill "F05030"
+
 echo "Done. Generated $(ls "$OUT"/*.png | wc -l) stroke-paint images in $OUT/"

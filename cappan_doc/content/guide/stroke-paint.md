@@ -151,3 +151,35 @@ cappan render --font $FONT --text "$TEXT" --size 64 --bg-color 222222 \
   --fill "FFFFFF" \
   --output stroke_neon.png
 ```
+
+---
+
+## インクリメンタルレンダリングとの組み合わせ
+
+PaintStack はインクリメンタルレンダリング（アニメーション）にも対応しています。各レイヤーのストローク・フィルがリビールストラテジーに従って段階的に表示されます。
+
+### sweep（左→右・sequential）
+
+![sweep stroke](image/stroke-paint/stroke_sweep_ltr_seq.png)
+
+```sh
+cappan animate --font $FONT --text "$TEXT" --size 64 \
+  --frames 144 --fps 24 --hold 24 \
+  --strategy sweep --sweep-direction left-to-right --timing sequential \
+  --stroke "4px,000000" \
+  --fill "F05030" \
+  --output stroke_sweep_ltr_seq.png
+```
+
+### contour-trace（writing-order・sequential）
+
+![contour-trace stroke](image/stroke-paint/stroke_contour_writing_seq.png)
+
+```sh
+cappan animate --font $FONT --text "$TEXT" --size 64 \
+  --frames 144 --fps 24 --hold 24 \
+  --strategy contour-trace --contour-ordering writing-order --timing sequential \
+  --stroke "4px,000000" \
+  --fill "F05030" \
+  --output stroke_contour_writing_seq.png
+```
