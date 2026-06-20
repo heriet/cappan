@@ -60,7 +60,6 @@ const CommonOptions = struct {
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
-    has_paint_ops: bool = false,
 };
 
 fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []const u8, args: *std.process.Args.Iterator) bool {
@@ -157,7 +156,6 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
                 std.debug.print("Error: could not store stroke paint operation: {}\n", .{err});
                 return true;
             };
-            opts.has_paint_ops = true;
         }
         return true;
     } else if (std.mem.eql(u8, arg, "--fill")) {
@@ -170,7 +168,6 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
                 std.debug.print("Error: could not store fill paint operation: {}\n", .{err});
                 return true;
             };
-            opts.has_paint_ops = true;
         }
         return true;
     }
@@ -282,7 +279,11 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     fonts_list.appendSlice(allocator, fallback_fonts.items) catch return;
     const fonts = fonts_list.items;
 
-    if (common.lcd_rendering or common.has_paint_ops) {
+    if (common.lcd_rendering and common.paint_ops.items.len > 0) {
+        std.debug.print("Warning: LCD rendering is not supported with paint stack, LCD will be disabled\n", .{});
+        common.lcd_rendering = false;
+    }
+    if (common.lcd_rendering or common.paint_ops.items.len > 0) {
         var bitmap = cappan_core.render.renderer.renderText(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
             .fg_color = common.fg_color,
@@ -292,7 +293,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .fractional_positioning = common.fractional_positioning,
             .max_width = common.max_width,
             .text_align = common.text_align,
-            .paint_stack = if (common.has_paint_ops) common.paint_ops.items else null,
+            .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -1598,13 +1599,16 @@ fn parseStrokeWidth(width: []const u8) ?paint_mod.StrokeWidth {
     if (width.len == 0) return null;
     if (std.mem.endsWith(u8, width, "em")) {
         const value = std.fmt.parseFloat(f32, width[0 .. width.len - 2]) catch return null;
+        if (value <= 0.0) return null;
         return .{ .em = value };
     }
     if (std.mem.endsWith(u8, width, "px")) {
         const value = std.fmt.parseFloat(f32, width[0 .. width.len - 2]) catch return null;
+        if (value <= 0.0) return null;
         return .{ .px = value };
     }
     const value = std.fmt.parseFloat(f32, width) catch return null;
+    if (value <= 0.0) return null;
     return .{ .px = value };
 }
 

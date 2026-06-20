@@ -57,6 +57,8 @@ const PaintCacheKey = struct {
     op_kind: PaintOpKind,
     stroke_width_q: u16,
     stroke_position: stroker_mod.StrokePosition,
+    line_join: stroker_mod.LineJoin,
+    miter_limit_q: u16,
 };
 
 pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !rgba_bitmap_mod.RgbaBitmap {
@@ -300,7 +302,7 @@ fn renderTextPaintStack(
     }
     max_stroke_expansion = @min(max_stroke_expansion, max_expansion_limit);
 
-    const extended_padding = options.padding + @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
+    const extended_padding = options.padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
     const pad = @as(f32, @floatFromInt(extended_padding));
 
     const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
@@ -402,6 +404,8 @@ fn paintCacheKey(font_index: u8, glyph_id: u16, op: paint_mod.PaintOperation, pi
             .op_kind = .fill,
             .stroke_width_q = 0,
             .stroke_position = .center,
+            .line_join = .bevel,
+            .miter_limit_q = 0,
         },
         .stroke => |stroke| .{
             .font_index = font_index,
@@ -409,12 +413,14 @@ fn paintCacheKey(font_index: u8, glyph_id: u16, op: paint_mod.PaintOperation, pi
             .op_kind = .stroke,
             .stroke_width_q = quantizedStrokeWidth(stroke.width.resolveToPixels(pixel_size)),
             .stroke_position = stroke.position,
+            .line_join = stroke.join,
+            .miter_limit_q = quantizedStrokeWidth(stroke.miter_limit),
         },
     };
 }
 
 fn quantizedStrokeWidth(width: f32) u16 {
-    if (width <= 0.0) return 0;
+    if (!(width > 0.0)) return 0;
     const q = @round(width * 4.0);
     if (q >= @as(f32, @floatFromInt(std.math.maxInt(u16)))) return std.math.maxInt(u16);
     return @intFromFloat(q);
@@ -452,6 +458,7 @@ fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Colo
 }
 
 fn compositeWithOpacity(dst: *rgba_bitmap_mod.RgbaBitmap, src: rgba_bitmap_mod.RgbaBitmap, opacity: f32) void {
+    std.debug.assert(src.pixels.len == dst.pixels.len);
     const clamped = @max(0.0, @min(1.0, opacity));
     var i: usize = 0;
     while (i < dst.pixels.len) : (i += 4) {
@@ -489,8 +496,8 @@ fn rasterizeStrokeGlyph(
     const max_dim: f32 = 16384.0;
     const w_f = @ceil(glyph_width + pad_f * 2);
     const h_f = @ceil(glyph_height + pad_f * 2);
-    const width: u32 = if (w_f > max_dim or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
-    const height: u32 = if (h_f > max_dim or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
+    const width: u32 = if (!(w_f >= 0.0 and w_f <= max_dim)) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
+    const height: u32 = if (!(h_f >= 0.0 and h_f <= max_dim)) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
 
     if (width == 0 or height == 0) {
         return .{

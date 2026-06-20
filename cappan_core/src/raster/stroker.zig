@@ -258,6 +258,11 @@ fn addRoundJoin(
     while (sweep > std.math.pi) : (sweep -= two_pi) {}
     while (sweep < -std.math.pi) : (sweep += two_pi) {}
 
+    if (std.math.isNan(sweep) or std.math.isInf(sweep)) {
+        try appendLine(allocator, out, curr_x, curr_y, next_x, next_y);
+        return;
+    }
+
     const steps: usize = @max(
         @as(usize, 1),
         @as(usize, @intFromFloat(@ceil(@abs(sweep) / (std.math.pi / 8.0)))),
@@ -279,7 +284,7 @@ fn addRoundJoin(
 fn appendNonZero(allocator: std.mem.Allocator, out: *std.ArrayList(Segment), seg: Segment) !void {
     const dx = seg.x1 - seg.x0;
     const dy = seg.y1 - seg.y0;
-    if (dx * dx + dy * dy <= 0.000001) return;
+    if (dx * dx + dy * dy <= 0.00000001) return;
     try out.append(allocator, seg);
 }
 
