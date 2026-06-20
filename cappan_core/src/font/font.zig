@@ -11,6 +11,7 @@ const hmtx_mod = @import("table/hmtx.zig");
 const kern_mod = @import("table/kern.zig");
 const gpos_mod = @import("table/gpos.zig");
 const gsub_mod = @import("table/gsub.zig");
+const gdef_mod = @import("table/gdef.zig");
 const cff_mod = @import("table/cff.zig");
 const colr_mod = @import("table/colr.zig");
 const cpal_mod = @import("table/cpal.zig");
@@ -49,6 +50,7 @@ pub const Font = struct {
     kern: ?kern_mod.KernTable,
     gpos: ?gpos_mod.GposTable,
     gsub: ?gsub_mod.GsubTable,
+    gdef: ?gdef_mod.GdefTable,
     cff: ?cff_mod.CffTable,
     colr: ?colr_mod.ColrTable,
     cpal: ?cpal_mod.CpalTable,
@@ -199,11 +201,20 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const gdef_table: ?gdef_mod.GdefTable = blk: {
+            const gdef_record = parser.findTable(offset_table, "GDEF".*);
+            if (gdef_record) |rec| {
+                const gdef_data = try parser.getTableData(data, rec);
+                break :blk gdef_mod.parse(gdef_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         const gsub_table: ?gsub_mod.GsubTable = blk: {
             const gsub_record = parser.findTable(offset_table, "GSUB".*);
             if (gsub_record) |rec| {
                 const gsub_data = try parser.getTableData(data, rec);
-                break :blk gsub_mod.parse(gsub_data) catch null;
+                break :blk gsub_mod.parse(gsub_data, gdef_table) catch null;
             } else {
                 break :blk null;
             }
@@ -350,6 +361,7 @@ pub const Font = struct {
             .kern = kern_table,
             .gpos = gpos_table,
             .gsub = gsub_table,
+            .gdef = gdef_table,
             .cff = cff_table,
             .colr = colr_table,
             .cpal = cpal_table,
@@ -508,6 +520,10 @@ pub const Font = struct {
 
     pub fn getGsubTable(self: Font) ?gsub_mod.GsubTable {
         return self.gsub;
+    }
+
+    pub fn getGdefTable(self: Font) ?gdef_mod.GdefTable {
+        return self.gdef;
     }
 
     pub fn applyGsubFeatures(
