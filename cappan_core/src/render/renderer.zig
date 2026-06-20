@@ -324,16 +324,27 @@ fn renderTextPaintStack(
         paint_cache.deinit(allocator);
     }
 
-    for (layout.positions) |pos| {
-        const glyph_font = fonts[pos.font_index];
-        const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
+    for (paint_stack) |op| {
+        const opacity = getOpacity(op);
+        const needs_temp = opacity < 0.996;
 
-        for (paint_stack) |op| {
+        var temp_bmp: ?rgba_bitmap_mod.RgbaBitmap = if (needs_temp)
+            try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, rgba_bitmap_mod.Color.transparent)
+        else
+            null;
+        defer if (temp_bmp) |*tb| tb.deinit();
+
+        const target = if (temp_bmp) |*tb| tb else &bitmap;
+        const blend_color = if (needs_temp) opaqueColor(op) else paintColor(op);
+
+        for (layout.positions) |pos| {
+            const glyph_font = fonts[pos.font_index];
+            const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
             const cache_key = paintCacheKey(pos.font_index, pos.glyph_id, op, options.pixel_size);
 
             if (paint_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
-                blendRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, paintColor(op), options.gamma_correction, options.fractional_positioning);
+                blendRaster(target, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
                 continue;
             }
 
@@ -372,7 +383,11 @@ fn renderTextPaintStack(
             try paint_cache.put(allocator, cache_key, entry);
 
             if (entry.width == 0 or entry.height == 0) continue;
-            blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, paintColor(op), options.gamma_correction, options.fractional_positioning);
+            blendRaster(target, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
+        }
+
+        if (temp_bmp) |tb| {
+            compositeWithOpacity(&bitmap, tb, opacity);
         }
     }
 
@@ -412,6 +427,20 @@ fn paintColor(op: paint_mod.PaintOperation) rgba_bitmap_mod.Color {
     };
 }
 
+fn getOpacity(op: paint_mod.PaintOperation) f32 {
+    return switch (op) {
+        .fill => |fill| fill.opacity,
+        .stroke => |stroke| stroke.opacity,
+    };
+}
+
+fn opaqueColor(op: paint_mod.PaintOperation) rgba_bitmap_mod.Color {
+    return switch (op) {
+        .fill => |fill| fill.color,
+        .stroke => |stroke| stroke.color,
+    };
+}
+
 fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Color {
     const clamped = @max(0.0, @min(1.0, opacity));
     return .{
@@ -420,6 +449,24 @@ fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Colo
         .b = color.b,
         .a = @intFromFloat(@round(@as(f32, @floatFromInt(color.a)) * clamped)),
     };
+}
+
+fn compositeWithOpacity(dst: *rgba_bitmap_mod.RgbaBitmap, src: rgba_bitmap_mod.RgbaBitmap, opacity: f32) void {
+    const clamped = @max(0.0, @min(1.0, opacity));
+    var i: usize = 0;
+    while (i < dst.pixels.len) : (i += 4) {
+        const sa = src.pixels[i + 3];
+        if (sa == 0) continue;
+
+        const alpha = @as(u16, @intFromFloat(@round(@as(f32, @floatFromInt(sa)) * clamped)));
+        if (alpha == 0) continue;
+
+        const inv_alpha = 255 - alpha;
+        dst.pixels[i + 0] = @intCast((@as(u16, dst.pixels[i + 0]) * inv_alpha + @as(u16, src.pixels[i + 0]) * alpha) / 255);
+        dst.pixels[i + 1] = @intCast((@as(u16, dst.pixels[i + 1]) * inv_alpha + @as(u16, src.pixels[i + 1]) * alpha) / 255);
+        dst.pixels[i + 2] = @intCast((@as(u16, dst.pixels[i + 2]) * inv_alpha + @as(u16, src.pixels[i + 2]) * alpha) / 255);
+        dst.pixels[i + 3] = @intCast(@min(@as(u16, 255), @as(u16, dst.pixels[i + 3]) + alpha));
+    }
 }
 
 fn rasterizeStrokeGlyph(
@@ -729,6 +776,48 @@ test "render text with paint stack outside stroke and fill" {
 
     try std.testing.expect(has_red);
     try std.testing.expect(has_dark);
+}
+
+test "render text with semi-transparent paint stack" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const red = rgba_bitmap_mod.Color{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    const opaque_ops = [_]paint_mod.PaintOperation{
+        .{ .stroke = .{ .color = red, .width = .{ .px = 6.0 }, .position = .outside, .opacity = 1.0 } },
+        .{ .fill = .{ .color = rgba_bitmap_mod.Color.black } },
+    };
+    const transparent_ops = [_]paint_mod.PaintOperation{
+        .{ .stroke = .{ .color = red, .width = .{ .px = 6.0 }, .position = .outside, .opacity = 0.5 } },
+        .{ .fill = .{ .color = rgba_bitmap_mod.Color.black, .opacity = 0.5 } },
+    };
+
+    var opaque_bmp = try renderText(std.testing.allocator, &[_]font_mod.Font{font}, "lll", .{
+        .pixel_size = 32,
+        .bg_color = rgba_bitmap_mod.Color.white,
+        .paint_stack = &opaque_ops,
+    });
+    defer opaque_bmp.deinit();
+
+    var transparent_bmp = try renderText(std.testing.allocator, &[_]font_mod.Font{font}, "lll", .{
+        .pixel_size = 32,
+        .bg_color = rgba_bitmap_mod.Color.white,
+        .paint_stack = &transparent_ops,
+    });
+    defer transparent_bmp.deinit();
+
+    try std.testing.expectEqual(opaque_bmp.width, transparent_bmp.width);
+    try std.testing.expectEqual(opaque_bmp.height, transparent_bmp.height);
+
+    var opaque_sum: u64 = 0;
+    var transparent_sum: u64 = 0;
+    var i: usize = 0;
+    while (i < opaque_bmp.pixels.len) : (i += 4) {
+        opaque_sum += @as(u64, opaque_bmp.pixels[i]) + @as(u64, opaque_bmp.pixels[i + 1]) + @as(u64, opaque_bmp.pixels[i + 2]);
+        transparent_sum += @as(u64, transparent_bmp.pixels[i]) + @as(u64, transparent_bmp.pixels[i + 1]) + @as(u64, transparent_bmp.pixels[i + 2]);
+    }
+    try std.testing.expect(transparent_sum > opaque_sum);
 }
 
 test "render text with repeated characters uses cache" {
