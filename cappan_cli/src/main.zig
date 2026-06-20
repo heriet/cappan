@@ -139,32 +139,66 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
     } else if (std.mem.eql(u8, arg, "--stroke")) {
         if (args.next()) |spec| {
             const comma_pos = std.mem.indexOfScalar(u8, spec, ',') orelse {
-                std.debug.print("Error: invalid stroke '{s}', expected WIDTH,RRGGBB\n", .{spec});
+                std.debug.print("Error: invalid stroke '{s}', expected WIDTH,RRGGBB[,options...]\n", .{spec});
                 return true;
             };
             const width_part = spec[0..comma_pos];
-            const color_part = spec[comma_pos + 1 ..];
+            const rest = spec[comma_pos + 1 ..];
+
+            // Color is always the first 6 characters after the first comma
+            if (rest.len < 6) {
+                std.debug.print("Error: invalid stroke color in '{s}', expected RRGGBB\n", .{spec});
+                return true;
+            }
+            const color_hex = rest[0..6];
+
             const width = parseStrokeWidth(width_part) orelse {
                 std.debug.print("Error: invalid stroke width '{s}'\n", .{width_part});
                 return true;
             };
-            const color = parseHexColor(color_part) orelse {
-                std.debug.print("Error: invalid stroke color '{s}', expected RRGGBB\n", .{color_part});
+            const color = parseHexColor(color_hex) orelse {
+                std.debug.print("Error: invalid stroke color '{s}', expected RRGGBB\n", .{color_hex});
                 return true;
             };
-            opts.paint_ops.append(allocator, .{ .stroke = .{ .color = color, .width = width } }) catch |err| {
+
+            var stroke_paint: paint_mod.StrokePaint = .{ .color = color, .width = width };
+
+            // Parse optional key=value pairs after color
+            const options_start = if (rest.len > 6 and rest[6] == ',') rest[7..] else "";
+            if (options_start.len > 0) {
+                if (!parseStrokeOptions(options_start, &stroke_paint)) {
+                    return true;
+                }
+            }
+
+            opts.paint_ops.append(allocator, .{ .stroke = stroke_paint }) catch |err| {
                 std.debug.print("Error: could not store stroke paint operation: {}\n", .{err});
                 return true;
             };
         }
         return true;
     } else if (std.mem.eql(u8, arg, "--fill")) {
-        if (args.next()) |hex| {
-            const color = parseHexColor(hex) orelse {
-                std.debug.print("Error: invalid fill color '{s}', expected RRGGBB\n", .{hex});
+        if (args.next()) |spec| {
+            if (spec.len < 6) {
+                std.debug.print("Error: invalid fill color '{s}', expected RRGGBB[,options...]\n", .{spec});
+                return true;
+            }
+            const color_hex = spec[0..6];
+            const color = parseHexColor(color_hex) orelse {
+                std.debug.print("Error: invalid fill color '{s}', expected RRGGBB\n", .{color_hex});
                 return true;
             };
-            opts.paint_ops.append(allocator, .{ .fill = .{ .color = color } }) catch |err| {
+
+            var fill_paint: paint_mod.FillPaint = .{ .color = color };
+
+            const options_start = if (spec.len > 6 and spec[6] == ',') spec[7..] else "";
+            if (options_start.len > 0) {
+                if (!parseFillOptions(options_start, &fill_paint)) {
+                    return true;
+                }
+            }
+
+            opts.paint_ops.append(allocator, .{ .fill = fill_paint }) catch |err| {
                 std.debug.print("Error: could not store fill paint operation: {}\n", .{err});
                 return true;
             };
@@ -1612,6 +1646,102 @@ fn parseStrokeWidth(width: []const u8) ?paint_mod.StrokeWidth {
     return .{ .px = value };
 }
 
+fn parseStrokeOptions(options_str: []const u8, stroke: *paint_mod.StrokePaint) bool {
+    var remaining = options_str;
+    while (remaining.len > 0) {
+        const end = std.mem.indexOfScalar(u8, remaining, ',') orelse remaining.len;
+        const pair = remaining[0..end];
+        remaining = if (end < remaining.len) remaining[end + 1 ..] else "";
+
+        const eq_pos = std.mem.indexOfScalar(u8, pair, '=') orelse {
+            std.debug.print("Error: invalid stroke option '{s}', expected key=value\n", .{pair});
+            return false;
+        };
+        const key = pair[0..eq_pos];
+        const value = pair[eq_pos + 1 ..];
+
+        if (std.mem.eql(u8, key, "position")) {
+            if (std.mem.eql(u8, value, "outside")) {
+                stroke.position = .outside;
+            } else if (std.mem.eql(u8, value, "center")) {
+                stroke.position = .center;
+            } else if (std.mem.eql(u8, value, "inside")) {
+                stroke.position = .inside;
+            } else {
+                std.debug.print("Error: invalid stroke position '{s}', expected outside|center|inside\n", .{value});
+                return false;
+            }
+        } else if (std.mem.eql(u8, key, "join")) {
+            if (std.mem.eql(u8, value, "round")) {
+                stroke.join = .round;
+            } else if (std.mem.eql(u8, value, "miter")) {
+                stroke.join = .miter;
+            } else if (std.mem.eql(u8, value, "bevel")) {
+                stroke.join = .bevel;
+            } else {
+                std.debug.print("Error: invalid stroke join '{s}', expected round|miter|bevel\n", .{value});
+                return false;
+            }
+        } else if (std.mem.eql(u8, key, "opacity")) {
+            const opacity = std.fmt.parseFloat(f32, value) catch {
+                std.debug.print("Error: invalid stroke opacity '{s}'\n", .{value});
+                return false;
+            };
+            if (opacity < 0.0 or opacity > 1.0) {
+                std.debug.print("Error: stroke opacity must be between 0.0 and 1.0, got '{s}'\n", .{value});
+                return false;
+            }
+            stroke.opacity = opacity;
+        } else if (std.mem.eql(u8, key, "miter-limit")) {
+            const limit = std.fmt.parseFloat(f32, value) catch {
+                std.debug.print("Error: invalid miter-limit '{s}'\n", .{value});
+                return false;
+            };
+            if (!(limit > 0.0)) {
+                std.debug.print("Error: miter-limit must be positive, got '{s}'\n", .{value});
+                return false;
+            }
+            stroke.miter_limit = limit;
+        } else {
+            std.debug.print("Error: unknown stroke option '{s}'\n", .{key});
+            return false;
+        }
+    }
+    return true;
+}
+
+fn parseFillOptions(options_str: []const u8, fill: *paint_mod.FillPaint) bool {
+    var remaining = options_str;
+    while (remaining.len > 0) {
+        const end = std.mem.indexOfScalar(u8, remaining, ',') orelse remaining.len;
+        const pair = remaining[0..end];
+        remaining = if (end < remaining.len) remaining[end + 1 ..] else "";
+
+        const eq_pos = std.mem.indexOfScalar(u8, pair, '=') orelse {
+            std.debug.print("Error: invalid fill option '{s}', expected key=value\n", .{pair});
+            return false;
+        };
+        const key = pair[0..eq_pos];
+        const value = pair[eq_pos + 1 ..];
+
+        if (std.mem.eql(u8, key, "opacity")) {
+            const opacity = std.fmt.parseFloat(f32, value) catch {
+                std.debug.print("Error: invalid fill opacity '{s}'\n", .{value});
+                return false;
+            };
+            if (opacity < 0.0 or opacity > 1.0) {
+                std.debug.print("Error: fill opacity must be between 0.0 and 1.0, got '{s}'\n", .{value});
+                return false;
+            }
+            fill.opacity = opacity;
+        } else {
+            std.debug.print("Error: unknown fill option '{s}'\n", .{key});
+            return false;
+        }
+    }
+    return true;
+}
+
 fn getFileExtension(path: []const u8) []const u8 {
     if (std.mem.lastIndexOfScalar(u8, path, '.')) |dot_pos| {
         return path[dot_pos..];
@@ -1698,8 +1828,9 @@ fn printUsage() void {
         \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
-        \\  --stroke             Add outside stroke paint: WIDTH,RRGGBB (render only)
-        \\  --fill               Add fill paint: RRGGBB (render only)
+        \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
+        \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
+        \\  --fill               Add fill: RRGGBB[,opacity=0-1] (render only)
         \\
         \\render options:
         \\  --output             Output PNG file path

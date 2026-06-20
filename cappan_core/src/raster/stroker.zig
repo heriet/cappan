@@ -25,7 +25,7 @@ pub fn generateStrokeOutline(
     position: StrokePosition,
     miter_limit: f32,
 ) ![]Segment {
-    if (segments.len == 0 or width <= 0.0) return try allocator.alloc(Segment, 0);
+    if (segments.len == 0 or !(width > 0.0)) return try allocator.alloc(Segment, 0);
 
     const offsets = try allocator.alloc(OffsetSegment, segments.len);
     defer allocator.free(offsets);

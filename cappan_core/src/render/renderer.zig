@@ -305,8 +305,11 @@ fn renderTextPaintStack(
     const extended_padding = options.padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
     const pad = @as(f32, @floatFromInt(extended_padding));
 
-    const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
-    const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+    const max_bmp_dim: f32 = 16384.0;
+    const bmp_width_f = @ceil(layout.total_width + pad * 2);
+    const bmp_height_f = @ceil(layout.total_height + pad * 2);
+    const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+    const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
     if (bmp_width == 0 or bmp_height == 0) {
         return rgba_bitmap_mod.RgbaBitmap.init(allocator, 1, 1, options.bg_color);
