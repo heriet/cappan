@@ -138,6 +138,125 @@
       display: none;
     }
 
+    .paint-layers-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      font-weight: 650;
+      color: #374151;
+    }
+
+    .paint-layers-header .header-buttons {
+      display: flex;
+      gap: 6px;
+    }
+
+    .paint-layers-header button {
+      width: auto;
+      min-height: 28px;
+      padding: 4px 10px;
+      font-size: 12px;
+    }
+
+    .paint-layer-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .paint-layer-item {
+      border: 1px solid #d8dee6;
+      border-radius: 6px;
+      padding: 8px;
+      background: #f9fafb;
+      font-size: 12px;
+    }
+
+    .paint-layer-item .layer-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .paint-layer-item .layer-type-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #e5e7eb;
+      color: #374151;
+      white-space: nowrap;
+    }
+
+    .paint-layer-item .layer-type-badge.stroke {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .paint-layer-item .layer-type-badge.fill {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
+    .paint-layer-item input[type="color"] {
+      width: 36px;
+      min-height: 28px;
+      padding: 2px;
+      flex-shrink: 0;
+    }
+
+    .paint-layer-item input[type="number"],
+    .paint-layer-item select {
+      width: auto;
+      min-height: 28px;
+      padding: 3px 6px;
+      font-size: 12px;
+      flex: 1;
+      min-width: 48px;
+    }
+
+    .paint-layer-item .remove-btn {
+      width: 28px;
+      min-height: 28px;
+      padding: 0;
+      font-size: 14px;
+      font-weight: 700;
+      background: #fee2e2;
+      color: #b91c1c;
+      border-color: #fca5a5;
+      flex-shrink: 0;
+    }
+
+    .paint-layer-item label.inline {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7280;
+    }
+
+    .paint-layer-item .layer-fields {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 6px;
+    }
+
+    .fg-color-label.dimmed {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    .paint-layer-empty {
+      font-size: 12px;
+      color: #9ca3af;
+      text-align: center;
+      padding: 6px 0;
+    }
+
     @media (max-width: 780px) {
       main {
         width: min(100vw - 20px, 560px);
@@ -180,7 +299,7 @@
         </label>
 
         <div class="row">
-          <label>
+          <label id="fgColorLabel">
             Foreground
             <input id="fgColor" type="color" value="#111827">
           </label>
@@ -212,6 +331,31 @@
             <option value="2">weighted</option>
           </select>
         </label>
+
+        <div>
+          <div class="paint-layers-header">
+            <span>Paint Layers</span>
+            <div class="header-buttons">
+              <button id="presetStrokeFillBtn" class="secondary">Preset: Stroke+Fill</button>
+              <button id="addStrokeBtn" class="secondary">+ Stroke</button>
+              <button id="addFillBtn" class="secondary">+ Fill</button>
+            </div>
+          </div>
+          <div id="paintLayerList" class="paint-layer-list" style="margin-top:8px;">
+            <div class="paint-layer-empty" id="paintLayerEmpty">No paint layers — using Foreground color</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>
+            Frames
+            <input id="totalFrames" type="number" min="2" max="600" step="1" value="30">
+          </label>
+          <label>
+            FPS
+            <input id="fps" type="number" min="1" max="60" step="1" value="24">
+          </label>
+        </div>
 
         <div class="actions">
           <button id="renderBtn" class="secondary" disabled>Render</button>
@@ -296,6 +440,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       fontSize: document.getElementById("fontSize"),
       sizeValue: document.getElementById("sizeValue"),
       fgColor: document.getElementById("fgColor"),
+      fgColorLabel: document.getElementById("fgColorLabel"),
       bgColor: document.getElementById("bgColor"),
       strategy: document.getElementById("strategy"),
       timing: document.getElementById("timing"),
@@ -308,6 +453,13 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       status: document.getElementById("status"),
       downloadPngBtn: document.getElementById("downloadPngBtn"),
       downloadApngBtn: document.getElementById("downloadApngBtn"),
+      totalFrames: document.getElementById("totalFrames"),
+      fps: document.getElementById("fps"),
+      paintLayerList: document.getElementById("paintLayerList"),
+      paintLayerEmpty: document.getElementById("paintLayerEmpty"),
+      addStrokeBtn: document.getElementById("addStrokeBtn"),
+      addFillBtn: document.getElementById("addFillBtn"),
+      presetStrokeFillBtn: document.getElementById("presetStrokeFillBtn"),
     };
 
     const encoder = new TextEncoder();
@@ -319,9 +471,115 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
     let animationId = 0;
     let animationStart = 0;
     let hasRendered = false;
+    let paintLayers = [];
 
     function setStatus(message) {
       elements.status.textContent = message;
+    }
+
+    function applyPaintStackToWasm() {
+      wasm.wasm_paint_clear();
+      for (const layer of paintLayers) {
+        if (layer.type === 'fill') {
+          const [r, g, b] = hexToRgb(layer.color);
+          wasm.wasm_paint_add_fill(r, g, b, layer.opacity);
+        } else if (layer.type === 'stroke') {
+          const [r, g, b] = hexToRgb(layer.color);
+          const widthX10 = Math.round(layer.width * 10);
+          wasm.wasm_paint_add_stroke(r, g, b, widthX10, layer.opacity, layer.join, layer.position);
+        }
+      }
+    }
+
+    function updateFgColorDim() {
+      if (paintLayers.length > 0) {
+        elements.fgColorLabel.classList.add("dimmed");
+      } else {
+        elements.fgColorLabel.classList.remove("dimmed");
+      }
+    }
+
+    function renderPaintLayers() {
+      // Remove all layer items (keep the empty message node)
+      const items = elements.paintLayerList.querySelectorAll(".paint-layer-item");
+      items.forEach(el => el.remove());
+
+      if (paintLayers.length === 0) {
+        elements.paintLayerEmpty.classList.remove("hidden");
+      } else {
+        elements.paintLayerEmpty.classList.add("hidden");
+        paintLayers.forEach((layer, idx) => {
+          const item = document.createElement("div");
+          item.className = "paint-layer-item";
+
+          const badge = `<span class="layer-type-badge ${layer.type}">${layer.type}</span>`;
+          const removeBtn = `<button class="remove-btn" data-idx="${idx}" title="Remove layer">×</button>`;
+
+          if (layer.type === 'fill') {
+            item.innerHTML = `
+              <div class="layer-row">
+                ${badge}
+                <input type="color" class="layer-color" data-idx="${idx}" value="${layer.color}">
+                <label class="inline">Opacity
+                  <input type="number" class="layer-opacity" data-idx="${idx}" min="0" max="100" step="1" value="${layer.opacity}" style="width:56px;">%
+                </label>
+                ${removeBtn}
+              </div>`;
+          } else {
+            item.innerHTML = `
+              <div class="layer-row">
+                ${badge}
+                <input type="color" class="layer-color" data-idx="${idx}" value="${layer.color}">
+                <label class="inline">W
+                  <input type="number" class="layer-width" data-idx="${idx}" min="0.5" max="20" step="0.5" value="${layer.width}" style="width:56px;">px
+                </label>
+                <label class="inline">Op
+                  <input type="number" class="layer-opacity" data-idx="${idx}" min="0" max="100" step="1" value="${layer.opacity}" style="width:52px;">%
+                </label>
+                <select class="layer-join" data-idx="${idx}" style="min-width:72px;">
+                  <option value="0" ${layer.join===0?'selected':''}>round</option>
+                  <option value="1" ${layer.join===1?'selected':''}>miter</option>
+                  <option value="2" ${layer.join===2?'selected':''}>bevel</option>
+                </select>
+                <select class="layer-position" data-idx="${idx}" style="min-width:76px;">
+                  <option value="0" ${layer.position===0?'selected':''}>outside</option>
+                  <option value="1" ${layer.position===1?'selected':''}>center</option>
+                  <option value="2" ${layer.position===2?'selected':''}>inside</option>
+                </select>
+                ${removeBtn}
+              </div>`;
+          }
+
+          elements.paintLayerList.appendChild(item);
+
+          item.querySelector(".remove-btn").addEventListener("click", (e) => {
+            const i = Number(e.currentTarget.dataset.idx);
+            paintLayers.splice(i, 1);
+            renderPaintLayers();
+            updateFgColorDim();
+          });
+
+          item.querySelector(".layer-color").addEventListener("input", (e) => {
+            paintLayers[Number(e.target.dataset.idx)].color = e.target.value;
+          });
+
+          item.querySelector(".layer-opacity").addEventListener("input", (e) => {
+            paintLayers[Number(e.target.dataset.idx)].opacity = Number(e.target.value);
+          });
+
+          if (layer.type === 'stroke') {
+            item.querySelector(".layer-width").addEventListener("input", (e) => {
+              paintLayers[Number(e.target.dataset.idx)].width = Number(e.target.value);
+            });
+            item.querySelector(".layer-join").addEventListener("change", (e) => {
+              paintLayers[Number(e.target.dataset.idx)].join = Number(e.target.value);
+            });
+            item.querySelector(".layer-position").addEventListener("change", (e) => {
+              paintLayers[Number(e.target.dataset.idx)].position = Number(e.target.value);
+            });
+          }
+        });
+      }
     }
 
     function setReady(ready) {
@@ -426,6 +684,8 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
       const [br, bg, bb] = hexToRgb(elements.bgColor.value);
 
+      applyPaintStackToWasm();
+
       try {
         const ok = wasm.wasm_render(textPtr, text.length, Number(elements.fontSize.value), fr, fg, fb, br, bg, bb);
         if (!ok) throw new Error("Render failed");
@@ -440,6 +700,8 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       const textPtr = allocCopy(text);
       const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
       const [br, bg, bb] = hexToRgb(elements.bgColor.value);
+
+      applyPaintStackToWasm();
 
       try {
         const ok = wasm.wasm_init_animator(
@@ -474,9 +736,12 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       initAnimator();
       elements.progressWrap.classList.remove("hidden");
       animationStart = performance.now();
+      const totalFrames = Math.max(2, Number(elements.totalFrames.value) || 30);
+      const fpsVal = Math.max(1, Number(elements.fps.value) || 24);
+      const durationMs = (totalFrames / fpsVal) * 1000;
 
       const tick = (now) => {
-        const progress = Math.min(1, (now - animationStart) / 1800);
+        const progress = Math.min(1, (now - animationStart) / durationMs);
         try {
           renderProgress(progress);
         } catch (error) {
@@ -551,8 +816,9 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
     }
 
     async function downloadApng() {
-        const totalFrames = 30;
-        const frameDurationMs = 60; // ~16.7fps, total ~1.8s
+        const totalFrames = Math.max(2, Number(elements.totalFrames.value) || 30);
+        const fpsVal = Math.max(1, Number(elements.fps.value) || 24);
+        const frameDurationMs = Math.round(1000 / fpsVal);
 
         setStatus("Generating APNG...");
         elements.downloadApngBtn.disabled = true;
@@ -654,6 +920,26 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
 
     elements.fontSize.addEventListener("input", () => {
       elements.sizeValue.textContent = elements.fontSize.value;
+    });
+
+    elements.addStrokeBtn.addEventListener("click", () => {
+      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0 });
+      renderPaintLayers();
+      updateFgColorDim();
+    });
+
+    elements.addFillBtn.addEventListener("click", () => {
+      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100 });
+      renderPaintLayers();
+      updateFgColorDim();
+    });
+
+    elements.presetStrokeFillBtn.addEventListener("click", () => {
+      paintLayers = [];
+      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0 });
+      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100 });
+      renderPaintLayers();
+      updateFgColorDim();
     });
 
     elements.fontSelect.addEventListener("change", () => {
