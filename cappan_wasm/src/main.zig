@@ -54,20 +54,21 @@ export fn wasm_paint_clear() void {
     paint_stack.clearRetainingCapacity();
 }
 
-export fn wasm_paint_add_fill(r: u8, g: u8, b: u8, opacity_pct: u32, time_weight_pct: u32) void {
+export fn wasm_paint_add_fill(r: u8, g: u8, b: u8, opacity_pct: u32, time_weight_pct: u32) i32 {
     const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
-    const time_weight = @as(f32, @floatFromInt(time_weight_pct)) / 100.0;
+    const time_weight = @max(0.01, @as(f32, @floatFromInt(time_weight_pct)) / 100.0);
     paint_stack.append(allocator, .{ .fill = .{
         .color = .{ .r = r, .g = g, .b = b, .a = 255 },
         .opacity = opacity,
         .time_weight = time_weight,
-    } }) catch {};
+    } }) catch return 0;
+    return 1;
 }
 
-export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct: u32, join: u32, position: u32, time_weight_pct: u32) void {
+export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct: u32, join: u32, position: u32, time_weight_pct: u32) i32 {
     const width = @as(f32, @floatFromInt(width_x10)) / 10.0;
     const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
-    const time_weight = @as(f32, @floatFromInt(time_weight_pct)) / 100.0;
+    const time_weight = @max(0.01, @as(f32, @floatFromInt(time_weight_pct)) / 100.0);
     const line_join: cappan.render.paint.LineJoin = switch (join) {
         0 => .round,
         1 => .miter,
@@ -87,7 +88,8 @@ export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct
         .join = line_join,
         .position = stroke_position,
         .time_weight = time_weight,
-    } }) catch {};
+    } }) catch return 0;
+    return 1;
 }
 
 export fn wasm_render(

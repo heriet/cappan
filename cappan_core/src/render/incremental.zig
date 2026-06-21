@@ -130,10 +130,11 @@ pub const IncrementalRenderer = struct {
         const extended_padding = options.padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
         const pad = @as(f32, @floatFromInt(extended_padding));
 
+        const max_bmp_dim: f32 = 16384.0;
         const bmp_width_f = @ceil(layout.total_width + pad * 2);
         const bmp_height_f = @ceil(layout.total_height + pad * 2);
-        const bmp_width = @as(u32, @intFromFloat(bmp_width_f));
-        const bmp_height = @as(u32, @intFromFloat(bmp_height_f));
+        const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+        const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
         const width = if (bmp_width == 0) 1 else bmp_width;
         const height = if (bmp_height == 0) 1 else bmp_height;
@@ -171,7 +172,10 @@ pub const IncrementalRenderer = struct {
             const glyph_font = fonts[pos.font_index];
             const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
 
-            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch null;
+            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
             if (outline_opt == null) {
                 const empty_pixels = try allocator.alloc(u8, 0);
                 try glyph_cache.put(allocator, cache_key, .{
@@ -222,7 +226,8 @@ pub const IncrementalRenderer = struct {
                 glyph_result.offset_x,
                 glyph_result.offset_y,
             );
-            errdefer reveal_ctx.deinit();
+            var reveal_ctx_owned = true;
+            errdefer if (reveal_ctx_owned) reveal_ctx.deinit();
 
             var total_points: usize = 0;
             for (outline.contours) |contour| {
@@ -231,13 +236,15 @@ pub const IncrementalRenderer = struct {
             const complexity = @max(1.0, @as(f32, @floatFromInt(total_points)));
 
             if (options.paint_stack) |ps| {
+                reveal_ctx.deinit();
+                reveal_ctx_owned = false;
                 try glyph_cache.put(allocator, cache_key, .{
                     .pixels = glyph_result.pixels,
                     .width = glyph_result.width,
                     .height = glyph_result.height,
                     .offset_x = glyph_result.offset_x,
                     .offset_y = glyph_result.offset_y,
-                    .reveal_context = reveal_ctx,
+                    .reveal_context = null,
                     .complexity = complexity,
                 });
 
@@ -320,6 +327,13 @@ pub const IncrementalRenderer = struct {
                             };
                         },
                     };
+                    errdefer {
+                        allocator.free(paint_entry.pixels);
+                        if (paint_entry.reveal_context) |*ctx| {
+                            var c = ctx.*;
+                            c.deinit();
+                        }
+                    }
                     try paint_glyph_cache.put(allocator, paint_key, paint_entry);
                 }
             } else {
@@ -582,8 +596,8 @@ pub const IncrementalRenderer = struct {
 
                 const target = if (temp_bmp) |*tb| tb else &bitmap;
                 const blend_color: Color = switch (op) {
-                    .fill => |fill| if (needs_temp) fill.color else applyOpacityColor(fill.color, fill.opacity),
-                    .stroke => |stroke| if (needs_temp) stroke.color else applyOpacityColor(stroke.color, stroke.opacity),
+                    .fill => |fill| if (needs_temp) fill.color else renderer_mod.applyOpacity(fill.color, fill.opacity),
+                    .stroke => |stroke| if (needs_temp) stroke.color else renderer_mod.applyOpacity(stroke.color, stroke.opacity),
                 };
 
                 for (self.layout.positions, 0..) |pos, i| {
@@ -615,7 +629,7 @@ pub const IncrementalRenderer = struct {
                 }
 
                 if (temp_bmp) |tb| {
-                    compositeWithOpacity(&bitmap, tb, opacity);
+                    renderer_mod.compositeWithOpacity(&bitmap, tb, opacity);
                 }
             }
         } else {
@@ -647,35 +661,6 @@ pub const IncrementalRenderer = struct {
         return self.renderFrame(p);
     }
 };
-
-fn applyOpacityColor(color: Color, opacity: f32) Color {
-    const clamped = @max(0.0, @min(1.0, opacity));
-    return .{
-        .r = color.r,
-        .g = color.g,
-        .b = color.b,
-        .a = @intFromFloat(@round(@as(f32, @floatFromInt(color.a)) * clamped)),
-    };
-}
-
-fn compositeWithOpacity(dst: *RgbaBitmap, src: RgbaBitmap, opacity: f32) void {
-    std.debug.assert(src.pixels.len == dst.pixels.len);
-    const clamped = @max(0.0, @min(1.0, opacity));
-    var i: usize = 0;
-    while (i < dst.pixels.len) : (i += 4) {
-        const sa = src.pixels[i + 3];
-        if (sa == 0) continue;
-
-        const alpha = @as(u16, @intFromFloat(@round(@as(f32, @floatFromInt(sa)) * clamped)));
-        if (alpha == 0) continue;
-
-        const inv_alpha = 255 - alpha;
-        dst.pixels[i + 0] = @intCast((@as(u16, dst.pixels[i + 0]) * inv_alpha + @as(u16, src.pixels[i + 0]) * alpha) / 255);
-        dst.pixels[i + 1] = @intCast((@as(u16, dst.pixels[i + 1]) * inv_alpha + @as(u16, src.pixels[i + 1]) * alpha) / 255);
-        dst.pixels[i + 2] = @intCast((@as(u16, dst.pixels[i + 2]) * inv_alpha + @as(u16, src.pixels[i + 2]) * alpha) / 255);
-        dst.pixels[i + 3] = @intCast(@min(@as(u16, 255), @as(u16, dst.pixels[i + 3]) + alpha));
-    }
-}
 
 test "renderFrame progress=1.0 matches renderText" {
     const font_data = @embedFile("../fixture/DejaVuSans.ttf");

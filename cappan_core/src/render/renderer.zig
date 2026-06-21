@@ -450,7 +450,7 @@ fn opaqueColor(op: paint_mod.PaintOperation) rgba_bitmap_mod.Color {
     };
 }
 
-fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Color {
+pub fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Color {
     const clamped = @max(0.0, @min(1.0, opacity));
     return .{
         .r = color.r,
@@ -460,7 +460,7 @@ fn applyOpacity(color: rgba_bitmap_mod.Color, opacity: f32) rgba_bitmap_mod.Colo
     };
 }
 
-fn compositeWithOpacity(dst: *rgba_bitmap_mod.RgbaBitmap, src: rgba_bitmap_mod.RgbaBitmap, opacity: f32) void {
+pub fn compositeWithOpacity(dst: *rgba_bitmap_mod.RgbaBitmap, src: rgba_bitmap_mod.RgbaBitmap, opacity: f32) void {
     std.debug.assert(src.pixels.len == dst.pixels.len);
     const clamped = @max(0.0, @min(1.0, opacity));
     var i: usize = 0;

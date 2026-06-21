@@ -137,7 +137,11 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         opts.lcd_rendering = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--stroke")) {
-        if (args.next()) |spec| {
+        const spec = args.next() orelse {
+            std.debug.print("Error: --stroke requires an argument: WIDTH,RRGGBB[,options...]\n", .{});
+            return true;
+        };
+        {
             const comma_pos = std.mem.indexOfScalar(u8, spec, ',') orelse {
                 std.debug.print("Error: invalid stroke '{s}', expected WIDTH,RRGGBB[,options...]\n", .{spec});
                 return true;
@@ -178,7 +182,11 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         }
         return true;
     } else if (std.mem.eql(u8, arg, "--fill")) {
-        if (args.next()) |spec| {
+        const spec = args.next() orelse {
+            std.debug.print("Error: --fill requires an argument: RRGGBB[,options...]\n", .{});
+            return true;
+        };
+        {
             if (spec.len < 6) {
                 std.debug.print("Error: invalid fill color '{s}', expected RRGGBB[,options...]\n", .{spec});
                 return true;
@@ -1878,6 +1886,7 @@ fn printUsage() void {
         \\  --easing             Easing: linear (default), ease-in, ease-out, ease-in-out, ease-in-cubic, ease-out-cubic, ease-in-out-cubic
         \\  --reverse            Play animation in reverse (progress 1.0 to 0.0)
         \\  --extrema-invert     Invert extrema-wave reveal (near extrema first)
+        \\  --paint-layer-timing Paint layer timing: simultaneous (default), sequential
         \\
         \\inspect options:
         \\  --summary            Show font summary
