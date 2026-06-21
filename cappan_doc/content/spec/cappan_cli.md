@@ -70,6 +70,55 @@ cappan render --font <path> --text <string> --output <path> [オプション]
 | `--fractional` | フラクショナルピクセルポジショニング | 無効 |
 | `--max-width <n>` | テキストの最大幅（ピクセル）。超過時は自動折り返し | なし |
 | `--text-align <name>` | テキスト揃え（`left`、`center`、`right`、`justify`） | `left` |
+| `--stroke <spec>` | ストローク描画を追加（複数指定可）。書式は後述 | なし |
+| `--fill <spec>` | フィル描画を追加（複数指定可）。書式は後述 | なし |
+
+### ストローク・フィルオプション
+
+`--stroke` と `--fill` を指定すると PaintStack モードでレンダリングされます。配列順序で下から上に描画されます（最初に指定したものが最背面）。
+
+#### `--stroke` の書式
+
+```
+--stroke "WIDTH,RRGGBB[,key=value...]"
+```
+
+- `WIDTH` — ストローク幅。`6px`、`0.1em`、または数値（px 扱い）
+- `RRGGBB` — 色（16進数）
+- オプションの key=value:
+  - `position=outside|center|inside`（デフォルト: `outside`）
+  - `join=round|miter|bevel`（デフォルト: `round`）
+  - `opacity=0.0-1.0`（デフォルト: `1.0`）
+  - `miter-limit=N`（デフォルト: `4.0`、正の数）
+
+例:
+
+```sh
+# 赤い6px縁取り + 白い3px縁取り + 黒塗り
+cappan render --font font.ttf --text "Hello" --output out.png \
+  --stroke "6px,FF0000" \
+  --stroke "3px,FFFFFF" \
+  --fill "000000"
+
+# center ストローク + miter join + 半透明
+cappan render --font font.ttf --text "Hello" --output out.png \
+  --stroke "4px,0000FF,position=center,join=miter,opacity=0.7" \
+  --fill "000000"
+```
+
+#### `--fill` の書式
+
+```
+--fill "RRGGBB[,key=value...]"
+```
+
+- `RRGGBB` — 色（16進数）
+- オプションの key=value:
+  - `opacity=0.0-1.0`（デフォルト: `1.0`）
+
+`--stroke` / `--fill` を指定しない場合は、従来どおり `--fg-color` による単色フィルでレンダリングされます。
+
+> **注意:** `--lcd` と `--stroke` / `--fill` は併用できません。両方指定した場合、LCD レンダリングは無効化されます。
 
 ---
 

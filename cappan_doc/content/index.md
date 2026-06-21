@@ -2,7 +2,7 @@
 
 **cappan**（活版）はpure Zig実装のフォントレンダリングエンジンです。ライブラリ及びツール群を提供しています。
 
-![medial-axis writing-order weighted](guide/image/medial_axis_writing_weighted.png)
+![medial-axis writing-order weighted](guide/image/incremental-rendering/medial_axis_writing_weighted.png)
 
 [ブラウザ Demo](https://heriet.github.io/cappan/demo/)
 
@@ -53,5 +53,6 @@ cappan inspect --font DejaVuSans.ttf
 ## ガイド
 
 - [CLI ガイド](guide/cli.md) — コマンドの使い方
-- [サンプルギャラリー](guide/gallery.md) — 出力例
+- [インクリメンタルレンダリング](guide/incremental-rendering.md) — テキストアニメーションの出力例
+- [ストローク・ペイント](guide/stroke-paint.md) — 縁取り・マルチレイヤー描画の出力例
 - [開発ガイド](guide/developer-guide.md) — ビルド・テスト・ライブラリとしての利用

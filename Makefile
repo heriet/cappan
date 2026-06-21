@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery build-wasm release-windows release-linux
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux
 
 setup: fetch-asset generate-subset
 
@@ -35,8 +35,13 @@ fetch-asset:
 generate-subset:
 	$(DOCKER_RUN) bash script/generate-subset.sh
 
-generate-gallery:
-	bash cappan_doc/generate_gallery.sh
+generate-gallery: generate-gallery-incremental generate-gallery-stroke-paint
+
+generate-gallery-incremental:
+	bash script/generate-gallery-incremental.sh
+
+generate-gallery-stroke-paint:
+	bash script/generate-gallery-stroke-paint.sh
 
 build-docs:
 	$(ZENSICAL_RUN) build

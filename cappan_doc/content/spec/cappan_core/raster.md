@@ -64,6 +64,43 @@ pub const LcdRasterResult = struct {
 
 ---
 
+## stroker — ストロークアウトライン生成
+
+グリフのフラット化済みセグメント列からストローク（縁取り）のアウトラインを生成します。生成されたアウトラインは既存のスキャンラインラスタライザでフィル描画することで、ストロークのカバレッジマップを得ます。
+
+### ストローク生成
+
+```zig
+pub fn generateStrokeOutline(
+    allocator: Allocator,
+    segments: []const Segment,  // flattenContour の出力（閉じたパス）
+    width: f32,                 // ストローク幅（ピクセル）
+    join: LineJoin,             // コーナー処理
+    position: StrokePosition,   // ストローク位置
+    miter_limit: f32,           // miter join の限界長
+) ![]Segment
+```
+
+入力のセグメント列に対して法線方向にオフセットし、コーナー部分に line join を適用して、閉じたストロークパスを返します。返されたセグメント列は `scanline.rasterize()` に直接渡せます。
+
+### LineJoin
+
+| 値 | 説明 |
+|----|------|
+| `miter` | 尖った角。`miter_limit` を超える場合は bevel にフォールバック |
+| `round` | 円弧で丸める（π/8 ステップで分割） |
+| `bevel` | 面取り（直線で接続） |
+
+### StrokePosition
+
+| 値 | 説明 |
+|----|------|
+| `center` | パス中心線にストローク |
+| `outside` | パスの外側のみにストローク（テキスト縁取りのデフォルト） |
+| `inside` | パスの内側のみにストローク |
+
+---
+
 ## glyph_cache — グリフキャッシュ
 
 ラスタライズ結果を `(font_index, glyph_id, pixel_size)` をキーにキャッシュします。同じグリフ・同じサイズの再ラスタライズを回避し、レンダリング性能を向上させます。

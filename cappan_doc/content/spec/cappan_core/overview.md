@@ -127,6 +127,7 @@ cappan_core
 │   ├── outline            アウトラインスケーリング、ベジェ曲線展開
 │   ├── scanline           スキャンラインフィル（8xスーパーサンプリング）
 │   ├── rasterizer         アウトライン→グレースケールビットマップ変換
+│   ├── stroker            ストロークアウトライン生成
 │   ├── glyph_cache        ラスタライズ結果キャッシュ（個別グリフ単位）
 │   └── atlas              グリフアトラステクスチャ（Skylineパッキング）
 │
@@ -137,6 +138,7 @@ cappan_core
 │   ├── renderer           テキスト→RGBAビットマップ（renderText / RowRenderer）
 │   ├── bitmap             グレースケールビットマップ
 │   ├── rgba_bitmap        RGBAビットマップ（Color, blendPixel）
+│   ├── paint              マルチレイヤー描画（PaintStack）
 │   ├── gamma              ガンマ補正（sRGB線形空間ブレンド）
 │   ├── incremental        インクリメンタルレンダリング
 │   ├── easing             イージング関数
@@ -179,12 +181,17 @@ cappan_core
 ┌──────────────┐
 │ raster       │  rasterizeGlyph(outline, scale, padding)
 │ .rasterizer  │  スケーリング → ベジェ展開 → スキャンラインフィル
+│              │  ┌─ PaintStack 時 ─────────────────────────┐
+│ .stroker     │  │ generateStrokeOutline() でストロークパス │
+│              │  │ を生成し、scanline.rasterize() でフィル  │
+│              │  └────────────────────────────────────────┘
 └─────┬────────┘
-      │  RasterResult { pixels (grayscale), width, height, offsets }
+      │  RasterResult / CachedRaster { pixels (grayscale), width, height, offsets }
       ▼
 ┌──────────────┐
 │ render       │  blendPixel() で各グリフをRGBAビットマップに合成
 │ .renderer    │  ガンマ補正、LCDサブピクセル、フラクショナルポジショニング
+│ .paint       │  PaintStack: 操作ごとにレイヤーを重ねがけ
 └─────┬────────┘
       │
       ▼
@@ -206,6 +213,7 @@ const shaper = cappan.layout.shaper;
 
 // ラスタライズ
 const rasterizer = cappan.raster.rasterizer;
+const stroker = cappan.raster.stroker;
 const GlyphCache = cappan.raster.glyph_cache.GlyphCache;
 const GlyphAtlas = cappan.raster.atlas.GlyphAtlas;
 
@@ -213,6 +221,8 @@ const GlyphAtlas = cappan.raster.atlas.GlyphAtlas;
 const renderer = cappan.render.renderer;
 const RgbaBitmap = cappan.render.rgba_bitmap.RgbaBitmap;
 const Color = cappan.render.rgba_bitmap.Color;
+const paint = cappan.render.paint;
+const PaintOperation = cappan.render.paint.PaintOperation;
 const Bitmap = cappan.render.bitmap.Bitmap;
 const gamma = cappan.render.gamma;
 
