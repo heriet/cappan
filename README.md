@@ -4,7 +4,7 @@
 
 <https://heriet.github.io/cappan/>
 
-![medial-axis writing-order weighted](cappan_doc/content/guide/image/medial_axis_writing_weighted.png)
+![medial-axis writing-order weighted](cappan_doc/content/guide/image/incremental-rendering/medial_axis_writing_weighted.png)
 
 [Demo on browser](https://heriet.github.io/cappan/demo/)
 
