@@ -47,6 +47,11 @@ fn paintGlyphCacheKey(font_index: u8, glyph_id: u16, paint_op_index: u16) u64 {
     return (@as(u64, font_index) << 32) | (@as(u64, glyph_id) << 16) | @as(u64, paint_op_index);
 }
 
+pub const PaintLayerTiming = enum {
+    simultaneous,
+    sequential,
+};
+
 pub const Options = struct {
     pixel_size: f32 = 48.0,
     padding: u32 = 4,
@@ -60,6 +65,7 @@ pub const Options = struct {
     max_width: ?f32 = null,
     text_align: shaper.TextAlign = .left,
     paint_stack: ?[]const paint_mod.PaintOperation = null,
+    paint_layer_timing: PaintLayerTiming = .simultaneous,
 };
 
 pub const IncrementalRenderer = struct {
@@ -82,6 +88,8 @@ pub const IncrementalRenderer = struct {
     temp_coverage: []u8,
     weight_cumsum: []f32,
     paint_stack: ?[]paint_mod.PaintOperation,
+    paint_layer_timing: PaintLayerTiming,
+    paint_layer_cumsum: []f32,
     pixel_size: f32,
 
     pub fn init(
@@ -364,6 +372,25 @@ pub const IncrementalRenderer = struct {
         } else null;
         errdefer if (owned_paint_stack) |ps| allocator.free(ps);
 
+        const paint_layer_cumsum: []f32 = if (owned_paint_stack) |ps| blk: {
+            const cumsum = try allocator.alloc(f32, ps.len + 1);
+            errdefer allocator.free(cumsum);
+            var total_weight: f32 = 0;
+            for (ps) |op| {
+                total_weight += op.timeWeight();
+            }
+            if (total_weight <= 0) total_weight = 1.0;
+            cumsum[0] = 0.0;
+            for (ps, 0..) |op, i| {
+                cumsum[i + 1] = cumsum[i] + op.timeWeight() / total_weight;
+            }
+            if (ps.len > 0) {
+                cumsum[ps.len] = 1.0;
+            }
+            break :blk cumsum;
+        } else try allocator.alloc(f32, 0);
+        errdefer allocator.free(paint_layer_cumsum);
+
         return .{
             .allocator = allocator,
             .width = width,
@@ -384,6 +411,8 @@ pub const IncrementalRenderer = struct {
             .temp_coverage = temp_coverage,
             .weight_cumsum = weight_cumsum,
             .paint_stack = owned_paint_stack,
+            .paint_layer_timing = options.paint_layer_timing,
+            .paint_layer_cumsum = paint_layer_cumsum,
             .pixel_size = options.pixel_size,
         };
     }
@@ -391,6 +420,7 @@ pub const IncrementalRenderer = struct {
     pub fn deinit(self: *IncrementalRenderer) void {
         self.allocator.free(self.temp_coverage);
         self.allocator.free(self.weight_cumsum);
+        self.allocator.free(self.paint_layer_cumsum);
         var it = self.glyph_cache.valueIterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.pixels);
@@ -560,14 +590,26 @@ pub const IncrementalRenderer = struct {
                     const gp = easing_mod.apply(self.easing, self.glyphProgress(i, p));
                     if (gp <= 0.0) continue;
 
+                    const layer_gp = switch (self.paint_layer_timing) {
+                        .simultaneous => gp,
+                        .sequential => blk: {
+                            const start = self.paint_layer_cumsum[op_idx];
+                            const end = self.paint_layer_cumsum[op_idx + 1];
+                            const duration = end - start;
+                            if (duration <= 0) break :blk if (gp >= end) @as(f32, 1.0) else @as(f32, 0.0);
+                            break :blk std.math.clamp((gp - start) / duration, 0.0, 1.0);
+                        },
+                    };
+                    if (layer_gp <= 0.0) continue;
+
                     const paint_key = paintGlyphCacheKey(pos.font_index, pos.glyph_id, @intCast(op_idx));
                     const cached = self.paint_glyph_cache.get(paint_key) orelse continue;
                     if (cached.width == 0 or cached.height == 0) continue;
 
-                    const coverage: []const u8 = if (gp >= 1.0)
+                    const coverage: []const u8 = if (layer_gp >= 1.0)
                         cached.pixels[0 .. @as(usize, cached.width) * @as(usize, cached.height)]
                     else
-                        try self.applyStrategy(cached, gp);
+                        try self.applyStrategy(cached, layer_gp);
 
                     self.blendCoverageToTarget(target, cached, coverage, pos, blend_color);
                 }

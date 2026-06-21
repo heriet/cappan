@@ -435,6 +435,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
     var reverse = false;
     var extrema_invert = true;
     var easing_name: []const u8 = "linear";
+    var paint_layer_timing_name: []const u8 = "simultaneous";
     var fallback_font_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer fallback_font_paths.deinit(allocator);
 
@@ -480,6 +481,8 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
             extrema_invert = false;
         } else if (std.mem.eql(u8, arg, "--easing")) {
             easing_name = args.next() orelse "linear";
+        } else if (std.mem.eql(u8, arg, "--paint-layer-timing")) {
+            paint_layer_timing_name = args.next() orelse "simultaneous";
         } else if (std.mem.eql(u8, arg, "--fallback-font")) {
             if (args.next()) |path| {
                 fallback_font_paths.append(allocator, path) catch {
@@ -614,6 +617,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .max_width = common.max_width,
         .text_align = common.text_align,
         .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
+        .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1703,6 +1707,16 @@ fn parseStrokeOptions(options_str: []const u8, stroke: *paint_mod.StrokePaint) b
                 return false;
             }
             stroke.miter_limit = limit;
+        } else if (std.mem.eql(u8, key, "time-weight")) {
+            const tw = std.fmt.parseFloat(f32, value) catch {
+                std.debug.print("Error: invalid time-weight '{s}'\n", .{value});
+                return false;
+            };
+            if (!(tw > 0.0)) {
+                std.debug.print("Error: time-weight must be positive, got '{s}'\n", .{value});
+                return false;
+            }
+            stroke.time_weight = tw;
         } else {
             std.debug.print("Error: unknown stroke option '{s}'\n", .{key});
             return false;
@@ -1735,6 +1749,16 @@ fn parseFillOptions(options_str: []const u8, fill: *paint_mod.FillPaint) bool {
                 return false;
             }
             fill.opacity = opacity;
+        } else if (std.mem.eql(u8, key, "time-weight")) {
+            const tw = std.fmt.parseFloat(f32, value) catch {
+                std.debug.print("Error: invalid time-weight '{s}'\n", .{value});
+                return false;
+            };
+            if (!(tw > 0.0)) {
+                std.debug.print("Error: time-weight must be positive, got '{s}'\n", .{value});
+                return false;
+            }
+            fill.time_weight = tw;
         } else {
             std.debug.print("Error: unknown fill option '{s}'\n", .{key});
             return false;
@@ -1831,7 +1855,8 @@ fn printUsage() void {
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
-        \\  --fill               Add fill: RRGGBB[,opacity=0-1] (render only)
+        \\                                   [,time-weight=N]
+        \\  --fill               Add fill: RRGGBB[,opacity=0-1][,time-weight=N] (render only)
         \\
         \\render options:
         \\  --output             Output PNG file path

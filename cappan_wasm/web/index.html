@@ -344,6 +344,13 @@
           <div id="paintLayerList" class="paint-layer-list" style="margin-top:8px;">
             <div class="paint-layer-empty" id="paintLayerEmpty">No paint layers — using Foreground color</div>
           </div>
+          <label style="margin-top:8px;">
+            Layer Timing
+            <select id="paintLayerTiming">
+              <option value="0">simultaneous</option>
+              <option value="1">sequential</option>
+            </select>
+          </label>
         </div>
 
         <div class="row">
@@ -455,6 +462,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       downloadApngBtn: document.getElementById("downloadApngBtn"),
       totalFrames: document.getElementById("totalFrames"),
       fps: document.getElementById("fps"),
+      paintLayerTiming: document.getElementById("paintLayerTiming"),
       paintLayerList: document.getElementById("paintLayerList"),
       paintLayerEmpty: document.getElementById("paintLayerEmpty"),
       addStrokeBtn: document.getElementById("addStrokeBtn"),
@@ -482,11 +490,11 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       for (const layer of paintLayers) {
         if (layer.type === 'fill') {
           const [r, g, b] = hexToRgb(layer.color);
-          wasm.wasm_paint_add_fill(r, g, b, layer.opacity);
+          wasm.wasm_paint_add_fill(r, g, b, layer.opacity, layer.timeWeight);
         } else if (layer.type === 'stroke') {
           const [r, g, b] = hexToRgb(layer.color);
           const widthX10 = Math.round(layer.width * 10);
-          wasm.wasm_paint_add_stroke(r, g, b, widthX10, layer.opacity, layer.join, layer.position);
+          wasm.wasm_paint_add_stroke(r, g, b, widthX10, layer.opacity, layer.join, layer.position, layer.timeWeight);
         }
       }
     }
@@ -523,6 +531,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
                 <label class="inline">Opacity
                   <input type="number" class="layer-opacity" data-idx="${idx}" min="0" max="100" step="1" value="${layer.opacity}" style="width:56px;">%
                 </label>
+                <label class="inline">TW <input type="number" class="layer-time-weight" data-idx="${idx}" min="1" max="1000" step="1" value="${layer.timeWeight}" style="width:52px"></label>
                 ${removeBtn}
               </div>`;
           } else {
@@ -546,6 +555,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
                   <option value="1" ${layer.position===1?'selected':''}>center</option>
                   <option value="2" ${layer.position===2?'selected':''}>inside</option>
                 </select>
+                <label class="inline">TW <input type="number" class="layer-time-weight" data-idx="${idx}" min="1" max="1000" step="1" value="${layer.timeWeight}" style="width:52px"></label>
                 ${removeBtn}
               </div>`;
           }
@@ -565,6 +575,10 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
 
           item.querySelector(".layer-opacity").addEventListener("input", (e) => {
             paintLayers[Number(e.target.dataset.idx)].opacity = Number(e.target.value);
+          });
+
+          item.querySelector('.layer-time-weight')?.addEventListener('input', e => {
+            paintLayers[Number(e.target.dataset.idx)].timeWeight = Number(e.target.value);
           });
 
           if (layer.type === 'stroke') {
@@ -710,6 +724,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
           Number(elements.fontSize.value),
           Number(elements.strategy.value),
           Number(elements.timing.value),
+          Number(elements.paintLayerTiming.value),
           fr,
           fg,
           fb,
@@ -923,21 +938,21 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
     });
 
     elements.addStrokeBtn.addEventListener("click", () => {
-      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0 });
+      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0, timeWeight: 100 });
       renderPaintLayers();
       updateFgColorDim();
     });
 
     elements.addFillBtn.addEventListener("click", () => {
-      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100 });
+      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100, timeWeight: 100 });
       renderPaintLayers();
       updateFgColorDim();
     });
 
     elements.presetStrokeFillBtn.addEventListener("click", () => {
       paintLayers = [];
-      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0 });
-      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100 });
+      paintLayers.push({ type: 'stroke', color: '#000000', width: 4, opacity: 100, join: 0, position: 0, timeWeight: 100 });
+      paintLayers.push({ type: 'fill', color: '#F05030', opacity: 100, timeWeight: 100 });
       renderPaintLayers();
       updateFgColorDim();
     });

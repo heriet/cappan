@@ -54,17 +54,20 @@ export fn wasm_paint_clear() void {
     paint_stack.clearRetainingCapacity();
 }
 
-export fn wasm_paint_add_fill(r: u8, g: u8, b: u8, opacity_pct: u32) void {
+export fn wasm_paint_add_fill(r: u8, g: u8, b: u8, opacity_pct: u32, time_weight_pct: u32) void {
     const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
+    const time_weight = @as(f32, @floatFromInt(time_weight_pct)) / 100.0;
     paint_stack.append(allocator, .{ .fill = .{
         .color = .{ .r = r, .g = g, .b = b, .a = 255 },
         .opacity = opacity,
+        .time_weight = time_weight,
     } }) catch {};
 }
 
-export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct: u32, join: u32, position: u32) void {
+export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct: u32, join: u32, position: u32, time_weight_pct: u32) void {
     const width = @as(f32, @floatFromInt(width_x10)) / 10.0;
     const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
+    const time_weight = @as(f32, @floatFromInt(time_weight_pct)) / 100.0;
     const line_join: cappan.render.paint.LineJoin = switch (join) {
         0 => .round,
         1 => .miter,
@@ -83,6 +86,7 @@ export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct
         .opacity = opacity,
         .join = line_join,
         .position = stroke_position,
+        .time_weight = time_weight,
     } }) catch {};
 }
 
@@ -121,6 +125,7 @@ export fn wasm_init_animator(
     pixel_size: f32,
     strategy: u32,
     timing: u32,
+    paint_layer_timing: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -164,6 +169,7 @@ export fn wasm_init_animator(
             .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
+            .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
         },
     ) catch return 0;
     return 1;

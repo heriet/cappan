@@ -20,6 +20,7 @@ pub const StrokeWidth = union(enum) {
 pub const FillPaint = struct {
     color: Color,
     opacity: f32 = 1.0,
+    time_weight: f32 = 1.0,
 };
 
 pub const StrokePaint = struct {
@@ -29,11 +30,19 @@ pub const StrokePaint = struct {
     join: LineJoin = .round,
     position: StrokePosition = .outside,
     miter_limit: f32 = 4.0,
+    time_weight: f32 = 1.0,
 };
 
 pub const PaintOperation = union(enum) {
     fill: FillPaint,
     stroke: StrokePaint,
+
+    pub fn timeWeight(self: PaintOperation) f32 {
+        return switch (self) {
+            .fill => |f| f.time_weight,
+            .stroke => |s| s.time_weight,
+        };
+    }
 };
 
 test "stroke width resolves to pixels" {
