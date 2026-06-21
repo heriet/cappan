@@ -4,18 +4,13 @@ set -euo pipefail
 CAPPAN="docker compose run --rm dev zig build run --"
 FONT="cappan_doc/asset/font/NotoSansCJKjp-Regular.otf"
 TEXT="あのイーハトーヴォのすきとおった風"
-OUT="cappan_doc/content/guide/image"
+OUT="cappan_doc/content/guide/image/incremental-rendering"
 SIZE=64
 FPS=24
 FRAMES=144
 HOLD=24
 
 mkdir -p "$OUT"
-
-echo "Generating static render..."
-$CAPPAN render \
-  --font "$FONT" --text "$TEXT" --size "$SIZE" \
-  --output "$OUT/render_static.png"
 
 animate() {
   local name="$1"; shift
@@ -58,4 +53,4 @@ animate tangent_flow_seq     --strategy tangent-flow --timing sequential
 animate tangent_flow_sim     --strategy tangent-flow --timing simultaneous
 
 
-echo "Done. Generated $(ls "$OUT"/*.png | wc -l) images in $OUT/"
+echo "Done. Generated $(ls "$OUT"/*.png | wc -l) incremental rendering images in $OUT/"

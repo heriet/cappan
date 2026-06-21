@@ -1,6 +1,6 @@
-# サンプルギャラリー
+# インクリメンタルレンダリング
 
-cappan で生成した画像のサンプル集です。各サンプルには生成に使用したコマンドを併記しています。
+cappan のインクリメンタルレンダリング（テキストアニメーション）のサンプル集です。各サンプルには生成に使用したコマンドを併記しています。
 
 すべてのサンプルは以下の共通オプションで生成しています。
 
@@ -11,25 +11,13 @@ TEXT="あのイーハトーヴォのすきとおった風"
 
 ---
 
-## render（静止画）
-
-テキストを静止画としてレンダリングします。アニメーションなしの基本出力です。
-
-![render static](image/render_static.png)
-
-```sh
-cappan render --font $FONT --text "$TEXT" --size 64 --output render_static.png
-```
-
----
-
 ## medial-axis（中心軸 + ブラシ）
 
 グリフの骨格線（中心軸）を抽出し、その経路に沿ってブラシで描くようにストロークを表示します。手書きのような自然な描画順になります。
 
 ### 中心軸 × 逐次表示
 
-![medial-axis sequential](image/medial_axis_seq.png)
+![medial-axis sequential](image/incremental-rendering/medial_axis_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -39,7 +27,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 中心軸 × 同時表示
 
-![medial-axis simultaneous](image/medial_axis_sim.png)
+![medial-axis simultaneous](image/incremental-rendering/medial_axis_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -49,7 +37,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 中心軸 × writing-order × 逐次表示
 
-![medial-axis writing-order sequential](image/medial_axis_writing.png)
+![medial-axis writing-order sequential](image/incremental-rendering/medial_axis_writing.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -59,7 +47,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 中心軸 × writing-order × weighted
 
-![medial-axis writing-order weighted](image/medial_axis_writing_weighted.png)
+![medial-axis writing-order weighted](image/incremental-rendering/medial_axis_writing_weighted.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -75,7 +63,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### font-order × 逐次表示
 
-![contour-trace font-order sequential](image/contour_font_seq.png)
+![contour-trace font-order sequential](image/incremental-rendering/contour_font_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -85,7 +73,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### stroke-heuristic × 逐次表示
 
-![contour-trace stroke-heuristic sequential](image/contour_stroke_seq.png)
+![contour-trace stroke-heuristic sequential](image/incremental-rendering/contour_stroke_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -95,7 +83,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### area-priority × 逐次表示
 
-![contour-trace area-priority sequential](image/contour_area_seq.png)
+![contour-trace area-priority sequential](image/incremental-rendering/contour_area_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -105,7 +93,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### writing-order × 逐次表示
 
-![contour-trace writing-order sequential](image/contour_writing_seq.png)
+![contour-trace writing-order sequential](image/incremental-rendering/contour_writing_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -115,7 +103,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### writing-order × weighted
 
-![contour-trace writing-order weighted](image/contour_writing_weighted.png)
+![contour-trace writing-order weighted](image/incremental-rendering/contour_writing_weighted.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -131,7 +119,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 左から右 × 逐次表示
 
-![sweep left-to-right sequential](image/sweep_ltr_seq.png)
+![sweep left-to-right sequential](image/incremental-rendering/sweep_ltr_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -141,7 +129,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 左から右 × 同時表示
 
-![sweep left-to-right simultaneous](image/sweep_ltr_sim.png)
+![sweep left-to-right simultaneous](image/incremental-rendering/sweep_ltr_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -151,7 +139,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 上から下 × 逐次表示
 
-![sweep top-to-bottom sequential](image/sweep_ttb_seq.png)
+![sweep top-to-bottom sequential](image/incremental-rendering/sweep_ttb_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -161,7 +149,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 左から右 × overlap:0.3
 
-![sweep left-to-right overlap 0.3](image/sweep_ltr_overlap03.png)
+![sweep left-to-right overlap 0.3](image/incremental-rendering/sweep_ltr_overlap03.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -171,7 +159,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### 左から右 × overlap:0.7
 
-![sweep left-to-right overlap 0.7](image/sweep_ltr_overlap07.png)
+![sweep left-to-right overlap 0.7](image/incremental-rendering/sweep_ltr_overlap07.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -187,7 +175,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### ディスタンスフィールド × 逐次表示
 
-![distance-field sequential](image/distance_field_seq.png)
+![distance-field sequential](image/incremental-rendering/distance_field_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -197,7 +185,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### ディスタンスフィールド × 同時表示
 
-![distance-field simultaneous](image/distance_field_sim.png)
+![distance-field simultaneous](image/incremental-rendering/distance_field_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -213,7 +201,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### エクストリーマウェーブ × 逐次表示
 
-![extrema-wave sequential](image/extrema_wave_seq.png)
+![extrema-wave sequential](image/incremental-rendering/extrema_wave_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -223,7 +211,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### エクストリーマウェーブ × 同時表示
 
-![extrema-wave simultaneous](image/extrema_wave_sim.png)
+![extrema-wave simultaneous](image/incremental-rendering/extrema_wave_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -233,7 +221,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### エクストリーマウェーブ × 極値点から × 逐次表示
 
-![extrema-wave invert sequential](image/extrema_wave_inv_seq.png)
+![extrema-wave invert sequential](image/incremental-rendering/extrema_wave_inv_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -243,7 +231,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### エクストリーマウェーブ × 極値点から × 同時表示
 
-![extrema-wave invert simultaneous](image/extrema_wave_inv_sim.png)
+![extrema-wave invert simultaneous](image/incremental-rendering/extrema_wave_inv_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -259,7 +247,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### フェード × 逐次表示
 
-![fade sequential](image/fade_seq.png)
+![fade sequential](image/incremental-rendering/fade_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -269,7 +257,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### フェード × 同時表示
 
-![fade simultaneous](image/fade_sim.png)
+![fade simultaneous](image/incremental-rendering/fade_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -285,7 +273,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### スケルトングロウ × 逐次表示
 
-![skeleton-grow sequential](image/skeleton_grow_seq.png)
+![skeleton-grow sequential](image/incremental-rendering/skeleton_grow_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -295,7 +283,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### スケルトングロウ × 同時表示
 
-![skeleton-grow simultaneous](image/skeleton_grow_sim.png)
+![skeleton-grow simultaneous](image/incremental-rendering/skeleton_grow_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -305,7 +293,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### スケルトングロウ × weighted
 
-![skeleton-grow weighted](image/skeleton_grow_weighted.png)
+![skeleton-grow weighted](image/incremental-rendering/skeleton_grow_weighted.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -321,7 +309,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### タンジェントフロー × 逐次表示
 
-![tangent-flow sequential](image/tangent_flow_seq.png)
+![tangent-flow sequential](image/incremental-rendering/tangent_flow_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -331,7 +319,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### タンジェントフロー × 同時表示
 
-![tangent-flow simultaneous](image/tangent_flow_sim.png)
+![tangent-flow simultaneous](image/incremental-rendering/tangent_flow_sim.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -347,7 +335,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### sweep × ease-in-out × 逐次表示
 
-![sweep ease-in-out sequential](image/sweep_easeio_seq.png)
+![sweep ease-in-out sequential](image/incremental-rendering/sweep_easeio_seq.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \
@@ -363,7 +351,7 @@ cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hol
 
 ### contour-trace writing-order × 逐次表示 × 逆再生
 
-![contour-trace writing-order sequential reverse](image/contour_writing_rev.png)
+![contour-trace writing-order sequential reverse](image/incremental-rendering/contour_writing_rev.png)
 
 ```sh
 cappan animate --font $FONT --text "$TEXT" --size 64 --frames 144 --fps 24 --hold 24 \

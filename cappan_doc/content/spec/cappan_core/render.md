@@ -50,6 +50,7 @@ pub const RenderOptions = struct {
     max_width: ?f32 = null,                  // ワードラップ幅
     text_align: TextAlign = .left,
     lcd_rendering: bool = false,             // LCD サブピクセルレンダリング
+    paint_stack: ?[]const PaintOperation = null,  // マルチレイヤー描画（null 時は fg_color で単色フィル）
 };
 ```
 
@@ -135,6 +136,77 @@ pub fn srgbToLinear(v: u8) f32;               // sRGB u8 → リニア [0.0, 1.0
 pub fn linearToSrgb(linear: f32) u8;           // リニア [0.0, 1.0] → sRGB u8
 pub fn blendLinear(bg_srgb: u8, fg_srgb: u8, alpha: f32) u8;  // リニア空間でブレンドし sRGB で返す
 ```
+
+---
+
+## paint — マルチレイヤー描画（PaintStack）
+
+テキストに複数のフィル・ストロークを重ねがけする PaintStack の型定義です。`RenderOptions.paint_stack` に設定して使用します。
+
+### PaintOperation
+
+```zig
+pub const PaintOperation = union(enum) {
+    fill: FillPaint,
+    stroke: StrokePaint,
+};
+```
+
+`paint_stack` の配列は**下から上**の順序で描画されます（index 0 が最背面）。
+
+### FillPaint
+
+```zig
+pub const FillPaint = struct {
+    color: Color,
+    opacity: f32 = 1.0,
+};
+```
+
+### StrokePaint
+
+```zig
+pub const StrokePaint = struct {
+    color: Color,
+    width: StrokeWidth = .{ .px = 1.0 },
+    opacity: f32 = 1.0,
+    join: LineJoin = .round,
+    position: StrokePosition = .outside,
+    miter_limit: f32 = 4.0,
+};
+```
+
+### StrokeWidth
+
+```zig
+pub const StrokeWidth = union(enum) {
+    px: f32,   // ピクセル単位（絶対値）
+    em: f32,   // pixel_size に比例してスケール
+};
+```
+
+### 使用例
+
+```zig
+const paint_ops = [_]PaintOperation{
+    .{ .stroke = .{ .color = red, .width = .{ .px = 6.0 }, .position = .outside } },
+    .{ .stroke = .{ .color = white, .width = .{ .px = 3.0 }, .position = .outside } },
+    .{ .fill = .{ .color = black } },
+};
+
+var bitmap = try renderer.renderText(allocator, &fonts, "Hello", .{
+    .pixel_size = 48.0,
+    .paint_stack = &paint_ops,
+});
+```
+
+### 半透明描画
+
+`opacity < 1.0` の場合、一時バッファに全グリフを不透明で描画した後、指定の不透明度でメインビットマップに合成します。グリフ間の重なりで二重ブレンドが発生しません。
+
+### LCD レンダリングとの関係
+
+PaintStack と LCD サブピクセルレンダリング (`lcd_rendering = true`) は併用できません。両方が指定された場合、LCD レンダリングは自動的に無効化されます。
 
 ---
 

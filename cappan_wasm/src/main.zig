@@ -8,6 +8,7 @@ const embedded_font_data = @embedFile("asset/font/NotoSansJP-Regular.otf");
 var current_font: ?cappan.font.Font = null;
 var last_bitmap: ?cappan.render.rgba_bitmap.RgbaBitmap = null;
 var current_renderer: ?cappan.render.incremental.IncrementalRenderer = null;
+var paint_stack: std.ArrayListUnmanaged(cappan.render.paint.PaintOperation) = .empty;
 
 export fn wasm_alloc(len: usize) ?[*]u8 {
     const slice = allocator.alloc(u8, len) catch return null;
@@ -49,6 +50,48 @@ export fn wasm_free_font() void {
     }
 }
 
+export fn wasm_paint_clear() void {
+    paint_stack.clearRetainingCapacity();
+}
+
+export fn wasm_paint_add_fill(r: u8, g: u8, b: u8, opacity_pct: u32, time_weight_pct: u32) i32 {
+    const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
+    const time_weight = @max(0.01, @as(f32, @floatFromInt(time_weight_pct)) / 100.0);
+    paint_stack.append(allocator, .{ .fill = .{
+        .color = .{ .r = r, .g = g, .b = b, .a = 255 },
+        .opacity = opacity,
+        .time_weight = time_weight,
+    } }) catch return 0;
+    return 1;
+}
+
+export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct: u32, join: u32, position: u32, time_weight_pct: u32) i32 {
+    const width = @as(f32, @floatFromInt(width_x10)) / 10.0;
+    const opacity = @as(f32, @floatFromInt(opacity_pct)) / 100.0;
+    const time_weight = @max(0.01, @as(f32, @floatFromInt(time_weight_pct)) / 100.0);
+    const line_join: cappan.render.paint.LineJoin = switch (join) {
+        0 => .round,
+        1 => .miter,
+        2 => .bevel,
+        else => .round,
+    };
+    const stroke_position: cappan.render.paint.StrokePosition = switch (position) {
+        0 => .outside,
+        1 => .center,
+        2 => .inside,
+        else => .outside,
+    };
+    paint_stack.append(allocator, .{ .stroke = .{
+        .color = .{ .r = r, .g = g, .b = b, .a = 255 },
+        .width = .{ .px = width },
+        .opacity = opacity,
+        .join = line_join,
+        .position = stroke_position,
+        .time_weight = time_weight,
+    } }) catch return 0;
+    return 1;
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
@@ -72,6 +115,7 @@ export fn wasm_render(
             .pixel_size = pixel_size,
             .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+            .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
         },
     ) catch return 0;
     return 1;
@@ -83,6 +127,7 @@ export fn wasm_init_animator(
     pixel_size: f32,
     strategy: u32,
     timing: u32,
+    paint_layer_timing: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -125,6 +170,8 @@ export fn wasm_init_animator(
             .timing = timing_mode,
             .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+            .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
+            .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
         },
     ) catch return 0;
     return 1;
