@@ -172,7 +172,7 @@ pub const GlyphAtlas = struct {
         defer outline.deinit();
 
         const scale = pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-        var raster = try rasterizer_mod.rasterizeGlyph(self.allocator, outline, scale, 1);
+        var raster = try rasterizer_mod.rasterizeGlyph(self.allocator, outline, scale, 1, .{});
         defer raster.deinit();
 
         if (raster.width == 0 or raster.height == 0) {

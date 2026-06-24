@@ -25,6 +25,7 @@ pub const RenderOptions = struct {
     text_align: shaper.TextAlign = .left,
     lcd_rendering: bool = false,
     paint_stack: ?[]const paint_mod.PaintOperation = null,
+    aa_level: scanline_mod.AntiAliasLevel = .aa_8,
 };
 
 pub const CachedRaster = struct {
@@ -86,6 +87,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
 
     if (options.lcd_rendering) {
         var lcd_cache: std.AutoHashMapUnmanaged(u32, CachedLcdRaster) = .empty;
@@ -136,7 +138,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding);
+            const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
 
             const entry = CachedLcdRaster{
                 .r_coverage = lcd_result.r_coverage,
@@ -223,7 +225,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                         }
                         var layer_outline = layer_outline_opt.?;
                         defer layer_outline.deinit();
-                        const layer_result = try rasterizer_mod.rasterizeGlyph(allocator, layer_outline, glyph_scale, options.padding);
+                        const layer_result = try rasterizer_mod.rasterizeGlyph(allocator, layer_outline, glyph_scale, options.padding, raster_options);
                         const layer_entry = CachedRaster{ .pixels = layer_result.pixels, .width = layer_result.width, .height = layer_result.height, .offset_x = layer_result.offset_x, .offset_y = layer_result.offset_y };
                         try glyph_cache.put(allocator, layer_cache_key, layer_entry);
                         if (layer_entry.width == 0 or layer_entry.height == 0) continue;
@@ -249,7 +251,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                 var outline = outline_opt.?;
                 defer outline.deinit();
 
-                const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding);
+                const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
 
                 const entry = CachedRaster{
                     .pixels = glyph_result.pixels,
@@ -319,6 +321,7 @@ fn renderTextPaintStack(
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
 
     var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
     defer {
@@ -373,7 +376,7 @@ fn renderTextPaintStack(
 
             const entry = switch (op) {
                 .fill => blk: {
-                    const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding);
+                    const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
                         .width = glyph_result.width,
@@ -382,7 +385,7 @@ fn renderTextPaintStack(
                         .offset_y = glyph_result.offset_y,
                     };
                 },
-                .stroke => |stroke| try rasterizeStrokeGlyph(allocator, outline, glyph_scale, extended_padding, stroke, options.pixel_size),
+                .stroke => |stroke| try rasterizeStrokeGlyph(allocator, outline, glyph_scale, extended_padding, stroke, options.pixel_size, raster_options),
             };
             errdefer allocator.free(entry.pixels);
             try paint_cache.put(allocator, cache_key, entry);
@@ -486,6 +489,7 @@ pub fn rasterizeStrokeGlyph(
     padding: u32,
     stroke: paint_mod.StrokePaint,
     pixel_size: f32,
+    raster_options: scanline_mod.RasterOptions,
 ) !CachedRaster {
     const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
     const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale;
@@ -531,7 +535,7 @@ pub fn rasterizeStrokeGlyph(
         try all_segments.appendSlice(allocator, stroke_segments);
     }
 
-    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height);
+    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height, raster_options);
 
     return .{
         .pixels = pixels,
@@ -936,7 +940,8 @@ pub const RowRenderer = struct {
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding);
+            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
+            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
             try glyph_cache.put(allocator, cache_key, .{
                 .pixels = glyph_result.pixels,
                 .width = glyph_result.width,

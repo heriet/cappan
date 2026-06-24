@@ -9,6 +9,7 @@ const Color = cappan_core.render.rgba_bitmap.Color;
 const RgbaBitmap = cappan_core.render.rgba_bitmap.RgbaBitmap;
 const incremental_mod = cappan_core.render.incremental;
 const paint_mod = cappan_core.render.paint;
+const scanline_mod = cappan_core.raster.scanline;
 const png_mod = @import("image/png.zig");
 const apng_mod = @import("image/apng.zig");
 const bmp_mod = @import("image/bmp.zig");
@@ -59,6 +60,7 @@ const CommonOptions = struct {
     max_width: ?f32 = null,
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
+    aa_level: scanline_mod.AntiAliasLevel = .aa_8,
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
 
@@ -135,6 +137,21 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--lcd")) {
         opts.lcd_rendering = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--aa-level")) {
+        if (args.next()) |s| {
+            if (std.mem.eql(u8, s, "4")) {
+                opts.aa_level = .aa_4;
+            } else if (std.mem.eql(u8, s, "8")) {
+                opts.aa_level = .aa_8;
+            } else if (std.mem.eql(u8, s, "16")) {
+                opts.aa_level = .aa_16;
+            } else if (std.mem.eql(u8, s, "32")) {
+                opts.aa_level = .aa_32;
+            } else {
+                std.debug.print("Error: invalid aa-level '{s}', expected 4, 8, 16, or 32\n", .{s});
+            }
+        }
         return true;
     } else if (std.mem.eql(u8, arg, "--stroke")) {
         const spec = args.next() orelse {
@@ -336,6 +353,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .max_width = common.max_width,
             .text_align = common.text_align,
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
+            .aa_level = common.aa_level,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -385,6 +403,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .fractional_positioning = common.fractional_positioning,
             .max_width = common.max_width,
             .text_align = common.text_align,
+            .aa_level = common.aa_level,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -626,6 +645,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .text_align = common.text_align,
         .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
+        .aa_level = common.aa_level,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1861,6 +1881,7 @@ fn printUsage() void {
         \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
+        \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
         \\                                   [,time-weight=N]

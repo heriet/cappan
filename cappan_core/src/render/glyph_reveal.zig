@@ -64,6 +64,7 @@ pub const GlyphRevealContext = struct {
     medial_axis_animation: ?medial_axis_mod.MedialAxisAnimation,
     reveal_map: ?[]f32,
     glyph_info: GlyphInfo,
+    raster_options: scanline_mod.RasterOptions,
 
     pub fn initFromOutline(
         allocator: std.mem.Allocator,
@@ -76,6 +77,7 @@ pub const GlyphRevealContext = struct {
         scale: f32,
         offset_x: f32,
         offset_y: f32,
+        raster_options: scanline_mod.RasterOptions,
     ) !GlyphRevealContext {
         var animation: ?contour_trace_mod.GlyphAnimation = null;
         if (strategy == .contour_trace) {
@@ -123,6 +125,7 @@ pub const GlyphRevealContext = struct {
             .medial_axis_animation = ma_animation,
             .reveal_map = reveal_map_data,
             .glyph_info = glyph_info,
+            .raster_options = raster_options,
         };
     }
 
@@ -169,7 +172,7 @@ pub const GlyphRevealContext = struct {
             offset_y = y_max_px + pad_f;
         }
 
-        return initFromOutline(allocator, strategy, info, coverage, width, height, outline_opt, scale, offset_x, offset_y);
+        return initFromOutline(allocator, strategy, info, coverage, width, height, outline_opt, scale, offset_x, offset_y, .{});
     }
 
     pub fn apply(
@@ -190,7 +193,7 @@ pub const GlyphRevealContext = struct {
                 if (self.animation) |anim| {
                     const partial = try contour_trace_mod.getPartialSegments(self.allocator, anim, p);
                     defer self.allocator.free(partial);
-                    const raster_pixels = try scanline_mod.rasterize(self.allocator, partial, width, height);
+                    const raster_pixels = try scanline_mod.rasterize(self.allocator, partial, width, height, self.raster_options);
                     defer self.allocator.free(raster_pixels);
                     @memcpy(output[0..pixel_count], raster_pixels);
                 } else {
@@ -256,7 +259,7 @@ test "fade strategy: progress 0.0 produces all zeros" {
     defer outline_mut.deinit();
 
     const scale = 32.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4);
+    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4, .{});
     defer raster.deinit();
 
     const output = try std.testing.allocator.alloc(u8, raster.pixels.len);
@@ -296,7 +299,7 @@ test "sweep strategy: partial reveal" {
     defer outline_mut.deinit();
 
     const scale = 32.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4);
+    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4, .{});
     defer raster.deinit();
 
     const output = try std.testing.allocator.alloc(u8, raster.pixels.len);
@@ -338,7 +341,7 @@ test "init and apply smoke test for all strategies" {
     defer outline_mut.deinit();
 
     const scale = 32.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4);
+    var raster = try rasterizer_mod.rasterizeGlyph(std.testing.allocator, outline_mut, scale, 4, .{});
     defer raster.deinit();
 
     const output = try std.testing.allocator.alloc(u8, raster.pixels.len);

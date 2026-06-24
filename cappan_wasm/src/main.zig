@@ -1,5 +1,6 @@
 const std = @import("std");
 const cappan = @import("cappan_core");
+const scanline_mod = cappan.raster.scanline;
 
 const allocator = std.heap.wasm_allocator;
 
@@ -92,10 +93,20 @@ export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct
     return 1;
 }
 
+fn parseAaLevel(aa_level: u32) scanline_mod.AntiAliasLevel {
+    return switch (aa_level) {
+        4 => .aa_4,
+        16 => .aa_16,
+        32 => .aa_32,
+        else => .aa_8,
+    };
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
     pixel_size: f32,
+    aa_level: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -116,6 +127,7 @@ export fn wasm_render(
             .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
+            .aa_level = parseAaLevel(aa_level),
         },
     ) catch return 0;
     return 1;
@@ -125,6 +137,7 @@ export fn wasm_init_animator(
     text_ptr: [*]const u8,
     text_len: usize,
     pixel_size: f32,
+    aa_level: u32,
     strategy: u32,
     timing: u32,
     paint_layer_timing: u32,
@@ -172,6 +185,7 @@ export fn wasm_init_animator(
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
+            .aa_level = parseAaLevel(aa_level),
         },
     ) catch return 0;
     return 1;

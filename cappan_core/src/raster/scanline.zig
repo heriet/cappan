@@ -9,7 +9,20 @@ pub const Edge = struct {
     direction: i8, // +1 downward, -1 upward
 };
 
-const SUPERSAMPLE_N: usize = 8;
+pub const AntiAliasLevel = enum(u6) {
+    aa_4 = 4,
+    aa_8 = 8,
+    aa_16 = 16,
+    aa_32 = 32,
+
+    pub fn toSampleCount(self: AntiAliasLevel) usize {
+        return @intFromEnum(self);
+    }
+};
+
+pub const RasterOptions = struct {
+    aa_level: AntiAliasLevel = .aa_8,
+};
 
 pub fn buildEdges(allocator: std.mem.Allocator, segments: []const outline_mod.Segment) ![]Edge {
     var edges: std.ArrayList(Edge) = .empty;
@@ -65,12 +78,13 @@ fn compareIntersections(_: void, a: Intersection, b: Intersection) bool {
     return a.x < b.x;
 }
 
-/// Rasterize segments into a grayscale pixel buffer using 8x supersampling
+/// Rasterize segments into a grayscale pixel buffer using supersampling
 pub fn rasterize(
     allocator: std.mem.Allocator,
     segments: []const outline_mod.Segment,
     width: u32,
     height: u32,
+    options: RasterOptions,
 ) ![]u8 {
     const pixels = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
     @memset(pixels, 0);
@@ -89,11 +103,13 @@ pub fn rasterize(
     const coverage = try allocator.alloc(u16, w);
     defer allocator.free(coverage);
 
+    const n = options.aa_level.toSampleCount();
+
     for (0..height) |y| {
         @memset(coverage, 0);
 
-        for (0..SUPERSAMPLE_N) |s| {
-            const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, SUPERSAMPLE_N);
+        for (0..n) |s| {
+            const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, @floatFromInt(n));
 
             intersections.clearRetainingCapacity();
 
@@ -127,7 +143,7 @@ pub fn rasterize(
 
         // Convert coverage to grayscale
         for (0..w) |px| {
-            const value = @as(u8, @intCast(@min(coverage[px] * 255 / SUPERSAMPLE_N, 255)));
+            const value = @as(u8, @intCast(@min(coverage[px] * 255 / @as(u16, @intCast(n)), 255)));
             pixels[y * w + px] = value;
         }
     }
@@ -143,7 +159,7 @@ test "rasterize a simple triangle" {
         .{ .x0 = 2, .y0 = 14, .x1 = 8, .y1 = 2 },
     };
 
-    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16);
+    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16, .{});
     defer std.testing.allocator.free(pixels);
 
     // Center pixels should have non-zero coverage

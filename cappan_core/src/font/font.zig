@@ -611,7 +611,7 @@ pub const Font = struct {
         defer outline.deinit();
 
         const scale = pixel_size / @as(f32, @floatFromInt(self.getUnitsPerEm()));
-        return try rasterizer_mod.rasterizeGlyph(allocator, outline, scale, 1);
+        return try rasterizer_mod.rasterizeGlyph(allocator, outline, scale, 1, .{});
     }
 
     pub fn getCodepointAdvancePx(self: Font, codepoint: u32, pixel_size: f32) !f32 {
