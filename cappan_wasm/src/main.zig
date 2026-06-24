@@ -120,16 +120,16 @@ export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
     pixel_size: f32,
-    aa_level: u32,
-    sample_pattern: u32,
-    adaptive: u32,
-    raster_method: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
+    aa_level: u32,
+    sample_pattern: u32,
+    adaptive: u32,
+    raster_method: u32,
 ) i32 {
     const font = current_font orelse return 0;
     free_last_bitmap();
@@ -159,10 +159,6 @@ export fn wasm_init_animator(
     text_ptr: [*]const u8,
     text_len: usize,
     pixel_size: f32,
-    aa_level: u32,
-    sample_pattern: u32,
-    adaptive: u32,
-    raster_method: u32,
     strategy: u32,
     timing: u32,
     paint_layer_timing: u32,
@@ -172,6 +168,10 @@ export fn wasm_init_animator(
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
+    aa_level: u32,
+    sample_pattern: u32,
+    adaptive: u32,
+    raster_method: u32,
 ) i32 {
     const font = current_font orelse return 0;
     wasm_free_animator();

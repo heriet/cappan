@@ -16,6 +16,7 @@ pub fn rasterize(
     const h: usize = @intCast(height);
 
     const pixels = try allocator.alloc(u8, w * h);
+    errdefer allocator.free(pixels);
     @memset(pixels, 0);
 
     if (w == 0 or h == 0) return pixels;
@@ -108,14 +109,58 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
     }
 }
 
-fn renderRowSegment(cells: []Cell, w: usize, cy: usize, x0: f32, y0: f32, x1: f32, y1: f32) void {
+fn renderRowSegment(cells: []Cell, w: usize, cy: usize, x0_raw: f32, y0_raw: f32, x1_raw: f32, y1_raw: f32) void {
+    const full_dy = y1_raw - y0_raw;
+    if (@abs(full_dy) < 1e-10) return;
+
+    const full_dx = x1_raw - x0_raw;
+    const w_f: f32 = @floatFromInt(w);
+
+    var x0 = x0_raw;
+    var y0 = y0_raw;
+    var x1 = x1_raw;
+    var y1 = y1_raw;
+
+    if (@abs(full_dx) > 1e-10) {
+        const dy_per_dx = full_dy / full_dx;
+        const x_lo = @min(x0, x1);
+        const x_hi = @max(x0, x1);
+
+        if (x_hi <= 0) {
+            addCellContribution(cells, w, cy, 0, full_dy, 0, 0);
+            return;
+        }
+        if (x_lo >= w_f) return;
+
+        if (x0 < 0) {
+            y0 += (0 - x0) * dy_per_dx;
+            x0 = 0;
+        } else if (x1 < 0) {
+            y1 += (0 - x1) * dy_per_dx;
+            x1 = 0;
+        }
+
+        if (x0 > w_f) {
+            y0 += (w_f - x0) * dy_per_dx;
+            x0 = w_f;
+        } else if (x1 > w_f) {
+            y1 += (w_f - x1) * dy_per_dx;
+            x1 = w_f;
+        }
+
+        if (x0 <= 0 and x1 <= 0) {
+            addCellContribution(cells, w, cy, 0, y1 - y0, 0, 0);
+            return;
+        }
+    }
+
     const dy = y1 - y0;
     if (@abs(dy) < 1e-10) return;
 
     const dx = x1 - x0;
 
     if (@abs(dx) < 1e-10) {
-        const ix: i32 = @intFromFloat(@floor(x0));
+        const ix: i32 = @intFromFloat(@floor(@max(x0, 0)));
         addCellContribution(cells, w, cy, ix, dy, x0, x0);
         return;
     }
