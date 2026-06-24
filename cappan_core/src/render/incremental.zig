@@ -69,6 +69,7 @@ pub const Options = struct {
     paint_layer_timing: PaintLayerTiming = .simultaneous,
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
     sample_pattern: scanline_mod.SamplePattern = .regular,
+    adaptive: bool = false,
 };
 
 pub const IncrementalRenderer = struct {
@@ -206,7 +207,7 @@ pub const IncrementalRenderer = struct {
             };
 
             const fill_padding = if (options.paint_stack != null) extended_padding else options.padding;
-            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern };
+            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null };
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
@@ -437,7 +438,7 @@ pub const IncrementalRenderer = struct {
             .paint_layer_timing = options.paint_layer_timing,
             .paint_layer_cumsum = paint_layer_cumsum,
             .pixel_size = options.pixel_size,
-            .raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern },
+            .raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null },
         };
     }
 

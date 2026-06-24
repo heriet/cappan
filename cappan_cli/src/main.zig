@@ -62,6 +62,7 @@ const CommonOptions = struct {
     lcd_rendering: bool = false,
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
     sample_pattern: scanline_mod.SamplePattern = .regular,
+    adaptive: bool = false,
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
 
@@ -164,6 +165,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
                 std.debug.print("Error: invalid sample-pattern '{s}', expected regular or rotated-grid\n", .{s});
             }
         }
+        return true;
+    } else if (std.mem.eql(u8, arg, "--adaptive")) {
+        opts.adaptive = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--stroke")) {
         const spec = args.next() orelse {
@@ -367,6 +371,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
             .aa_level = common.aa_level,
             .sample_pattern = common.sample_pattern,
+            .adaptive = common.adaptive,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -418,6 +423,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .text_align = common.text_align,
             .aa_level = common.aa_level,
             .sample_pattern = common.sample_pattern,
+            .adaptive = common.adaptive,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -661,6 +667,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
         .aa_level = common.aa_level,
         .sample_pattern = common.sample_pattern,
+        .adaptive = common.adaptive,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1898,6 +1905,7 @@ fn printUsage() void {
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
         \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
         \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
+        \\  --adaptive           Enable adaptive supersampling (4x + 32x refine)
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
         \\                                   [,time-weight=N]

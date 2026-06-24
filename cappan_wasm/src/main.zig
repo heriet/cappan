@@ -115,6 +115,7 @@ export fn wasm_render(
     pixel_size: f32,
     aa_level: u32,
     sample_pattern: u32,
+    adaptive: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -137,6 +138,7 @@ export fn wasm_render(
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .aa_level = parseAaLevel(aa_level),
             .sample_pattern = parseSamplePattern(sample_pattern),
+            .adaptive = adaptive != 0,
         },
     ) catch return 0;
     return 1;
@@ -148,6 +150,7 @@ export fn wasm_init_animator(
     pixel_size: f32,
     aa_level: u32,
     sample_pattern: u32,
+    adaptive: u32,
     strategy: u32,
     timing: u32,
     paint_layer_timing: u32,
@@ -197,6 +200,7 @@ export fn wasm_init_animator(
             .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
             .aa_level = parseAaLevel(aa_level),
             .sample_pattern = parseSamplePattern(sample_pattern),
+            .adaptive = adaptive != 0,
         },
     ) catch return 0;
     return 1;
