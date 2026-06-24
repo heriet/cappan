@@ -26,6 +26,7 @@ pub const RenderOptions = struct {
     lcd_rendering: bool = false,
     paint_stack: ?[]const paint_mod.PaintOperation = null,
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
+    sample_pattern: scanline_mod.SamplePattern = .regular,
 };
 
 pub const CachedRaster = struct {
@@ -87,7 +88,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
-    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern };
 
     if (options.lcd_rendering) {
         var lcd_cache: std.AutoHashMapUnmanaged(u32, CachedLcdRaster) = .empty;
@@ -321,7 +322,7 @@ fn renderTextPaintStack(
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
-    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern };
 
     var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
     defer {
@@ -940,7 +941,7 @@ pub const RowRenderer = struct {
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level };
+            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern };
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
             try glyph_cache.put(allocator, cache_key, .{
                 .pixels = glyph_result.pixels,

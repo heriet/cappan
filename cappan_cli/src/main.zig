@@ -61,6 +61,7 @@ const CommonOptions = struct {
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
+    sample_pattern: scanline_mod.SamplePattern = .regular,
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
 
@@ -150,6 +151,17 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
                 opts.aa_level = .aa_32;
             } else {
                 std.debug.print("Error: invalid aa-level '{s}', expected 4, 8, 16, or 32\n", .{s});
+            }
+        }
+        return true;
+    } else if (std.mem.eql(u8, arg, "--sample-pattern")) {
+        if (args.next()) |s| {
+            if (std.mem.eql(u8, s, "regular")) {
+                opts.sample_pattern = .regular;
+            } else if (std.mem.eql(u8, s, "rotated-grid")) {
+                opts.sample_pattern = .rotated_grid;
+            } else {
+                std.debug.print("Error: invalid sample-pattern '{s}', expected regular or rotated-grid\n", .{s});
             }
         }
         return true;
@@ -354,6 +366,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .text_align = common.text_align,
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
             .aa_level = common.aa_level,
+            .sample_pattern = common.sample_pattern,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -404,6 +417,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .max_width = common.max_width,
             .text_align = common.text_align,
             .aa_level = common.aa_level,
+            .sample_pattern = common.sample_pattern,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -646,6 +660,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
         .aa_level = common.aa_level,
+        .sample_pattern = common.sample_pattern,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1882,6 +1897,7 @@ fn printUsage() void {
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
         \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
+        \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
         \\                                   [,time-weight=N]

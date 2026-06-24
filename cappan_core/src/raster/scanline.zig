@@ -20,9 +20,32 @@ pub const AntiAliasLevel = enum(u6) {
     }
 };
 
+pub const SamplePattern = enum {
+    regular,
+    rotated_grid,
+};
+
 pub const RasterOptions = struct {
     aa_level: AntiAliasLevel = .aa_8,
+    sample_pattern: SamplePattern = .regular,
 };
+
+fn sampleXOffset(pattern: SamplePattern, sample_idx: usize, sample_count: usize) f32 {
+    return switch (pattern) {
+        .regular => 0.0,
+        .rotated_grid => blk: {
+            var reversed: usize = 0;
+            var bits = sample_idx;
+            var remaining = sample_count;
+            while (remaining > 1) {
+                remaining >>= 1;
+                reversed = (reversed << 1) | (bits & 1);
+                bits >>= 1;
+            }
+            break :blk (@as(f32, @floatFromInt(reversed)) + 0.5) / @as(f32, @floatFromInt(sample_count));
+        },
+    };
+}
 
 pub fn buildEdges(allocator: std.mem.Allocator, segments: []const outline_mod.Segment) ![]Edge {
     var edges: std.ArrayList(Edge) = .empty;
@@ -110,6 +133,7 @@ pub fn rasterize(
 
         for (0..n) |s| {
             const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, @floatFromInt(n));
+            const x_offset = sampleXOffset(options.sample_pattern, s, n);
 
             intersections.clearRetainingCapacity();
 
@@ -122,14 +146,12 @@ pub fn rasterize(
 
             std.mem.sort(Intersection, intersections.items, {}, compareIntersections);
 
-            // Apply non-zero winding fill rule
             var winding: i32 = 0;
             var ix_idx: usize = 0;
 
             for (0..w) |px| {
-                const px_left = @as(f32, @floatFromInt(px));
+                const px_left = @as(f32, @floatFromInt(px)) + x_offset;
 
-                // Process intersections to the left of this pixel
                 while (ix_idx < intersections.items.len and intersections.items[ix_idx].x < px_left) {
                     winding += intersections.items[ix_idx].direction;
                     ix_idx += 1;

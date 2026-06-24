@@ -102,11 +102,19 @@ fn parseAaLevel(aa_level: u32) scanline_mod.AntiAliasLevel {
     };
 }
 
+fn parseSamplePattern(sample_pattern: u32) scanline_mod.SamplePattern {
+    return switch (sample_pattern) {
+        1 => .rotated_grid,
+        else => .regular,
+    };
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
     pixel_size: f32,
     aa_level: u32,
+    sample_pattern: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -128,6 +136,7 @@ export fn wasm_render(
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .aa_level = parseAaLevel(aa_level),
+            .sample_pattern = parseSamplePattern(sample_pattern),
         },
     ) catch return 0;
     return 1;
@@ -138,6 +147,7 @@ export fn wasm_init_animator(
     text_len: usize,
     pixel_size: f32,
     aa_level: u32,
+    sample_pattern: u32,
     strategy: u32,
     timing: u32,
     paint_layer_timing: u32,
@@ -186,6 +196,7 @@ export fn wasm_init_animator(
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
             .aa_level = parseAaLevel(aa_level),
+            .sample_pattern = parseSamplePattern(sample_pattern),
         },
     ) catch return 0;
     return 1;
