@@ -60,10 +60,7 @@ const CommonOptions = struct {
     max_width: ?f32 = null,
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
-    aa_level: scanline_mod.AntiAliasLevel = .aa_8,
-    sample_pattern: scanline_mod.SamplePattern = .regular,
-    adaptive: bool = false,
-    method: scanline_mod.RasterMethod = .supersampling,
+    raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
 
@@ -144,13 +141,13 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
     } else if (std.mem.eql(u8, arg, "--aa-level")) {
         if (args.next()) |s| {
             if (std.mem.eql(u8, s, "4")) {
-                opts.aa_level = .aa_4;
+                opts.raster_options.aa_level = .aa_4;
             } else if (std.mem.eql(u8, s, "8")) {
-                opts.aa_level = .aa_8;
+                opts.raster_options.aa_level = .aa_8;
             } else if (std.mem.eql(u8, s, "16")) {
-                opts.aa_level = .aa_16;
+                opts.raster_options.aa_level = .aa_16;
             } else if (std.mem.eql(u8, s, "32")) {
-                opts.aa_level = .aa_32;
+                opts.raster_options.aa_level = .aa_32;
             } else {
                 std.debug.print("Error: invalid aa-level '{s}', expected 4, 8, 16, or 32\n", .{s});
             }
@@ -159,23 +156,23 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
     } else if (std.mem.eql(u8, arg, "--sample-pattern")) {
         if (args.next()) |s| {
             if (std.mem.eql(u8, s, "regular")) {
-                opts.sample_pattern = .regular;
+                opts.raster_options.sample_pattern = .regular;
             } else if (std.mem.eql(u8, s, "rotated-grid")) {
-                opts.sample_pattern = .rotated_grid;
+                opts.raster_options.sample_pattern = .rotated_grid;
             } else {
                 std.debug.print("Error: invalid sample-pattern '{s}', expected regular or rotated-grid\n", .{s});
             }
         }
         return true;
     } else if (std.mem.eql(u8, arg, "--adaptive")) {
-        opts.adaptive = true;
+        opts.raster_options.adaptive = .{};
         return true;
     } else if (std.mem.eql(u8, arg, "--raster-method")) {
         if (args.next()) |s| {
             if (std.mem.eql(u8, s, "supersampling")) {
-                opts.method = .supersampling;
+                opts.raster_options.method = .supersampling;
             } else if (std.mem.eql(u8, s, "analytical")) {
-                opts.method = .analytical;
+                opts.raster_options.method = .analytical;
             } else {
                 std.debug.print("Error: invalid raster-method '{s}', expected supersampling or analytical\n", .{s});
             }
@@ -381,10 +378,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .max_width = common.max_width,
             .text_align = common.text_align,
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
-            .aa_level = common.aa_level,
-            .sample_pattern = common.sample_pattern,
-            .adaptive = common.adaptive,
-            .method = common.method,
+            .raster_options = common.raster_options,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -434,10 +428,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .fractional_positioning = common.fractional_positioning,
             .max_width = common.max_width,
             .text_align = common.text_align,
-            .aa_level = common.aa_level,
-            .sample_pattern = common.sample_pattern,
-            .adaptive = common.adaptive,
-            .method = common.method,
+            .raster_options = common.raster_options,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -679,10 +670,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .text_align = common.text_align,
         .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
-        .aa_level = common.aa_level,
-        .sample_pattern = common.sample_pattern,
-        .adaptive = common.adaptive,
-        .method = common.method,
+        .raster_options = common.raster_options,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;

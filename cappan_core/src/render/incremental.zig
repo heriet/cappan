@@ -67,10 +67,7 @@ pub const Options = struct {
     text_align: shaper.TextAlign = .left,
     paint_stack: ?[]const paint_mod.PaintOperation = null,
     paint_layer_timing: PaintLayerTiming = .simultaneous,
-    aa_level: scanline_mod.AntiAliasLevel = .aa_8,
-    sample_pattern: scanline_mod.SamplePattern = .regular,
-    adaptive: bool = false,
-    method: scanline_mod.RasterMethod = .supersampling,
+    raster_options: scanline_mod.RasterOptions = .{},
 };
 
 pub const IncrementalRenderer = struct {
@@ -208,8 +205,7 @@ pub const IncrementalRenderer = struct {
             };
 
             const fill_padding = if (options.paint_stack != null) extended_padding else options.padding;
-            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null, .method = options.method };
-            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
+            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, options.raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
 
@@ -232,7 +228,7 @@ pub const IncrementalRenderer = struct {
                 glyph_scale,
                 glyph_result.offset_x,
                 glyph_result.offset_y,
-                raster_options,
+                options.raster_options,
             );
             var reveal_ctx_owned = true;
             errdefer if (reveal_ctx_owned) reveal_ctx.deinit();
@@ -280,7 +276,7 @@ pub const IncrementalRenderer = struct {
                                 glyph_scale,
                                 glyph_result.offset_x,
                                 glyph_result.offset_y,
-                                raster_options,
+                                options.raster_options,
                             );
                             errdefer fill_reveal.deinit();
                             const pc = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
@@ -303,7 +299,7 @@ pub const IncrementalRenderer = struct {
                                 extended_padding,
                                 stroke,
                                 options.pixel_size,
-                                raster_options,
+                                options.raster_options,
                             );
                             errdefer allocator.free(stroke_result.pixels);
                             var stroke_strategy = options.strategy;
@@ -322,7 +318,7 @@ pub const IncrementalRenderer = struct {
                                 glyph_scale,
                                 stroke_result.offset_x,
                                 stroke_result.offset_y,
-                                raster_options,
+                                options.raster_options,
                             );
                             errdefer stroke_reveal.deinit();
                             const pc = @as(usize, stroke_result.width) * @as(usize, stroke_result.height);
@@ -439,7 +435,7 @@ pub const IncrementalRenderer = struct {
             .paint_layer_timing = options.paint_layer_timing,
             .paint_layer_cumsum = paint_layer_cumsum,
             .pixel_size = options.pixel_size,
-            .raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null, .method = options.method },
+            .raster_options = options.raster_options,
         };
     }
 
