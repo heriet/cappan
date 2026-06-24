@@ -1,5 +1,6 @@
 const std = @import("std");
 const outline_mod = @import("outline.zig");
+const analytical_mod = @import("analytical.zig");
 
 pub const Edge = struct {
     y_top: f32,
@@ -30,10 +31,16 @@ pub const AdaptiveOptions = struct {
     high_level: AntiAliasLevel = .aa_32,
 };
 
+pub const RasterMethod = enum {
+    supersampling,
+    analytical,
+};
+
 pub const RasterOptions = struct {
     aa_level: AntiAliasLevel = .aa_8,
     sample_pattern: SamplePattern = .regular,
     adaptive: ?AdaptiveOptions = null,
+    method: RasterMethod = .supersampling,
 };
 
 fn sampleXOffset(pattern: SamplePattern, sample_idx: usize, sample_count: usize) f32 {
@@ -150,7 +157,6 @@ fn rasterizeRowCoverage(
     }
 }
 
-/// Rasterize segments into a grayscale pixel buffer using supersampling
 pub fn rasterize(
     allocator: std.mem.Allocator,
     segments: []const outline_mod.Segment,
@@ -158,6 +164,10 @@ pub fn rasterize(
     height: u32,
     options: RasterOptions,
 ) ![]u8 {
+    if (options.method == .analytical) {
+        return analytical_mod.rasterize(allocator, segments, width, height);
+    }
+
     const pixels = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
     @memset(pixels, 0);
 

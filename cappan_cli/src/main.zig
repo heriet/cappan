@@ -63,6 +63,7 @@ const CommonOptions = struct {
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
     sample_pattern: scanline_mod.SamplePattern = .regular,
     adaptive: bool = false,
+    method: scanline_mod.RasterMethod = .supersampling,
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
 
@@ -168,6 +169,17 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--adaptive")) {
         opts.adaptive = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--raster-method")) {
+        if (args.next()) |s| {
+            if (std.mem.eql(u8, s, "supersampling")) {
+                opts.method = .supersampling;
+            } else if (std.mem.eql(u8, s, "analytical")) {
+                opts.method = .analytical;
+            } else {
+                std.debug.print("Error: invalid raster-method '{s}', expected supersampling or analytical\n", .{s});
+            }
+        }
         return true;
     } else if (std.mem.eql(u8, arg, "--stroke")) {
         const spec = args.next() orelse {
@@ -372,6 +384,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .aa_level = common.aa_level,
             .sample_pattern = common.sample_pattern,
             .adaptive = common.adaptive,
+            .method = common.method,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -424,6 +437,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .aa_level = common.aa_level,
             .sample_pattern = common.sample_pattern,
             .adaptive = common.adaptive,
+            .method = common.method,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -668,6 +682,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .aa_level = common.aa_level,
         .sample_pattern = common.sample_pattern,
         .adaptive = common.adaptive,
+        .method = common.method,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1906,6 +1921,7 @@ fn printUsage() void {
         \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
         \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
         \\  --adaptive           Enable adaptive supersampling (4x + 32x refine)
+        \\  --raster-method      Rasterizer: supersampling (default), analytical
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
         \\                                   [,time-weight=N]

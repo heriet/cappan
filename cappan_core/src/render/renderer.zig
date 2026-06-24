@@ -28,6 +28,7 @@ pub const RenderOptions = struct {
     aa_level: scanline_mod.AntiAliasLevel = .aa_8,
     sample_pattern: scanline_mod.SamplePattern = .regular,
     adaptive: bool = false,
+    method: scanline_mod.RasterMethod = .supersampling,
 };
 
 pub const CachedRaster = struct {
@@ -89,7 +90,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
-    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null };
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null, .method = options.method };
 
     if (options.lcd_rendering) {
         var lcd_cache: std.AutoHashMapUnmanaged(u32, CachedLcdRaster) = .empty;
@@ -323,7 +324,7 @@ fn renderTextPaintStack(
     errdefer bitmap.deinit();
 
     const base_baseline_y = pad + layout.ascender_px;
-    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null };
+    const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null, .method = options.method };
 
     var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
     defer {
@@ -942,7 +943,7 @@ pub const RowRenderer = struct {
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null };
+            const raster_options = scanline_mod.RasterOptions{ .aa_level = options.aa_level, .sample_pattern = options.sample_pattern, .adaptive = if (options.adaptive) .{} else null, .method = options.method };
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
             try glyph_cache.put(allocator, cache_key, .{
                 .pixels = glyph_result.pixels,

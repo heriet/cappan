@@ -109,6 +109,13 @@ fn parseSamplePattern(sample_pattern: u32) scanline_mod.SamplePattern {
     };
 }
 
+fn parseRasterMethod(raster_method: u32) scanline_mod.RasterMethod {
+    return switch (raster_method) {
+        1 => .analytical,
+        else => .supersampling,
+    };
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
@@ -116,6 +123,7 @@ export fn wasm_render(
     aa_level: u32,
     sample_pattern: u32,
     adaptive: u32,
+    raster_method: u32,
     fg_r: u8,
     fg_g: u8,
     fg_b: u8,
@@ -139,6 +147,7 @@ export fn wasm_render(
             .aa_level = parseAaLevel(aa_level),
             .sample_pattern = parseSamplePattern(sample_pattern),
             .adaptive = adaptive != 0,
+            .method = parseRasterMethod(raster_method),
         },
     ) catch return 0;
     return 1;
@@ -151,6 +160,7 @@ export fn wasm_init_animator(
     aa_level: u32,
     sample_pattern: u32,
     adaptive: u32,
+    raster_method: u32,
     strategy: u32,
     timing: u32,
     paint_layer_timing: u32,
@@ -201,6 +211,7 @@ export fn wasm_init_animator(
             .aa_level = parseAaLevel(aa_level),
             .sample_pattern = parseSamplePattern(sample_pattern),
             .adaptive = adaptive != 0,
+            .method = parseRasterMethod(raster_method),
         },
     ) catch return 0;
     return 1;
