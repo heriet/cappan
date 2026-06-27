@@ -3,6 +3,7 @@ const font_mod = @import("../font/font.zig");
 const shaper = @import("../layout/shaper.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const scanline_mod = @import("../raster/scanline.zig");
+const stem_darkening_mod = @import("../raster/stem_darkening.zig");
 const rgba_bitmap_mod = @import("rgba_bitmap.zig");
 const easing_mod = @import("easing.zig");
 const renderer_mod = @import("renderer.zig");
@@ -68,6 +69,7 @@ pub const Options = struct {
     paint_stack: ?[]const paint_mod.PaintOperation = null,
     paint_layer_timing: PaintLayerTiming = .simultaneous,
     raster_options: scanline_mod.RasterOptions = .{},
+    stem_darkening: bool = false,
 };
 
 pub const IncrementalRenderer = struct {
@@ -101,6 +103,11 @@ pub const IncrementalRenderer = struct {
         text: []const u8,
         options: Options,
     ) !IncrementalRenderer {
+        const raster_options = if (options.stem_darkening)
+            stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
+        else
+            options.raster_options;
+
         var layout = try shaper.layoutText(allocator, fonts, text, .{
             .pixel_size = options.pixel_size,
             .max_width = options.max_width,
@@ -205,7 +212,7 @@ pub const IncrementalRenderer = struct {
             };
 
             const fill_padding = if (options.paint_stack != null) extended_padding else options.padding;
-            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, options.raster_options);
+            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
 
@@ -228,7 +235,7 @@ pub const IncrementalRenderer = struct {
                 glyph_scale,
                 glyph_result.offset_x,
                 glyph_result.offset_y,
-                options.raster_options,
+                raster_options,
             );
             var reveal_ctx_owned = true;
             errdefer if (reveal_ctx_owned) reveal_ctx.deinit();
@@ -262,7 +269,9 @@ pub const IncrementalRenderer = struct {
                             errdefer allocator.free(dup_pixels);
                             var fill_strategy = options.strategy;
                             switch (fill_strategy) {
-                                .custom => |*c| { c.deinitFn = null; },
+                                .custom => |*c| {
+                                    c.deinitFn = null;
+                                },
                                 else => {},
                             }
                             var fill_reveal = try glyph_reveal_mod.GlyphRevealContext.initFromOutline(
@@ -276,7 +285,7 @@ pub const IncrementalRenderer = struct {
                                 glyph_scale,
                                 glyph_result.offset_x,
                                 glyph_result.offset_y,
-                                options.raster_options,
+                                raster_options,
                             );
                             errdefer fill_reveal.deinit();
                             const pc = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
@@ -299,12 +308,14 @@ pub const IncrementalRenderer = struct {
                                 extended_padding,
                                 stroke,
                                 options.pixel_size,
-                                options.raster_options,
+                                raster_options,
                             );
                             errdefer allocator.free(stroke_result.pixels);
                             var stroke_strategy = options.strategy;
                             switch (stroke_strategy) {
-                                .custom => |*c| { c.deinitFn = null; },
+                                .custom => |*c| {
+                                    c.deinitFn = null;
+                                },
                                 else => {},
                             }
                             var stroke_reveal = try glyph_reveal_mod.GlyphRevealContext.initFromOutline(
@@ -318,7 +329,7 @@ pub const IncrementalRenderer = struct {
                                 glyph_scale,
                                 stroke_result.offset_x,
                                 stroke_result.offset_y,
-                                options.raster_options,
+                                raster_options,
                             );
                             errdefer stroke_reveal.deinit();
                             const pc = @as(usize, stroke_result.width) * @as(usize, stroke_result.height);
@@ -435,7 +446,7 @@ pub const IncrementalRenderer = struct {
             .paint_layer_timing = options.paint_layer_timing,
             .paint_layer_cumsum = paint_layer_cumsum,
             .pixel_size = options.pixel_size,
-            .raster_options = options.raster_options,
+            .raster_options = raster_options,
         };
     }
 

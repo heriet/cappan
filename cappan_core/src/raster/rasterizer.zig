@@ -2,6 +2,7 @@ const std = @import("std");
 const glyph_mod = @import("../font/glyph.zig");
 const outline_mod = @import("outline.zig");
 const scanline_mod = @import("scanline.zig");
+const stem_darkening_mod = @import("stem_darkening.zig");
 
 pub const RasterResult = struct {
     pixels: []u8,
@@ -25,10 +26,12 @@ pub fn rasterizeGlyph(
     raster_options: scanline_mod.RasterOptions,
 ) !RasterResult {
     // Calculate glyph bounding box in pixel coordinates
-    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
-    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale;
-    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale;
-    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale;
+    const embolden = @max(0.0, raster_options.embolden_strength);
+    const half_embolden = embolden * 0.5;
+    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden;
+    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale - half_embolden;
+    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale + half_embolden;
+    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale + half_embolden;
 
     const glyph_width = @max(0.0, x_max_px - x_min_px);
     const glyph_height = @max(0.0, y_max_px - y_min_px);
@@ -59,6 +62,10 @@ pub fn rasterizeGlyph(
     // Scale and flatten outline
     const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, offset_x, offset_y);
     defer outline_mod.freeScaledContours(allocator, scaled);
+
+    if (embolden > 0.0) {
+        try stem_darkening_mod.emboldenContours(allocator, scaled, embolden);
+    }
 
     // Flatten all contours into segments
     var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
@@ -138,10 +145,12 @@ pub fn rasterizeGlyphLcd(
     padding: u32,
     raster_options: scanline_mod.RasterOptions,
 ) !LcdRasterResult {
-    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
-    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale;
-    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale;
-    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale;
+    const embolden_lcd = @max(0.0, raster_options.embolden_strength);
+    const half_embolden_lcd = embolden_lcd * 0.5;
+    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden_lcd;
+    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale - half_embolden_lcd;
+    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale + half_embolden_lcd;
+    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale + half_embolden_lcd;
 
     const glyph_width = @max(0.0, x_max_px - x_min_px);
     const glyph_height = @max(0.0, y_max_px - y_min_px);
@@ -179,6 +188,10 @@ pub fn rasterizeGlyphLcd(
     // Scale with offset_x=0, then transform X into the 3x-wide LCD coordinate space.
     const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, 0.0, offset_y);
     defer outline_mod.freeScaledContours(allocator, scaled);
+
+    if (embolden_lcd > 0.0) {
+        try stem_darkening_mod.emboldenContours(allocator, scaled, embolden_lcd);
+    }
 
     for (scaled) |contour_points| {
         for (contour_points) |*pt| {

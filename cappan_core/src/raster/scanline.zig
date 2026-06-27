@@ -41,6 +41,7 @@ pub const RasterOptions = struct {
     sample_pattern: SamplePattern = .regular,
     adaptive: ?AdaptiveOptions = null,
     method: RasterMethod = .supersampling,
+    embolden_strength: f32 = 0.0,
 };
 
 fn sampleXOffset(pattern: SamplePattern, sample_idx: usize, sample_count: usize) f32 {
