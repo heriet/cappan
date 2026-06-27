@@ -60,6 +60,7 @@ const CommonOptions = struct {
     max_width: ?f32 = null,
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
+    stem_darkening: bool = false,
     raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
@@ -137,6 +138,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--lcd")) {
         opts.lcd_rendering = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--stem-darkening")) {
+        opts.stem_darkening = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--aa-level")) {
         if (args.next()) |s| {
@@ -379,6 +383,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .text_align = common.text_align,
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
             .raster_options = common.raster_options,
+            .stem_darkening = common.stem_darkening,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -429,6 +434,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .max_width = common.max_width,
             .text_align = common.text_align,
             .raster_options = common.raster_options,
+            .stem_darkening = common.stem_darkening,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -671,6 +677,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
         .raster_options = common.raster_options,
+        .stem_darkening = common.stem_darkening,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1906,6 +1913,7 @@ fn printUsage() void {
         \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
+        \\  --stem-darkening     Enable stem darkening for small text
         \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
         \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
         \\  --adaptive           Enable adaptive supersampling (4x + 32x refine)

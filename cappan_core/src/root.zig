@@ -50,6 +50,7 @@ pub const raster = struct {
     pub const stroker = @import("raster/stroker.zig");
     pub const glyph_cache = @import("raster/glyph_cache.zig");
     pub const atlas = @import("raster/atlas.zig");
+    pub const stem_darkening = @import("raster/stem_darkening.zig");
 };
 
 pub const layout = struct {
@@ -115,6 +116,7 @@ test {
     _ = @import("raster/stroker.zig");
     _ = @import("raster/glyph_cache.zig");
     _ = @import("raster/atlas.zig");
+    _ = @import("raster/stem_darkening.zig");
     _ = @import("layout/shaper.zig");
     _ = @import("render/bitmap.zig");
     _ = @import("render/rgba_bitmap.zig");
