@@ -1,5 +1,6 @@
 const std = @import("std");
 const cappan = @import("cappan_core");
+const scanline_mod = cappan.raster.scanline;
 
 const allocator = std.heap.wasm_allocator;
 
@@ -92,6 +93,29 @@ export fn wasm_paint_add_stroke(r: u8, g: u8, b: u8, width_x10: u32, opacity_pct
     return 1;
 }
 
+fn parseAaLevel(aa_level: u32) scanline_mod.AntiAliasLevel {
+    return switch (aa_level) {
+        4 => .aa_4,
+        16 => .aa_16,
+        32 => .aa_32,
+        else => .aa_8,
+    };
+}
+
+fn parseSamplePattern(sample_pattern: u32) scanline_mod.SamplePattern {
+    return switch (sample_pattern) {
+        1 => .rotated_grid,
+        else => .regular,
+    };
+}
+
+fn parseRasterMethod(raster_method: u32) scanline_mod.RasterMethod {
+    return switch (raster_method) {
+        1 => .analytical,
+        else => .supersampling,
+    };
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
@@ -102,6 +126,10 @@ export fn wasm_render(
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
+    aa_level: u32,
+    sample_pattern: u32,
+    adaptive: u32,
+    raster_method: u32,
 ) i32 {
     const font = current_font orelse return 0;
     free_last_bitmap();
@@ -116,6 +144,12 @@ export fn wasm_render(
             .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
+            .raster_options = .{
+                .aa_level = parseAaLevel(aa_level),
+                .sample_pattern = parseSamplePattern(sample_pattern),
+                .adaptive = if (adaptive != 0) .{} else null,
+                .method = parseRasterMethod(raster_method),
+            },
         },
     ) catch return 0;
     return 1;
@@ -134,6 +168,10 @@ export fn wasm_init_animator(
     bg_r: u8,
     bg_g: u8,
     bg_b: u8,
+    aa_level: u32,
+    sample_pattern: u32,
+    adaptive: u32,
+    raster_method: u32,
 ) i32 {
     const font = current_font orelse return 0;
     wasm_free_animator();
@@ -172,6 +210,12 @@ export fn wasm_init_animator(
             .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
+            .raster_options = .{
+                .aa_level = parseAaLevel(aa_level),
+                .sample_pattern = parseSamplePattern(sample_pattern),
+                .adaptive = if (adaptive != 0) .{} else null,
+                .method = parseRasterMethod(raster_method),
+            },
         },
     ) catch return 0;
     return 1;

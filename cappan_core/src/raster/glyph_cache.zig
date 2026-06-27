@@ -53,7 +53,7 @@ pub const GlyphCache = struct {
         defer outline.deinit();
 
         const scale = pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-        const raster = try rasterizer_mod.rasterizeGlyph(self.allocator, outline, scale, 1);
+        const raster = try rasterizer_mod.rasterizeGlyph(self.allocator, outline, scale, 1, .{});
         // raster.pixels の所有権をキャッシュに移す（deinit しない）
 
         const cached = CachedGlyph{

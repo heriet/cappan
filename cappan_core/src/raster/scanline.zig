@@ -1,5 +1,6 @@
 const std = @import("std");
 const outline_mod = @import("outline.zig");
+const analytical_mod = @import("analytical.zig");
 
 pub const Edge = struct {
     y_top: f32,
@@ -9,7 +10,55 @@ pub const Edge = struct {
     direction: i8, // +1 downward, -1 upward
 };
 
-const SUPERSAMPLE_N: usize = 8;
+pub const AntiAliasLevel = enum(u6) {
+    aa_4 = 4,
+    aa_8 = 8,
+    aa_16 = 16,
+    aa_32 = 32,
+
+    pub fn toSampleCount(self: AntiAliasLevel) usize {
+        return @intFromEnum(self);
+    }
+};
+
+pub const SamplePattern = enum {
+    regular,
+    rotated_grid,
+};
+
+pub const AdaptiveOptions = struct {
+    low_level: AntiAliasLevel = .aa_4,
+    high_level: AntiAliasLevel = .aa_32,
+};
+
+pub const RasterMethod = enum {
+    supersampling,
+    analytical,
+};
+
+pub const RasterOptions = struct {
+    aa_level: AntiAliasLevel = .aa_8,
+    sample_pattern: SamplePattern = .regular,
+    adaptive: ?AdaptiveOptions = null,
+    method: RasterMethod = .supersampling,
+};
+
+fn sampleXOffset(pattern: SamplePattern, sample_idx: usize, sample_count: usize) f32 {
+    return switch (pattern) {
+        .regular => 0.0,
+        .rotated_grid => blk: {
+            var reversed: usize = 0;
+            var bits = sample_idx;
+            var remaining = sample_count;
+            while (remaining > 1) {
+                remaining >>= 1;
+                reversed = (reversed << 1) | (bits & 1);
+                bits >>= 1;
+            }
+            break :blk (@as(f32, @floatFromInt(reversed)) + 0.5) / @as(f32, @floatFromInt(sample_count));
+        },
+    };
+}
 
 pub fn buildEdges(allocator: std.mem.Allocator, segments: []const outline_mod.Segment) ![]Edge {
     var edges: std.ArrayList(Edge) = .empty;
@@ -65,13 +114,60 @@ fn compareIntersections(_: void, a: Intersection, b: Intersection) bool {
     return a.x < b.x;
 }
 
-/// Rasterize segments into a grayscale pixel buffer using 8x supersampling
+fn rasterizeRowCoverage(
+    coverage: []u16,
+    y: usize,
+    n: usize,
+    pattern: SamplePattern,
+    edges: []const Edge,
+    intersections: *std.ArrayList(Intersection),
+    allocator: std.mem.Allocator,
+) !void {
+    @memset(coverage, 0);
+    for (0..n) |s| {
+        const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, @floatFromInt(n));
+        const x_offset = sampleXOffset(pattern, s, n);
+
+        intersections.clearRetainingCapacity();
+
+        for (edges) |edge| {
+            if (sub_y >= edge.y_top and sub_y < edge.y_bottom) {
+                const x = edge.x_at_y_top + (sub_y - edge.y_top) * edge.dx_per_dy;
+                try intersections.append(allocator, .{ .x = x, .direction = edge.direction });
+            }
+        }
+
+        std.mem.sort(Intersection, intersections.items, {}, compareIntersections);
+
+        var winding: i32 = 0;
+        var ix_idx: usize = 0;
+
+        for (0..coverage.len) |px| {
+            const px_left = @as(f32, @floatFromInt(px)) + x_offset;
+
+            while (ix_idx < intersections.items.len and intersections.items[ix_idx].x < px_left) {
+                winding += intersections.items[ix_idx].direction;
+                ix_idx += 1;
+            }
+
+            if (winding != 0) {
+                coverage[px] += 1;
+            }
+        }
+    }
+}
+
 pub fn rasterize(
     allocator: std.mem.Allocator,
     segments: []const outline_mod.Segment,
     width: u32,
     height: u32,
+    options: RasterOptions,
 ) ![]u8 {
+    if (options.method == .analytical) {
+        return analytical_mod.rasterize(allocator, segments, width, height);
+    }
+
     const pixels = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
     @memset(pixels, 0);
 
@@ -89,46 +185,46 @@ pub fn rasterize(
     const coverage = try allocator.alloc(u16, w);
     defer allocator.free(coverage);
 
-    for (0..height) |y| {
-        @memset(coverage, 0);
+    if (options.adaptive) |adaptive_opts| {
+        const low_n = adaptive_opts.low_level.toSampleCount();
+        const high_n = adaptive_opts.high_level.toSampleCount();
+        const coverage_high = try allocator.alloc(u16, w);
+        defer allocator.free(coverage_high);
 
-        for (0..SUPERSAMPLE_N) |s| {
-            const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, SUPERSAMPLE_N);
+        for (0..height) |y| {
+            try rasterizeRowCoverage(coverage, y, low_n, options.sample_pattern, edges, &intersections, allocator);
 
-            intersections.clearRetainingCapacity();
-
-            for (edges) |edge| {
-                if (sub_y >= edge.y_top and sub_y < edge.y_bottom) {
-                    const x = edge.x_at_y_top + (sub_y - edge.y_top) * edge.dx_per_dy;
-                    try intersections.append(allocator, .{ .x = x, .direction = edge.direction });
+            var has_edge = false;
+            for (0..w) |px| {
+                if (coverage[px] > 0 and coverage[px] < @as(u16, @intCast(low_n))) {
+                    has_edge = true;
+                    break;
                 }
             }
 
-            std.mem.sort(Intersection, intersections.items, {}, compareIntersections);
-
-            // Apply non-zero winding fill rule
-            var winding: i32 = 0;
-            var ix_idx: usize = 0;
-
-            for (0..w) |px| {
-                const px_left = @as(f32, @floatFromInt(px));
-
-                // Process intersections to the left of this pixel
-                while (ix_idx < intersections.items.len and intersections.items[ix_idx].x < px_left) {
-                    winding += intersections.items[ix_idx].direction;
-                    ix_idx += 1;
+            if (has_edge) {
+                try rasterizeRowCoverage(coverage_high, y, high_n, options.sample_pattern, edges, &intersections, allocator);
+                for (0..w) |px| {
+                    if (coverage[px] > 0 and coverage[px] < @as(u16, @intCast(low_n))) {
+                        pixels[y * w + px] = @as(u8, @intCast(@min(coverage_high[px] * 255 / @as(u16, @intCast(high_n)), 255)));
+                    } else {
+                        pixels[y * w + px] = if (coverage[px] == 0) 0 else 255;
+                    }
                 }
-
-                if (winding != 0) {
-                    coverage[px] += 1;
+            } else {
+                for (0..w) |px| {
+                    pixels[y * w + px] = if (coverage[px] == 0) 0 else 255;
                 }
             }
         }
-
-        // Convert coverage to grayscale
-        for (0..w) |px| {
-            const value = @as(u8, @intCast(@min(coverage[px] * 255 / SUPERSAMPLE_N, 255)));
-            pixels[y * w + px] = value;
+    } else {
+        const n = options.aa_level.toSampleCount();
+        for (0..height) |y| {
+            try rasterizeRowCoverage(coverage, y, n, options.sample_pattern, edges, &intersections, allocator);
+            for (0..w) |px| {
+                const value = @as(u8, @intCast(@min(coverage[px] * 255 / @as(u16, @intCast(n)), 255)));
+                pixels[y * w + px] = value;
+            }
         }
     }
 
@@ -143,7 +239,7 @@ test "rasterize a simple triangle" {
         .{ .x0 = 2, .y0 = 14, .x1 = 8, .y1 = 2 },
     };
 
-    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16);
+    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16, .{});
     defer std.testing.allocator.free(pixels);
 
     // Center pixels should have non-zero coverage

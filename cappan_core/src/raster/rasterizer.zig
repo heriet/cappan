@@ -22,6 +22,7 @@ pub fn rasterizeGlyph(
     glyph_outline: glyph_mod.GlyphOutline,
     scale: f32,
     padding: u32,
+    raster_options: scanline_mod.RasterOptions,
 ) !RasterResult {
     // Calculate glyph bounding box in pixel coordinates
     const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
@@ -70,7 +71,7 @@ pub fn rasterizeGlyph(
     }
 
     // Rasterize
-    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height);
+    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height, raster_options);
 
     return .{
         .pixels = pixels,
@@ -96,7 +97,7 @@ test "rasterize glyph A from DejaVuSans" {
     defer outline.deinit();
 
     const scale = 48.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    var result = try rasterizeGlyph(std.testing.allocator, outline, scale, 1);
+    var result = try rasterizeGlyph(std.testing.allocator, outline, scale, 1, .{});
     defer result.deinit();
 
     try std.testing.expect(result.width > 0);
@@ -135,6 +136,7 @@ pub fn rasterizeGlyphLcd(
     glyph_outline: glyph_mod.GlyphOutline,
     scale: f32,
     padding: u32,
+    raster_options: scanline_mod.RasterOptions,
 ) !LcdRasterResult {
     const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale;
     const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale;
@@ -193,7 +195,7 @@ pub fn rasterizeGlyphLcd(
         try all_segments.appendSlice(allocator, segs);
     }
 
-    const wide_pixels = try scanline_mod.rasterize(allocator, all_segments.items, wide_width, height);
+    const wide_pixels = try scanline_mod.rasterize(allocator, all_segments.items, wide_width, height, raster_options);
     defer allocator.free(wide_pixels);
 
     const pixel_count = @as(usize, width) * @as(usize, height);
@@ -237,7 +239,7 @@ test "rasterize glyph LCD A from DejaVuSans" {
     defer outline.deinit();
 
     const scale = 48.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    var result = try rasterizeGlyphLcd(std.testing.allocator, outline, scale, 1);
+    var result = try rasterizeGlyphLcd(std.testing.allocator, outline, scale, 1, .{});
     defer result.deinit();
 
     try std.testing.expect(result.width > 0);

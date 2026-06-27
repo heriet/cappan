@@ -45,6 +45,7 @@ pub const font = struct {
 pub const raster = struct {
     pub const outline = @import("raster/outline.zig");
     pub const scanline = @import("raster/scanline.zig");
+    pub const analytical = @import("raster/analytical.zig");
     pub const rasterizer = @import("raster/rasterizer.zig");
     pub const stroker = @import("raster/stroker.zig");
     pub const glyph_cache = @import("raster/glyph_cache.zig");
@@ -109,6 +110,7 @@ test {
     _ = @import("font/charstring.zig");
     _ = @import("raster/outline.zig");
     _ = @import("raster/scanline.zig");
+    _ = @import("raster/analytical.zig");
     _ = @import("raster/rasterizer.zig");
     _ = @import("raster/stroker.zig");
     _ = @import("raster/glyph_cache.zig");
