@@ -11,6 +11,7 @@ const gamma_mod = @import("gamma.zig");
 const png_decoder_mod = @import("../image/png_decoder.zig");
 const paint_mod = @import("paint.zig");
 const glyph_mod = @import("../font/glyph.zig");
+const auto_hinting_mod = @import("../raster/auto_hinting.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -29,7 +30,25 @@ pub const RenderOptions = struct {
     raster_options: scanline_mod.RasterOptions = .{},
     stem_darkening: bool = false,
     cff_hinting: bool = false,
+    auto_hinting: bool = false,
 };
+
+fn applyOutlineHinting(
+    allocator: std.mem.Allocator,
+    outline: *glyph_mod.GlyphOutline,
+    glyph_font: font_mod.Font,
+    glyph_id: u16,
+    options: RenderOptions,
+) !void {
+    if (options.cff_hinting) {
+        if (outline.hints) |*h| {
+            h.blue_zones = glyph_font.getBlueZones(glyph_id);
+        }
+    }
+    if (options.auto_hinting and outline.hints == null) {
+        outline.hints = try auto_hinting_mod.generateHints(allocator, outline.*, glyph_font.getAutoBlueZones());
+    }
+}
 
 pub const CachedRaster = struct {
     pixels: []u8,
@@ -148,11 +167,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            if (options.cff_hinting) {
-                if (outline.hints) |*h| {
-                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
-                }
-            }
+            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
             const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
 
             const entry = CachedLcdRaster{
@@ -266,11 +281,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                 var outline = outline_opt.?;
                 defer outline.deinit();
 
-                if (options.cff_hinting) {
-                    if (outline.hints) |*h| {
-                        h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
-                    }
-                }
+                try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
                 const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
 
                 const entry = CachedRaster{
@@ -396,11 +407,7 @@ fn renderTextPaintStack(
 
             const entry = switch (op) {
                 .fill => blk: {
-                    if (options.cff_hinting) {
-                        if (outline.hints) |*h| {
-                            h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
-                        }
-                    }
+                    try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
                     const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
@@ -967,11 +974,7 @@ pub const RowRenderer = struct {
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            if (options.cff_hinting) {
-                if (outline.hints) |*h| {
-                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
-                }
-            }
+            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
             try glyph_cache.put(allocator, cache_key, .{
                 .pixels = glyph_result.pixels,

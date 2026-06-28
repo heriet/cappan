@@ -376,6 +376,12 @@
             CFF Hinting
           </span>
         </label>
+        <label>
+          <span>
+            <input id="autoHinting" type="checkbox" style="width:auto;min-height:auto;margin-right:6px;">
+            Auto Hinting
+          </span>
+        </label>
 
         <div class="actions">
           <button id="renderBtn" class="secondary" disabled>Render</button>
@@ -477,6 +483,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       fps: document.getElementById("fps"),
       stemDarkening: document.getElementById("stemDarkening"),
       cffHinting: document.getElementById("cffHinting"),
+      autoHinting: document.getElementById("autoHinting"),
       paintLayerTiming: document.getElementById("paintLayerTiming"),
       paintLayerList: document.getElementById("paintLayerList"),
       paintLayerEmpty: document.getElementById("paintLayerEmpty"),
@@ -732,6 +739,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
           0,
           elements.stemDarkening.checked ? 1 : 0,
           elements.cffHinting.checked ? 1 : 0,
+          elements.autoHinting.checked ? 1 : 0,
         );
         if (!ok) throw new Error("Render failed");
         drawBitmap();
@@ -768,6 +776,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
           0,
           elements.stemDarkening.checked ? 1 : 0,
           elements.cffHinting.checked ? 1 : 0,
+          elements.autoHinting.checked ? 1 : 0,
         );
         if (!ok) throw new Error("Animator initialization failed");
       } finally {

@@ -39,6 +39,7 @@ pub const font = struct {
         pub const vvar = @import("font/table/vvar.zig");
         pub const mvar = @import("font/table/mvar.zig");
         pub const stat = @import("font/table/stat.zig");
+        pub const os2 = @import("font/table/os2.zig");
     };
 };
 
@@ -52,6 +53,7 @@ pub const raster = struct {
     pub const atlas = @import("raster/atlas.zig");
     pub const stem_darkening = @import("raster/stem_darkening.zig");
     pub const cff_hinting = @import("raster/cff_hinting.zig");
+    pub const auto_hinting = @import("raster/auto_hinting.zig");
 };
 
 pub const layout = struct {
@@ -109,6 +111,7 @@ test {
     _ = @import("font/table/vvar.zig");
     _ = @import("font/table/mvar.zig");
     _ = @import("font/table/stat.zig");
+    _ = @import("font/table/os2.zig");
     _ = @import("font/charstring.zig");
     _ = @import("raster/outline.zig");
     _ = @import("raster/scanline.zig");
@@ -119,6 +122,7 @@ test {
     _ = @import("raster/atlas.zig");
     _ = @import("raster/stem_darkening.zig");
     _ = @import("raster/cff_hinting.zig");
+    _ = @import("raster/auto_hinting.zig");
     _ = @import("layout/shaper.zig");
     _ = @import("render/bitmap.zig");
     _ = @import("render/rgba_bitmap.zig");

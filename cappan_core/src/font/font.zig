@@ -27,6 +27,8 @@ const vmtx_mod = @import("table/vmtx.zig");
 const vvar_mod = @import("table/vvar.zig");
 const mvar_mod = @import("table/mvar.zig");
 const stat_mod = @import("table/stat.zig");
+const os2_mod = @import("table/os2.zig");
+const auto_hinting_mod = @import("../raster/auto_hinting.zig");
 const charstring_mod = @import("charstring.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
@@ -66,6 +68,7 @@ pub const Font = struct {
     vvar: ?vvar_mod.VvarTable,
     mvar: ?mvar_mod.MvarTable,
     stat: ?stat_mod.StatTable,
+    os2: ?os2_mod.Os2Table,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
         if (woff_mod.isWoffFile(data)) {
@@ -346,6 +349,15 @@ pub const Font = struct {
                 break :blk null;
             }
         };
+        const os2_table: ?os2_mod.Os2Table = blk: {
+            const os2_record = parser.findTable(offset_table, "OS/2".*);
+            if (os2_record) |rec| {
+                const os2_data = try parser.getTableData(data, rec);
+                break :blk os2_mod.parse(os2_data) catch null;
+            } else {
+                break :blk null;
+            }
+        };
         return .{
             .allocator = allocator,
             .data = data,
@@ -377,6 +389,7 @@ pub const Font = struct {
             .vvar = vvar_table,
             .mvar = mvar_table,
             .stat = stat_table,
+            .os2 = os2_table,
         };
     }
 
@@ -410,6 +423,10 @@ pub const Font = struct {
     pub fn getBlueZones(self: Font, glyph_id: u16) ?glyph_mod.BlueZones {
         const cff_table = self.cff orelse return null;
         return cff_table.getBlueZones(glyph_id);
+    }
+
+    pub fn getAutoBlueZones(self: Font) glyph_mod.BlueZones {
+        return auto_hinting_mod.inferBlueZones(self.os2, self.hhea.ascender, self.hhea.descender);
     }
 
     pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {

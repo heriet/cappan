@@ -10,6 +10,7 @@ const renderer_mod = @import("renderer.zig");
 const glyphCacheKey = renderer_mod.glyphCacheKey;
 const glyph_reveal_mod = @import("glyph_reveal.zig");
 const paint_mod = @import("paint.zig");
+const auto_hinting_mod = @import("../raster/auto_hinting.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -71,6 +72,7 @@ pub const Options = struct {
     raster_options: scanline_mod.RasterOptions = .{},
     stem_darkening: bool = false,
     cff_hinting: bool = false,
+    auto_hinting: bool = false,
 };
 
 pub const IncrementalRenderer = struct {
@@ -217,6 +219,9 @@ pub const IncrementalRenderer = struct {
                 if (outline.hints) |*h| {
                     h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
                 }
+            }
+            if (options.auto_hinting and outline.hints == null) {
+                outline.hints = try auto_hinting_mod.generateHints(allocator, outline, glyph_font.getAutoBlueZones());
             }
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
