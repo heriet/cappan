@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
+const glyph_mod = @import("../glyph.zig");
 
 pub const Index = struct {
     count: u16,
@@ -198,12 +199,14 @@ pub const CffTable = struct {
     local_subrs: Index, // Local Subr INDEX (Private DICT から)
     default_width: i32,
     nominal_width: i32,
+    blue_zones: glyph_mod.BlueZones,
 
     // CID-keyed: per-FD local subrs + widths
     is_cid: bool,
     fd_local_subrs: []Index, // allocated array, one per FD entry
     fd_default_widths: []i32,
     fd_nominal_widths: []i32,
+    fd_blue_zones: []glyph_mod.BlueZones,
     fd_select_data: []const u8, // raw FDSelect data (past format byte)
     fd_select_format: u8,
     num_glyphs: u16, // for FDSelect format 0 bounds checking
@@ -257,11 +260,19 @@ pub const CffTable = struct {
         return 0;
     }
 
+    pub fn getBlueZones(self: CffTable, glyph_id: u16) glyph_mod.BlueZones {
+        if (!self.is_cid) return self.blue_zones;
+        const fd_index = self.fdSelectLookup(glyph_id);
+        if (fd_index >= self.fd_blue_zones.len) return self.blue_zones;
+        return self.fd_blue_zones[fd_index];
+    }
+
     pub fn deinit(self: *CffTable) void {
         if (self.allocator) |alloc| {
             alloc.free(self.fd_local_subrs);
             alloc.free(self.fd_default_widths);
             alloc.free(self.fd_nominal_widths);
+            alloc.free(self.fd_blue_zones);
         }
     }
 };
@@ -271,20 +282,32 @@ pub const CffError = error{
     UnexpectedEof,
 };
 
-/// Parse a Private DICT and return local_subrs, default_width, nominal_width
-fn parsePrivateDict(data: []const u8, private_size: i32, private_offset: i32) struct { local_subrs: Index, default_width: i32, nominal_width: i32 } {
+fn parseDeltaArray(comptime N: usize, dest: *[N]f32, count: *u8, private_data: []const u8, op: u16) void {
+    const entry = dictLookup(private_data, op) orelse return;
+    var acc: f32 = 0;
+    const max_count: usize = @min(@as(usize, entry.operand_count), N);
+    for (0..max_count) |i| {
+        acc += @floatFromInt(entry.operands[i]);
+        dest[i] = acc;
+    }
+    count.* = @intCast(max_count);
+}
+
+/// Parse a Private DICT and return local_subrs, widths, and blue zones.
+fn parsePrivateDict(data: []const u8, private_size: i32, private_offset: i32) struct { local_subrs: Index, default_width: i32, nominal_width: i32, blue_zones: glyph_mod.BlueZones } {
     const empty_index = Index{ .count = 0, .off_size = 0, .offsets_start = 0, .data_start = 0, .data = data };
     if (private_size <= 0 or private_offset < 0) {
-        return .{ .local_subrs = empty_index, .default_width = 0, .nominal_width = 0 };
+        return .{ .local_subrs = empty_index, .default_width = 0, .nominal_width = 0, .blue_zones = .{} };
     }
     const p_off: usize = @intCast(private_offset);
     const p_size: usize = @intCast(private_size);
     if (p_off + p_size > data.len) {
-        return .{ .local_subrs = empty_index, .default_width = 0, .nominal_width = 0 };
+        return .{ .local_subrs = empty_index, .default_width = 0, .nominal_width = 0, .blue_zones = .{} };
     }
     const private_data = data[p_off .. p_off + p_size];
 
     var local_subrs = empty_index;
+    var blue_zones = glyph_mod.BlueZones{};
     // operator 19 = Local Subr offset (Private DICT 先頭からの相対)
     if (dictLookupInt(private_data, 19)) |subr_off| {
         if (subr_off >= 0) {
@@ -300,7 +323,16 @@ fn parsePrivateDict(data: []const u8, private_size: i32, private_offset: i32) st
     // operator 21 = nominalWidthX
     const nominal_width = dictLookupInt(private_data, 21) orelse 0;
 
-    return .{ .local_subrs = local_subrs, .default_width = default_width, .nominal_width = nominal_width };
+    parseDeltaArray(14, &blue_zones.blue_values, &blue_zones.blue_count, private_data, 6);
+    parseDeltaArray(10, &blue_zones.other_blues, &blue_zones.other_count, private_data, 7);
+    if (dictLookupInt(private_data, 0x0C0A)) |v| blue_zones.blue_shift = @floatFromInt(v);
+    if (dictLookupInt(private_data, 0x0C0B)) |v| blue_zones.blue_fuzz = @floatFromInt(v);
+    if (dictLookupInt(private_data, 10)) |v| blue_zones.std_hw = @floatFromInt(v);
+    if (dictLookupInt(private_data, 11)) |v| blue_zones.std_vw = @floatFromInt(v);
+    parseDeltaArray(12, &blue_zones.snap_h, &blue_zones.snap_h_count, private_data, 0x0C0C);
+    parseDeltaArray(12, &blue_zones.snap_v, &blue_zones.snap_v_count, private_data, 0x0C0D);
+
+    return .{ .local_subrs = local_subrs, .default_width = default_width, .nominal_width = nominal_width, .blue_zones = blue_zones };
 }
 
 pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
@@ -355,12 +387,15 @@ pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
         errdefer allocator.free(fd_default_widths);
         const fd_nominal_widths = try allocator.alloc(i32, fd_count);
         errdefer allocator.free(fd_nominal_widths);
+        const fd_blue_zones = try allocator.alloc(glyph_mod.BlueZones, fd_count);
+        errdefer allocator.free(fd_blue_zones);
 
         for (0..fd_count) |i| {
             const fd_dict_data = fd_array_index.get(@intCast(i)) orelse {
                 fd_local_subrs[i] = empty_index;
                 fd_default_widths[i] = 0;
                 fd_nominal_widths[i] = 0;
+                fd_blue_zones[i] = .{};
                 continue;
             };
             // Each Font DICT has operator 18 = Private (size, offset)
@@ -369,10 +404,12 @@ pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
                 fd_local_subrs[i] = result.local_subrs;
                 fd_default_widths[i] = result.default_width;
                 fd_nominal_widths[i] = result.nominal_width;
+                fd_blue_zones[i] = result.blue_zones;
             } else {
                 fd_local_subrs[i] = empty_index;
                 fd_default_widths[i] = 0;
                 fd_nominal_widths[i] = 0;
+                fd_blue_zones[i] = .{};
             }
         }
 
@@ -393,10 +430,12 @@ pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
             .local_subrs = empty_index,
             .default_width = 0,
             .nominal_width = 0,
+            .blue_zones = .{},
             .is_cid = true,
             .fd_local_subrs = fd_local_subrs,
             .fd_default_widths = fd_default_widths,
             .fd_nominal_widths = fd_nominal_widths,
+            .fd_blue_zones = fd_blue_zones,
             .fd_select_data = fd_select_data,
             .fd_select_format = fd_select_format,
             .num_glyphs = num_glyphs,
@@ -408,12 +447,14 @@ pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
     var local_subrs: Index = empty_index;
     var default_width: i32 = 0;
     var nominal_width: i32 = 0;
+    var blue_zones = glyph_mod.BlueZones{};
 
     if (dictLookupPair(top_dict_data, 18)) |private_info| {
         const result = parsePrivateDict(data, private_info[0], private_info[1]);
         local_subrs = result.local_subrs;
         default_width = result.default_width;
         nominal_width = result.nominal_width;
+        blue_zones = result.blue_zones;
     }
 
     return .{
@@ -423,10 +464,12 @@ pub fn parseCff(allocator: std.mem.Allocator, data: []const u8) !CffTable {
         .local_subrs = local_subrs,
         .default_width = default_width,
         .nominal_width = nominal_width,
+        .blue_zones = blue_zones,
         .is_cid = false,
         .fd_local_subrs = &.{},
         .fd_default_widths = &.{},
         .fd_nominal_widths = &.{},
+        .fd_blue_zones = &.{},
         .fd_select_data = &.{},
         .fd_select_format = 0,
         .num_glyphs = num_glyphs,

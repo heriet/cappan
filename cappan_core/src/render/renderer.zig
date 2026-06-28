@@ -28,6 +28,7 @@ pub const RenderOptions = struct {
     paint_stack: ?[]const paint_mod.PaintOperation = null,
     raster_options: scanline_mod.RasterOptions = .{},
     stem_darkening: bool = false,
+    cff_hinting: bool = false,
 };
 
 pub const CachedRaster = struct {
@@ -147,6 +148,11 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             var outline = outline_opt.?;
             defer outline.deinit();
 
+            if (options.cff_hinting) {
+                if (outline.hints) |*h| {
+                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
+                }
+            }
             const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
 
             const entry = CachedLcdRaster{
@@ -260,6 +266,11 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                 var outline = outline_opt.?;
                 defer outline.deinit();
 
+                if (options.cff_hinting) {
+                    if (outline.hints) |*h| {
+                        h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
+                    }
+                }
                 const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
 
                 const entry = CachedRaster{
@@ -385,6 +396,11 @@ fn renderTextPaintStack(
 
             const entry = switch (op) {
                 .fill => blk: {
+                    if (options.cff_hinting) {
+                        if (outline.hints) |*h| {
+                            h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
+                        }
+                    }
                     const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
@@ -951,6 +967,11 @@ pub const RowRenderer = struct {
             var outline = outline_opt.?;
             defer outline.deinit();
 
+            if (options.cff_hinting) {
+                if (outline.hints) |*h| {
+                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
+                }
+            }
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
             try glyph_cache.put(allocator, cache_key, .{
                 .pixels = glyph_result.pixels,

@@ -407,6 +407,11 @@ pub const Font = struct {
         }
     }
 
+    pub fn getBlueZones(self: Font, glyph_id: u16) ?glyph_mod.BlueZones {
+        const cff_table = self.cff orelse return null;
+        return cff_table.getBlueZones(glyph_id);
+    }
+
     pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {
         return self.hmtx.getMetrics(glyph_id);
     }
@@ -731,7 +736,7 @@ pub const Font = struct {
             }
 
             const loc = try loca_table.getGlyphLocation(glyph_id);
-            const glyph_data = glyf_table.data[loc.offset..@as(usize, loc.offset) + @as(usize, loc.length)];
+            const glyph_data = glyf_table.data[loc.offset .. @as(usize, loc.offset) + @as(usize, loc.length)];
             const contours = try all_contours.toOwnedSlice(allocator);
             return .{
                 .contours = contours,

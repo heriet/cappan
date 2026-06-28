@@ -70,6 +70,7 @@ pub const Options = struct {
     paint_layer_timing: PaintLayerTiming = .simultaneous,
     raster_options: scanline_mod.RasterOptions = .{},
     stem_darkening: bool = false,
+    cff_hinting: bool = false,
 };
 
 pub const IncrementalRenderer = struct {
@@ -212,6 +213,11 @@ pub const IncrementalRenderer = struct {
             };
 
             const fill_padding = if (options.paint_stack != null) extended_padding else options.padding;
+            if (options.cff_hinting) {
+                if (outline.hints) |*h| {
+                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
+                }
+            }
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
