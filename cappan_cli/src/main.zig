@@ -62,6 +62,7 @@ const CommonOptions = struct {
     lcd_rendering: bool = false,
     stem_darkening: bool = false,
     cff_hinting: bool = false,
+    auto_hinting: bool = false,
     raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
@@ -145,6 +146,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--cff-hinting")) {
         opts.cff_hinting = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--auto-hinting")) {
+        opts.auto_hinting = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--aa-level")) {
         if (args.next()) |s| {
@@ -389,6 +393,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .raster_options = common.raster_options,
             .stem_darkening = common.stem_darkening,
             .cff_hinting = common.cff_hinting,
+            .auto_hinting = common.auto_hinting,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -441,6 +446,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .raster_options = common.raster_options,
             .stem_darkening = common.stem_darkening,
             .cff_hinting = common.cff_hinting,
+            .auto_hinting = common.auto_hinting,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -685,6 +691,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .raster_options = common.raster_options,
         .stem_darkening = common.stem_darkening,
         .cff_hinting = common.cff_hinting,
+        .auto_hinting = common.auto_hinting,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;
@@ -1921,6 +1928,8 @@ fn printUsage() void {
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
         \\  --stem-darkening     Enable stem darkening for small text
+        \\  --cff-hinting        Enable CFF hinting
+        \\  --auto-hinting       Enable auto-hinting for unhinted fonts
         \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
         \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
         \\  --adaptive           Enable adaptive supersampling (4x + 32x refine)

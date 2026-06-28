@@ -132,6 +132,7 @@ export fn wasm_render(
     raster_method: u32,
     stem_darkening: u32,
     cff_hinting: u32,
+    auto_hinting: u32,
 ) i32 {
     const font = current_font orelse return 0;
     free_last_bitmap();
@@ -154,6 +155,7 @@ export fn wasm_render(
             },
             .stem_darkening = stem_darkening != 0,
             .cff_hinting = cff_hinting != 0,
+            .auto_hinting = auto_hinting != 0,
         },
     ) catch return 0;
     return 1;
@@ -178,6 +180,7 @@ export fn wasm_init_animator(
     raster_method: u32,
     stem_darkening: u32,
     cff_hinting: u32,
+    auto_hinting: u32,
 ) i32 {
     const font = current_font orelse return 0;
     wasm_free_animator();
@@ -224,6 +227,7 @@ export fn wasm_init_animator(
             },
             .stem_darkening = stem_darkening != 0,
             .cff_hinting = cff_hinting != 0,
+            .auto_hinting = auto_hinting != 0,
         },
     ) catch return 0;
     return 1;
