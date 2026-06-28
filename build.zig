@@ -4,11 +4,36 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Feature flags (all enabled by default for backward compatibility)
+    const enable_cff = b.option(bool, "enable_cff", "Enable CFF/OTF outline support") orelse true;
+    const enable_opentype_layout = b.option(bool, "enable_opentype_layout", "Enable GSUB/GPOS/GDEF") orelse true;
+    const enable_color = b.option(bool, "enable_color", "Enable COLR/CPAL color glyphs") orelse true;
+    const enable_bitmap = b.option(bool, "enable_bitmap", "Enable CBLC/CBDT bitmap glyphs") orelse true;
+    const enable_variable = b.option(bool, "enable_variable", "Enable Variable Fonts") orelse true;
+    const enable_hinting = b.option(bool, "enable_hinting", "Enable hinting and stem darkening") orelse true;
+    const enable_incremental = b.option(bool, "enable_incremental", "Enable incremental rendering and reveal animations") orelse true;
+    const enable_woff = b.option(bool, "enable_woff", "Enable WOFF1 container") orelse true;
+    const enable_woff2 = b.option(bool, "enable_woff2", "Enable WOFF2 container") orelse true;
+    const enable_vertical = b.option(bool, "enable_vertical", "Enable vertical metrics") orelse true;
+
+    const feature_options = b.addOptions();
+    feature_options.addOption(bool, "enable_cff", enable_cff);
+    feature_options.addOption(bool, "enable_opentype_layout", enable_opentype_layout);
+    feature_options.addOption(bool, "enable_color", enable_color);
+    feature_options.addOption(bool, "enable_bitmap", enable_bitmap);
+    feature_options.addOption(bool, "enable_variable", enable_variable);
+    feature_options.addOption(bool, "enable_hinting", enable_hinting);
+    feature_options.addOption(bool, "enable_incremental", enable_incremental);
+    feature_options.addOption(bool, "enable_woff", enable_woff);
+    feature_options.addOption(bool, "enable_woff2", enable_woff2);
+    feature_options.addOption(bool, "enable_vertical", enable_vertical);
+
     const lib_mod = b.addModule("cappan_core", .{
         .root_source_file = b.path("cappan_core/src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    lib_mod.addOptions("build_options", feature_options);
 
     const lib = b.addLibrary(.{
         .name = "cappan_core",
@@ -134,12 +159,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the cappan CLI");
     run_step.dependOn(&run_cmd.step);
 
+    const lib_test_mod = b.createModule(.{
+        .root_source_file = b.path("cappan_core/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib_test_mod.addOptions("build_options", feature_options);
     const lib_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_core/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = lib_test_mod,
     });
     const run_lib_test = b.addRunArtifact(lib_test);
 
@@ -256,6 +283,7 @@ pub fn build(b: *std.Build) void {
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
+    wasm_core_mod.addOptions("build_options", feature_options);
 
     const wasm_exe = b.addExecutable(.{
         .name = "cappan_wasm",

@@ -26,7 +26,7 @@ pub fn subsetFont(
     codepoints: []const u21,
     options: SubsetOptions,
 ) ![]u8 {
-    if (font.cff != null) return error.CffNotSupported;
+    if (font.offset_table.sfnt_version == 0x4F54544F) return error.CffNotSupported;
     if (font.loca == null) return error.NoLocaTable;
     if (font.glyf == null) return error.NoGlyfTable;
 

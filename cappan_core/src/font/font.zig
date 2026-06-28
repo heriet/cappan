@@ -34,6 +34,7 @@ const rasterizer_mod = @import("../raster/rasterizer.zig");
 const woff_mod = @import("woff.zig");
 const woff2_mod = @import("woff2.zig");
 const err_mod = @import("../error.zig");
+const ft = @import("../features.zig").features;
 
 pub const RasterResult = rasterizer_mod.RasterResult;
 
@@ -50,46 +51,50 @@ pub const Font = struct {
     glyf: ?glyf_mod.GlyfTable,
     hmtx: hmtx_mod.HmtxTable,
     kern: ?kern_mod.KernTable,
-    gpos: ?gpos_mod.GposTable,
-    gsub: ?gsub_mod.GsubTable,
-    gdef: ?gdef_mod.GdefTable,
-    cff: ?cff_mod.CffTable,
-    colr: ?colr_mod.ColrTable,
-    cpal: ?cpal_mod.CpalTable,
-    cblc: ?cblc_mod.CblcTable,
-    cbdt: ?cbdt_mod.CbdtTable,
+    gpos: if (ft.enable_opentype_layout) ?gpos_mod.GposTable else void,
+    gsub: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void,
+    gdef: if (ft.enable_opentype_layout) ?gdef_mod.GdefTable else void,
+    cff: if (ft.enable_cff) ?cff_mod.CffTable else void,
+    colr: if (ft.enable_color) ?colr_mod.ColrTable else void,
+    cpal: if (ft.enable_color) ?cpal_mod.CpalTable else void,
+    cblc: if (ft.enable_bitmap) ?cblc_mod.CblcTable else void,
+    cbdt: if (ft.enable_bitmap) ?cbdt_mod.CbdtTable else void,
     name: ?name_mod.NameTable,
-    fvar: ?fvar_mod.FvarTable,
-    gvar: ?gvar_mod.GvarTable,
-    avar: ?avar_mod.AvarTable,
-    hvar: ?hvar_mod.HvarTable,
-    vhea: ?vhea_mod.VheaTable,
-    vmtx: ?vmtx_mod.VmtxTable,
-    vvar: ?vvar_mod.VvarTable,
-    mvar: ?mvar_mod.MvarTable,
-    stat: ?stat_mod.StatTable,
-    os2: ?os2_mod.Os2Table,
+    fvar: if (ft.enable_variable) ?fvar_mod.FvarTable else void,
+    gvar: if (ft.enable_variable) ?gvar_mod.GvarTable else void,
+    avar: if (ft.enable_variable) ?avar_mod.AvarTable else void,
+    hvar: if (ft.enable_variable) ?hvar_mod.HvarTable else void,
+    vhea: if (ft.enable_vertical) ?vhea_mod.VheaTable else void,
+    vmtx: if (ft.enable_vertical) ?vmtx_mod.VmtxTable else void,
+    vvar: if (ft.enable_variable) ?vvar_mod.VvarTable else void,
+    mvar: if (ft.enable_variable) ?mvar_mod.MvarTable else void,
+    stat: if (ft.enable_variable) ?stat_mod.StatTable else void,
+    os2: if (ft.enable_hinting) ?os2_mod.Os2Table else void,
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8, diag: ?*err_mod.Diagnostics) !Font {
-        if (woff_mod.isWoffFile(data)) {
-            const sfnt_data = try woff_mod.woffToSfnt(allocator, data);
-            errdefer allocator.free(sfnt_data);
-            var font = try if (parser.isTtcFile(sfnt_data))
-                initCollectionIndex(allocator, sfnt_data, 0, diag)
-            else
-                initAt(allocator, sfnt_data, 0, diag);
-            font.owned_data = sfnt_data;
-            return font;
+        if (comptime ft.enable_woff) {
+            if (woff_mod.isWoffFile(data)) {
+                const sfnt_data = try woff_mod.woffToSfnt(allocator, data);
+                errdefer allocator.free(sfnt_data);
+                var font = try if (parser.isTtcFile(sfnt_data))
+                    initCollectionIndex(allocator, sfnt_data, 0, diag)
+                else
+                    initAt(allocator, sfnt_data, 0, diag);
+                font.owned_data = sfnt_data;
+                return font;
+            }
         }
-        if (woff2_mod.isWoff2File(data)) {
-            const sfnt_data = try woff2_mod.woff2ToSfnt(allocator, data);
-            errdefer allocator.free(sfnt_data);
-            var font = try if (parser.isTtcFile(sfnt_data))
-                initCollectionIndex(allocator, sfnt_data, 0, diag)
-            else
-                initAt(allocator, sfnt_data, 0, diag);
-            font.owned_data = sfnt_data;
-            return font;
+        if (comptime ft.enable_woff2) {
+            if (woff2_mod.isWoff2File(data)) {
+                const sfnt_data = try woff2_mod.woff2ToSfnt(allocator, data);
+                errdefer allocator.free(sfnt_data);
+                var font = try if (parser.isTtcFile(sfnt_data))
+                    initCollectionIndex(allocator, sfnt_data, 0, diag)
+                else
+                    initAt(allocator, sfnt_data, 0, diag);
+                font.owned_data = sfnt_data;
+                return font;
+            }
         }
         if (parser.isTtcFile(data)) {
             return initCollectionIndex(allocator, data, 0, diag);
@@ -153,22 +158,26 @@ pub const Font = struct {
 
         var loca_table: ?loca_mod.LocaTable = null;
         var glyf_table: ?glyf_mod.GlyfTable = null;
-        var cff_table: ?cff_mod.CffTable = null;
+        var cff_table: if (ft.enable_cff) ?cff_mod.CffTable else void = if (comptime ft.enable_cff) null else {};
 
         if (is_cff) {
-            const cff_record = parser.findTable(offset_table, "CFF ".*) orelse {
-                if (diag) |d| d.addError(allocator, .{ .table_tag = "CFF ".* }, "required table 'CFF ' not found") catch {};
-                return error.TableNotFound;
-            };
-            const cff_data = try parser.getTableData(data, cff_record);
-            cff_table = try cff_mod.parseCff(allocator, cff_data);
+            if (comptime ft.enable_cff) {
+                const cff_record = parser.findTable(offset_table, "CFF ".*) orelse {
+                    if (diag) |d| d.addError(allocator, .{ .table_tag = "CFF ".* }, "required table 'CFF ' not found") catch {};
+                    return error.TableNotFound;
+                };
+                const cff_data = try parser.getTableData(data, cff_record);
+                cff_table = try cff_mod.parseCff(allocator, cff_data);
+            } else {
+                if (diag) |d| d.addError(allocator, .{}, "CFF font not supported (feature disabled)") catch {};
+                return error.CffNotSupported;
+            }
         } else {
             const loca_record = parser.findTable(offset_table, "loca".*) orelse {
                 if (diag) |d| d.addError(allocator, .{ .table_tag = "loca".* }, "required table 'loca' not found") catch {};
                 return error.TableNotFound;
             };
             loca_table = loca_mod.parse(try parser.getTableData(data, loca_record), head.index_to_loc_format, maxp.num_glyphs);
-
             const glyf_record = parser.findTable(offset_table, "glyf".*) orelse {
                 if (diag) |d| d.addError(allocator, .{ .table_tag = "glyf".* }, "required table 'glyf' not found") catch {};
                 return error.TableNotFound;
@@ -192,7 +201,7 @@ pub const Font = struct {
             }
         };
 
-        const gpos_table: ?gpos_mod.GposTable = blk: {
+        const gpos_table: if (ft.enable_opentype_layout) ?gpos_mod.GposTable else void = if (comptime ft.enable_opentype_layout) blk: {
             const gpos_record = parser.findTable(offset_table, "GPOS".*);
             if (gpos_record) |rec| {
                 const gpos_data = try parser.getTableData(data, rec);
@@ -203,8 +212,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const gdef_table: ?gdef_mod.GdefTable = blk: {
+        } else {};
+        const gdef_table: if (ft.enable_opentype_layout) ?gdef_mod.GdefTable else void = if (comptime ft.enable_opentype_layout) blk: {
             const gdef_record = parser.findTable(offset_table, "GDEF".*);
             if (gdef_record) |rec| {
                 const gdef_data = try parser.getTableData(data, rec);
@@ -212,8 +221,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const gsub_table: ?gsub_mod.GsubTable = blk: {
+        } else {};
+        const gsub_table: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void = if (comptime ft.enable_opentype_layout) blk: {
             const gsub_record = parser.findTable(offset_table, "GSUB".*);
             if (gsub_record) |rec| {
                 const gsub_data = try parser.getTableData(data, rec);
@@ -221,8 +230,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const colr_table: ?colr_mod.ColrTable = blk: {
+        } else {};
+        const colr_table: if (ft.enable_color) ?colr_mod.ColrTable else void = if (comptime ft.enable_color) blk: {
             const colr_record = parser.findTable(offset_table, "COLR".*);
             if (colr_record) |rec| {
                 const colr_data = try parser.getTableData(data, rec);
@@ -230,8 +239,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const cpal_table: ?cpal_mod.CpalTable = blk: {
+        } else {};
+        const cpal_table: if (ft.enable_color) ?cpal_mod.CpalTable else void = if (comptime ft.enable_color) blk: {
             const cpal_record = parser.findTable(offset_table, "CPAL".*);
             if (cpal_record) |rec| {
                 const cpal_data = try parser.getTableData(data, rec);
@@ -239,8 +248,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const cblc_table: ?cblc_mod.CblcTable = blk: {
+        } else {};
+        const cblc_table: if (ft.enable_bitmap) ?cblc_mod.CblcTable else void = if (comptime ft.enable_bitmap) blk: {
             const cblc_record = parser.findTable(offset_table, "CBLC".*);
             if (cblc_record) |rec| {
                 const cblc_data = try parser.getTableData(data, rec);
@@ -248,8 +257,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const cbdt_table: ?cbdt_mod.CbdtTable = blk: {
+        } else {};
+        const cbdt_table: if (ft.enable_bitmap) ?cbdt_mod.CbdtTable else void = if (comptime ft.enable_bitmap) blk: {
             const cbdt_record = parser.findTable(offset_table, "CBDT".*);
             if (cbdt_record) |rec| {
                 const cbdt_data = try parser.getTableData(data, rec);
@@ -257,7 +266,7 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
+        } else {};
         const name_table: ?name_mod.NameTable = blk: {
             const name_record = parser.findTable(offset_table, "name".*);
             if (name_record) |rec| {
@@ -267,7 +276,7 @@ pub const Font = struct {
                 break :blk null;
             }
         };
-        const fvar_table: ?fvar_mod.FvarTable = blk: {
+        const fvar_table: if (ft.enable_variable) ?fvar_mod.FvarTable else void = if (comptime ft.enable_variable) blk: {
             const fvar_record = parser.findTable(offset_table, "fvar".*);
             if (fvar_record) |rec| {
                 const fvar_data = try parser.getTableData(data, rec);
@@ -275,8 +284,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const gvar_table: ?gvar_mod.GvarTable = blk: {
+        } else {};
+        const gvar_table: if (ft.enable_variable) ?gvar_mod.GvarTable else void = if (comptime ft.enable_variable) blk: {
             const gvar_record = parser.findTable(offset_table, "gvar".*);
             if (gvar_record) |rec| {
                 const gvar_data = try parser.getTableData(data, rec);
@@ -284,8 +293,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const avar_table: ?avar_mod.AvarTable = blk: {
+        } else {};
+        const avar_table: if (ft.enable_variable) ?avar_mod.AvarTable else void = if (comptime ft.enable_variable) blk: {
             const avar_record = parser.findTable(offset_table, "avar".*);
             if (avar_record) |rec| {
                 const avar_data = try parser.getTableData(data, rec);
@@ -293,8 +302,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const hvar_table: ?hvar_mod.HvarTable = blk: {
+        } else {};
+        const hvar_table: if (ft.enable_variable) ?hvar_mod.HvarTable else void = if (comptime ft.enable_variable) blk: {
             const hvar_record = parser.findTable(offset_table, "HVAR".*);
             if (hvar_record) |rec| {
                 const hvar_data = try parser.getTableData(data, rec);
@@ -302,8 +311,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const vhea_table: ?vhea_mod.VheaTable = blk: {
+        } else {};
+        const vhea_table: if (ft.enable_vertical) ?vhea_mod.VheaTable else void = if (comptime ft.enable_vertical) blk: {
             const vhea_record = parser.findTable(offset_table, "vhea".*);
             if (vhea_record) |rec| {
                 const vhea_data = try parser.getTableData(data, rec);
@@ -311,8 +320,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const vmtx_table: ?vmtx_mod.VmtxTable = blk: {
+        } else {};
+        const vmtx_table: if (ft.enable_vertical) ?vmtx_mod.VmtxTable else void = if (comptime ft.enable_vertical) blk: {
             if (vhea_table) |vhea| {
                 const vmtx_record = parser.findTable(offset_table, "vmtx".*);
                 if (vmtx_record) |rec| {
@@ -321,8 +330,8 @@ pub const Font = struct {
                 }
             }
             break :blk null;
-        };
-        const vvar_table: ?vvar_mod.VvarTable = blk: {
+        } else {};
+        const vvar_table: if (ft.enable_variable) ?vvar_mod.VvarTable else void = if (comptime ft.enable_variable) blk: {
             const vvar_record = parser.findTable(offset_table, "VVAR".*);
             if (vvar_record) |rec| {
                 const vvar_data = try parser.getTableData(data, rec);
@@ -330,8 +339,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const mvar_table: ?mvar_mod.MvarTable = blk: {
+        } else {};
+        const mvar_table: if (ft.enable_variable) ?mvar_mod.MvarTable else void = if (comptime ft.enable_variable) blk: {
             const mvar_record = parser.findTable(offset_table, "MVAR".*);
             if (mvar_record) |rec| {
                 const mvar_data = try parser.getTableData(data, rec);
@@ -339,8 +348,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const stat_table: ?stat_mod.StatTable = blk: {
+        } else {};
+        const stat_table: if (ft.enable_variable) ?stat_mod.StatTable else void = if (comptime ft.enable_variable) blk: {
             const stat_record = parser.findTable(offset_table, "STAT".*);
             if (stat_record) |rec| {
                 const stat_data = try parser.getTableData(data, rec);
@@ -348,8 +357,8 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
-        const os2_table: ?os2_mod.Os2Table = blk: {
+        } else {};
+        const os2_table: if (ft.enable_hinting) ?os2_mod.Os2Table else void = if (comptime ft.enable_hinting) blk: {
             const os2_record = parser.findTable(offset_table, "OS/2".*);
             if (os2_record) |rec| {
                 const os2_data = try parser.getTableData(data, rec);
@@ -357,7 +366,7 @@ pub const Font = struct {
             } else {
                 break :blk null;
             }
-        };
+        } else {};
         return .{
             .allocator = allocator,
             .data = data,
@@ -394,8 +403,12 @@ pub const Font = struct {
     }
 
     pub fn deinit(self: *Font) void {
-        if (self.gpos) |*g| g.deinit();
-        if (self.cff) |*c| c.deinit();
+        if (comptime ft.enable_opentype_layout) {
+            if (self.gpos) |*g| g.deinit();
+        }
+        if (comptime ft.enable_cff) {
+            if (self.cff) |*c| c.deinit();
+        }
         self.allocator.free(self.offset_table.table_records);
         if (self.owned_data) |od| self.allocator.free(od);
     }
@@ -405,15 +418,18 @@ pub const Font = struct {
     }
 
     pub fn getGlyphOutline(self: Font, allocator: std.mem.Allocator, glyph_id: u16) !?glyph_mod.GlyphOutline {
-        if (self.cff) |cff_table| {
-            const charstring_data = cff_table.getCharString(glyph_id) orelse return null;
-            return try charstring_mod.interpret(
-                allocator,
-                charstring_data,
-                cff_table.global_subrs,
-                cff_table.getLocalSubrs(glyph_id),
-            );
-        } else if (self.glyf) |glyf_table| {
+        if (comptime ft.enable_cff) {
+            if (self.cff) |cff_table| {
+                const charstring_data = cff_table.getCharString(glyph_id) orelse return null;
+                return try charstring_mod.interpret(
+                    allocator,
+                    charstring_data,
+                    cff_table.global_subrs,
+                    cff_table.getLocalSubrs(glyph_id),
+                );
+            }
+        }
+        if (self.glyf) |glyf_table| {
             return glyf_table.getGlyphOutline(allocator, glyph_id, self.loca.?);
         } else {
             return null;
@@ -421,12 +437,17 @@ pub const Font = struct {
     }
 
     pub fn getBlueZones(self: Font, glyph_id: u16) ?glyph_mod.BlueZones {
+        if (comptime !ft.enable_cff) return null;
         const cff_table = self.cff orelse return null;
         return cff_table.getBlueZones(glyph_id);
     }
 
     pub fn getAutoBlueZones(self: Font) glyph_mod.BlueZones {
-        return auto_hinting_mod.inferBlueZones(self.os2, self.hhea.ascender, self.hhea.descender);
+        if (comptime ft.enable_hinting) {
+            return auto_hinting_mod.inferBlueZones(self.os2, self.hhea.ascender, self.hhea.descender);
+        } else {
+            return auto_hinting_mod.inferBlueZones(null, self.hhea.ascender, self.hhea.descender);
+        }
     }
 
     pub fn getHMetrics(self: Font, glyph_id: u16) !hmtx_mod.HMetrics {
@@ -450,8 +471,10 @@ pub const Font = struct {
             allocated = true;
         }
 
-        if (self.avar) |avar| {
-            try avar.mapNormalizedCoords(adjusted);
+        if (comptime ft.enable_variable) {
+            if (self.avar) |avar| {
+                try avar.mapNormalizedCoords(adjusted);
+            }
         }
 
         return .{ .coords = adjusted, .allocated = allocated };
@@ -459,46 +482,49 @@ pub const Font = struct {
 
     pub fn getHMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !hmtx_mod.HMetrics {
         var metrics = try self.hmtx.getMetrics(glyph_id);
-        if (self.hvar) |hvar| {
-            var buf: [16]f32 = undefined;
-            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-            defer if (adj.allocated) self.allocator.free(adj.coords);
-
-            const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adj.coords);
-            const new_aw = @as(i32, metrics.advance_width) + aw_delta;
-            metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
-
-            const lsb_delta = try hvar.getLsbDelta(glyph_id, adj.coords);
-            const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
-            metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        if (comptime ft.enable_variable) {
+            if (self.hvar) |hvar| {
+                var buf: [16]f32 = undefined;
+                const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+                defer if (adj.allocated) self.allocator.free(adj.coords);
+                const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adj.coords);
+                const new_aw = @as(i32, metrics.advance_width) + aw_delta;
+                metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
+                const lsb_delta = try hvar.getLsbDelta(glyph_id, adj.coords);
+                const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
+                metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
+            }
         }
         return metrics;
     }
 
     pub fn getVMetrics(self: Font, glyph_id: u16) !?vmtx_mod.VMetrics {
+        if (comptime !ft.enable_vertical) return null;
         if (self.vmtx) |vmtx| return try vmtx.getMetrics(glyph_id);
         return null;
     }
 
     pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
+        if (comptime !ft.enable_vertical) return null;
         var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
-        if (self.vvar) |vvar| {
-            var buf: [16]f32 = undefined;
-            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-            defer if (adj.allocated) self.allocator.free(adj.coords);
-
-            const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adj.coords);
-            const new_ah = @as(i32, metrics.advance_height) + ah_delta;
-            metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
-
-            const tsb_delta = try vvar.getTsbDelta(glyph_id, adj.coords);
-            const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
-            metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
+        if (comptime ft.enable_variable) {
+            if (self.vvar) |vvar| {
+                var buf: [16]f32 = undefined;
+                const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
+                defer if (adj.allocated) self.allocator.free(adj.coords);
+                const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adj.coords);
+                const new_ah = @as(i32, metrics.advance_height) + ah_delta;
+                metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
+                const tsb_delta = try vvar.getTsbDelta(glyph_id, adj.coords);
+                const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
+                metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
+            }
         }
         return metrics;
     }
 
     pub fn getMetricDelta(self: Font, tag: [4]u8, normalized_coords: []const f32) !i32 {
+        if (comptime !ft.enable_variable) return 0;
         if (self.mvar) |mvar| {
             var buf: [16]f32 = undefined;
             const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
@@ -510,6 +536,7 @@ pub const Font = struct {
     }
 
     pub fn getStatTable(self: Font) ?stat_mod.StatTable {
+        if (comptime !ft.enable_variable) return null;
         return self.stat;
     }
 
@@ -530,9 +557,11 @@ pub const Font = struct {
     }
 
     pub fn getKerning(self: Font, left_glyph: u16, right_glyph: u16) i16 {
-        if (self.gpos) |gpos| {
-            const value = gpos.getKerning(left_glyph, right_glyph);
-            if (value != 0) return value;
+        if (comptime ft.enable_opentype_layout) {
+            if (self.gpos) |gpos| {
+                const value = gpos.getKerning(left_glyph, right_glyph);
+                if (value != 0) return value;
+            }
         }
         if (self.kern) |kern| {
             return kern.getKerning(left_glyph, right_glyph);
@@ -541,30 +570,36 @@ pub const Font = struct {
     }
 
     pub fn getMarkBaseAnchors(self: Font, base_glyph: u16, mark_glyph: u16) ?gpos_mod.AnchorPair {
+        if (comptime !ft.enable_opentype_layout) return null;
         const gpos = self.gpos orelse return null;
         return gpos.getMarkBaseAnchors(base_glyph, mark_glyph);
     }
 
     pub fn getMarkMarkAnchors(self: Font, mark1_glyph: u16, mark2_glyph: u16) ?gpos_mod.AnchorPair {
+        if (comptime !ft.enable_opentype_layout) return null;
         const gpos = self.gpos orelse return null;
         return gpos.getMarkMarkAnchors(mark1_glyph, mark2_glyph);
     }
 
     pub fn getMarkLigAnchors(self: Font, lig_glyph: u16, mark_glyph: u16, component_index: u16) ?gpos_mod.AnchorPair {
+        if (comptime !ft.enable_opentype_layout) return null;
         const gpos = self.gpos orelse return null;
         return gpos.getMarkLigAnchors(lig_glyph, mark_glyph, component_index);
     }
 
     pub fn getCursiveAnchors(self: Font, glyph: u16) ?gpos_mod.CursiveAnchors {
+        if (comptime !ft.enable_opentype_layout) return null;
         const gpos = self.gpos orelse return null;
         return gpos.getCursiveAnchors(glyph);
     }
 
     pub fn getGsubTable(self: Font) ?gsub_mod.GsubTable {
+        if (comptime !ft.enable_opentype_layout) return null;
         return self.gsub;
     }
 
     pub fn getGdefTable(self: Font) ?gdef_mod.GdefTable {
+        if (comptime !ft.enable_opentype_layout) return null;
         return self.gdef;
     }
 
@@ -576,8 +611,10 @@ pub const Font = struct {
         feature_tags: []const [4]u8,
         glyphs: []const u16,
     ) ![]u16 {
-        if (self.gsub) |gsub| {
-            return gsub.applyFeatures(allocator, script_tag, lang_tag, feature_tags, glyphs);
+        if (comptime ft.enable_opentype_layout) {
+            if (self.gsub) |gsub| {
+                return gsub.applyFeatures(allocator, script_tag, lang_tag, feature_tags, glyphs);
+            }
         }
         const result = try allocator.alloc(u16, glyphs.len);
         @memcpy(result, glyphs);
@@ -585,6 +622,7 @@ pub const Font = struct {
     }
 
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {
+        if (comptime !ft.enable_color) return null;
         if (self.colr) |colr| {
             return colr.findBaseGlyph(glyph_id);
         }
@@ -592,6 +630,7 @@ pub const Font = struct {
     }
 
     pub fn getColorLayer(self: Font, layer_idx: u16) ?colr_mod.ColorLayer {
+        if (comptime !ft.enable_color) return null;
         if (self.colr) |colr| {
             return colr.getLayer(layer_idx);
         }
@@ -599,6 +638,7 @@ pub const Font = struct {
     }
 
     pub fn getPaletteColor(self: Font, palette_idx: u16, entry_idx: u16) ?cpal_mod.Color {
+        if (comptime !ft.enable_color) return null;
         if (self.cpal) |cpal| {
             return cpal.getColor(palette_idx, entry_idx);
         }
@@ -606,6 +646,7 @@ pub const Font = struct {
     }
 
     pub fn getBitmapGlyph(self: Font, glyph_id: u16) ?cbdt_mod.GlyphBitmap {
+        if (comptime !ft.enable_bitmap) return null;
         const cblc = self.cblc orelse return null;
         const cbdt = self.cbdt orelse return null;
         const location = cblc.findGlyphBitmap(glyph_id) orelse return null;
@@ -685,25 +726,30 @@ pub const Font = struct {
     }
 
     pub fn isVariableFont(self: Font) bool {
+        if (comptime !ft.enable_variable) return false;
         return self.fvar != null;
     }
 
     pub fn getAxisCount(self: Font) u16 {
+        if (comptime !ft.enable_variable) return 0;
         if (self.fvar) |fvar| return fvar.getAxisCount();
         return 0;
     }
 
     pub fn getAxis(self: Font, index: u16) !fvar_mod.AxisRecord {
+        if (comptime !ft.enable_variable) return error.InvalidAxisIndex;
         if (self.fvar) |fvar| return fvar.getAxis(index);
         return error.InvalidAxisIndex;
     }
 
     pub fn getInstanceCount(self: Font) u16 {
+        if (comptime !ft.enable_variable) return 0;
         if (self.fvar) |fvar| return fvar.getInstanceCount();
         return 0;
     }
 
     pub fn getInstance(self: Font, allocator: std.mem.Allocator, index: u16) !fvar_mod.NamedInstance {
+        if (comptime !ft.enable_variable) return error.InvalidInstanceIndex;
         if (self.fvar) |fvar| return fvar.getInstance(allocator, index);
         return error.InvalidInstanceIndex;
     }
@@ -714,6 +760,7 @@ pub const Font = struct {
         glyph_id: u16,
         normalized_coords: []const f32,
     ) !?glyph_mod.GlyphOutline {
+        if (comptime !ft.enable_variable) return self.getGlyphOutline(allocator, glyph_id);
         var buf: [16]f32 = undefined;
         const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
         defer if (adj.allocated) self.allocator.free(adj.coords);
@@ -737,8 +784,10 @@ pub const Font = struct {
             const components = components_slice;
             defer allocator.free(components);
 
-            if (self.gvar) |gvar| {
-                try gvar.applyCompoundDeltas(allocator, glyph_id, components, adjusted_coords);
+            if (comptime ft.enable_variable) {
+                if (self.gvar) |gvar| {
+                    try gvar.applyCompoundDeltas(allocator, glyph_id, components, adjusted_coords);
+                }
             }
 
             var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
@@ -785,8 +834,10 @@ pub const Font = struct {
             };
         } else {
             var outline = (try self.getGlyphOutline(allocator, glyph_id)) orelse return null;
-            if (self.gvar) |gvar| {
-                try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
+            if (comptime ft.enable_variable) {
+                if (self.gvar) |gvar| {
+                    try gvar.applyDeltas(allocator, glyph_id, &outline, adjusted_coords);
+                }
             }
             return outline;
         }
@@ -817,6 +868,7 @@ test "Font API integration test" {
 }
 
 test "Font API CFF integration test" {
+    if (comptime !ft.enable_cff) return;
     const font_data = @embedFile("../fixture/SourceSans3-Regular.otf");
     var font = try Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
@@ -845,7 +897,7 @@ test "Font API TrueType still works" {
     var font = try Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
 
-    try std.testing.expect(font.cff == null);
+    if (comptime ft.enable_cff) try std.testing.expect(font.cff == null);
     try std.testing.expect(font.glyf != null);
     try std.testing.expect(font.loca != null);
 
@@ -900,6 +952,7 @@ test "measureTextWidth Hello" {
 }
 
 test "Font API WOFF2 integration test" {
+    if (comptime !ft.enable_woff2) return;
     const font_data = @embedFile("../fixture/DejaVuSans.woff2");
     var font = try Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
@@ -916,6 +969,7 @@ test "Font API WOFF2 integration test" {
 }
 
 test "Variable Font fvar parsing" {
+    if (comptime !ft.enable_variable) return;
     const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
     var font = try Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
@@ -928,6 +982,7 @@ test "Variable Font fvar parsing" {
 }
 
 test "Variable Font gvar apply deltas" {
+    if (comptime !ft.enable_variable) return;
     const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
     var font = try Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();

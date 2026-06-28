@@ -7,6 +7,7 @@ const cappan_metrics = @import("cappan_metrics");
 const discover = @import("cappan_discover");
 const Color = cappan_core.render.rgba_bitmap.Color;
 const RgbaBitmap = cappan_core.render.rgba_bitmap.RgbaBitmap;
+const ft = cappan_core.features.features;
 const incremental_mod = cappan_core.render.incremental;
 const paint_mod = cappan_core.render.paint;
 const scanline_mod = cappan_core.raster.scanline;
@@ -31,6 +32,10 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, subcmd, "render")) {
         try cmdRender(allocator, io, &args);
     } else if (std.mem.eql(u8, subcmd, "animate")) {
+        if (comptime !ft.enable_incremental) {
+            std.debug.print("Error: incremental rendering is disabled at compile time\n", .{});
+            return;
+        }
         try cmdRenderIncremental(allocator, io, &args);
     } else if (std.mem.eql(u8, subcmd, "fonts")) {
         try cmdListFonts(allocator, io);

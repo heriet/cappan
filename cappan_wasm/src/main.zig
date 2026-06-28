@@ -1,6 +1,7 @@
 const std = @import("std");
 const cappan = @import("cappan_core");
 const scanline_mod = cappan.raster.scanline;
+const ft = cappan.features.features;
 
 const allocator = std.heap.wasm_allocator;
 
@@ -8,7 +9,7 @@ const embedded_font_data = @embedFile("asset/font/NotoSansJP-Regular.otf");
 
 var current_font: ?cappan.font.Font = null;
 var last_bitmap: ?cappan.render.rgba_bitmap.RgbaBitmap = null;
-var current_renderer: ?cappan.render.incremental.IncrementalRenderer = null;
+var current_renderer: if (ft.enable_incremental) ?cappan.render.incremental.IncrementalRenderer else void = if (ft.enable_incremental) null else {};
 var paint_stack: std.ArrayListUnmanaged(cappan.render.paint.PaintOperation) = .empty;
 
 export fn wasm_alloc(len: usize) ?[*]u8 {
@@ -182,6 +183,7 @@ export fn wasm_init_animator(
     cff_hinting: u32,
     auto_hinting: u32,
 ) i32 {
+    if (comptime !ft.enable_incremental) return 0;
     const font = current_font orelse return 0;
     wasm_free_animator();
     free_last_bitmap();
@@ -234,6 +236,7 @@ export fn wasm_init_animator(
 }
 
 export fn wasm_render_frame(progress: f32) i32 {
+    if (comptime !ft.enable_incremental) return 0;
     if (current_renderer) |*renderer| {
         free_last_bitmap();
         last_bitmap = renderer.renderFrame(progress) catch return 0;
@@ -243,6 +246,7 @@ export fn wasm_render_frame(progress: f32) i32 {
 }
 
 export fn wasm_free_animator() void {
+    if (comptime !ft.enable_incremental) return;
     if (current_renderer) |*r| {
         r.deinit();
         current_renderer = null;

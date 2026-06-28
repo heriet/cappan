@@ -1,6 +1,7 @@
 const std = @import("std");
 const font_mod = @import("font/font.zig");
 const renderer_mod = @import("render/renderer.zig");
+const ft = @import("features.zig").features;
 
 test "render all ASCII printable characters without crash" {
     const font_data = @embedFile("fixture/DejaVuSans.ttf");
@@ -71,6 +72,7 @@ test "render UTF-8 text Héllo does not crash" {
 
 
 test "CFF font renders 'A' without crash" {
+    if (comptime !ft.enable_cff) return error.SkipZigTest;
     const font_data = @embedFile("fixture/SourceSans3-Regular.otf");
     var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
@@ -83,6 +85,7 @@ test "CFF font renders 'A' without crash" {
 }
 
 test "CFF font renders Hello" {
+    if (comptime !ft.enable_cff) return error.SkipZigTest;
     const font_data = @embedFile("fixture/SourceSans3-Regular.otf");
     var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
     defer font.deinit();
