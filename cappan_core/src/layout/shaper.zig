@@ -1,6 +1,7 @@
 const std = @import("std");
 const font_mod = @import("../font/font.zig");
 const gdef_mod = @import("../font/table/gdef.zig");
+const ft = @import("../features.zig").features;
 
 pub const GlyphPosition = struct {
     glyph_id: u16,
@@ -372,6 +373,7 @@ pub fn layoutStyledText(
 }
 
 fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font) void {
+    if (comptime !ft.enable_opentype_layout) return;
     for (positions, 0..) |*pos, i| {
         const font = &fonts[pos.font_index];
         const gdef = font.getGdefTable() orelse continue;

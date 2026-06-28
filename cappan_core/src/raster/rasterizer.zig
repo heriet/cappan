@@ -4,6 +4,7 @@ const outline_mod = @import("outline.zig");
 const scanline_mod = @import("scanline.zig");
 const stem_darkening_mod = @import("stem_darkening.zig");
 const cff_hinting_mod = @import("cff_hinting.zig");
+const ft = @import("../features.zig").features;
 
 pub const RasterResult = struct {
     pixels: []u8,
@@ -64,12 +65,13 @@ pub fn rasterizeGlyph(
     const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, offset_x, offset_y);
     defer outline_mod.freeScaledContours(allocator, scaled);
 
-    if (glyph_outline.hints) |hint_data| {
-        cff_hinting_mod.applyHints(scaled, hint_data, scale);
-    }
-
-    if (embolden > 0.0) {
-        try stem_darkening_mod.emboldenContours(allocator, scaled, embolden);
+    if (comptime ft.enable_hinting) {
+        if (glyph_outline.hints) |hint_data| {
+            cff_hinting_mod.applyHints(scaled, hint_data, scale);
+        }
+        if (embolden > 0.0) {
+            try stem_darkening_mod.emboldenContours(allocator, scaled, embolden);
+        }
     }
 
     // Flatten all contours into segments
@@ -194,12 +196,13 @@ pub fn rasterizeGlyphLcd(
     const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, 0.0, offset_y);
     defer outline_mod.freeScaledContours(allocator, scaled);
 
-    if (glyph_outline.hints) |hint_data| {
-        cff_hinting_mod.applyHints(scaled, hint_data, scale);
-    }
-
-    if (embolden_lcd > 0.0) {
-        try stem_darkening_mod.emboldenContours(allocator, scaled, embolden_lcd);
+    if (comptime ft.enable_hinting) {
+        if (glyph_outline.hints) |hint_data| {
+            cff_hinting_mod.applyHints(scaled, hint_data, scale);
+        }
+        if (embolden_lcd > 0.0) {
+            try stem_darkening_mod.emboldenContours(allocator, scaled, embolden_lcd);
+        }
     }
 
     for (scaled) |contour_points| {

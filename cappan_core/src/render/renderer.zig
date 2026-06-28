@@ -12,6 +12,7 @@ const png_decoder_mod = @import("../image/png_decoder.zig");
 const paint_mod = @import("paint.zig");
 const glyph_mod = @import("../font/glyph.zig");
 const auto_hinting_mod = @import("../raster/auto_hinting.zig");
+const ft = @import("../features.zig").features;
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -40,6 +41,7 @@ fn applyOutlineHinting(
     glyph_id: u16,
     options: RenderOptions,
 ) !void {
+    if (comptime !ft.enable_hinting) return;
     if (options.cff_hinting) {
         if (outline.hints) |*h| {
             h.blue_zones = glyph_font.getBlueZones(glyph_id);
@@ -85,10 +87,13 @@ const PaintCacheKey = struct {
 };
 
 fn resolveRasterOptions(options: RenderOptions) scanline_mod.RasterOptions {
-    return if (options.stem_darkening)
-        stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
-    else
-        options.raster_options;
+    if (comptime ft.enable_hinting) {
+        return if (options.stem_darkening)
+            stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
+        else
+            options.raster_options;
+    }
+    return options.raster_options;
 }
 
 pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !rgba_bitmap_mod.RgbaBitmap {
@@ -212,21 +217,23 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
 
             if (glyph_font.getBitmapGlyph(pos.glyph_id)) |bitmap_glyph| {
-                // Decode embedded PNG from CBDT and blend onto the output bitmap
-                var decoded = png_decoder_mod.decode(allocator, bitmap_glyph.png_data) catch {
-                    // If decode fails, skip this glyph
-                    const empty_pixels = try allocator.alloc(u8, 0);
-                    try glyph_cache.put(allocator, cache_key, .{ .pixels = empty_pixels, .width = 0, .height = 0, .offset_x = 0, .offset_y = 0 });
-                    continue;
-                };
-                defer decoded.deinit();
+                if (comptime ft.enable_bitmap) {
+                    // Decode embedded PNG from CBDT and blend onto the output bitmap
+                    var decoded = png_decoder_mod.decode(allocator, bitmap_glyph.png_data) catch {
+                        // If decode fails, skip this glyph
+                        const empty_pixels = try allocator.alloc(u8, 0);
+                        try glyph_cache.put(allocator, cache_key, .{ .pixels = empty_pixels, .width = 0, .height = 0, .offset_x = 0, .offset_y = 0 });
+                        continue;
+                    };
+                    defer decoded.deinit();
 
-                const bearing_x: f32 = @floatFromInt(bitmap_glyph.metrics.bearing_x);
-                const bearing_y: f32 = @floatFromInt(bitmap_glyph.metrics.bearing_y);
-                const dst_x = @as(i32, @intFromFloat(pos.x_offset + pad + bearing_x));
-                const dst_y = @as(i32, @intFromFloat(base_baseline_y + pos.y_offset - bearing_y));
+                    const bearing_x: f32 = @floatFromInt(bitmap_glyph.metrics.bearing_x);
+                    const bearing_y: f32 = @floatFromInt(bitmap_glyph.metrics.bearing_y);
+                    const dst_x = @as(i32, @intFromFloat(pos.x_offset + pad + bearing_x));
+                    const dst_y = @as(i32, @intFromFloat(base_baseline_y + pos.y_offset - bearing_y));
 
-                blendBitmapGlyph(&bitmap, decoded.pixels, decoded.width, decoded.height, dst_x, dst_y, bmp_width, bmp_height);
+                    blendBitmapGlyph(&bitmap, decoded.pixels, decoded.width, decoded.height, dst_x, dst_y, bmp_width, bmp_height);
+                }
             } else if (glyph_font.getColorLayers(pos.glyph_id)) |base| {
                 var layer_idx: u16 = base.first_layer_idx;
                 const end_idx: u16 = base.first_layer_idx + base.num_layers;
