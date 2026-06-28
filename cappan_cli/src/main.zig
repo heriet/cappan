@@ -61,6 +61,7 @@ const CommonOptions = struct {
     text_align: cappan_core.layout.shaper.TextAlign = .left,
     lcd_rendering: bool = false,
     stem_darkening: bool = false,
+    cff_hinting: bool = false,
     raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
@@ -141,6 +142,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--stem-darkening")) {
         opts.stem_darkening = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--cff-hinting")) {
+        opts.cff_hinting = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--aa-level")) {
         if (args.next()) |s| {
@@ -384,6 +388,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .paint_stack = if (common.paint_ops.items.len > 0) common.paint_ops.items else null,
             .raster_options = common.raster_options,
             .stem_darkening = common.stem_darkening,
+            .cff_hinting = common.cff_hinting,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -435,6 +440,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .text_align = common.text_align,
             .raster_options = common.raster_options,
             .stem_darkening = common.stem_darkening,
+            .cff_hinting = common.cff_hinting,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -678,6 +684,7 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
         .paint_layer_timing = if (std.mem.eql(u8, paint_layer_timing_name, "sequential")) .sequential else .simultaneous,
         .raster_options = common.raster_options,
         .stem_darkening = common.stem_darkening,
+        .cff_hinting = common.cff_hinting,
     }) catch |err| {
         std.debug.print("Error: could not create incremental renderer: {}\n", .{err});
         return;

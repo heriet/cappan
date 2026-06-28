@@ -14,6 +14,7 @@ pub const CharstringError = error{
 
 const MAX_STACK = 48;
 const MAX_CALL_DEPTH = 10;
+const MAX_HINTS: usize = 96;
 
 pub fn interpret(
     allocator: std.mem.Allocator,
@@ -47,7 +48,14 @@ const Interpreter = struct {
     y_max: f32,
 
     // ヒント
-    num_hints: u16,
+    num_hints: u32,
+    h_stems: std.ArrayListUnmanaged(glyph_mod.StemHint),
+    v_stems: std.ArrayListUnmanaged(glyph_mod.StemHint),
+    masks: std.ArrayListUnmanaged(glyph_mod.HintMaskEntry),
+    h_stem_acc: f32,
+    v_stem_acc: f32,
+    total_points: u32,
+    contour_count: u32,
 
     // サブルーチン
     global_subrs: cff_mod.Index,
@@ -69,6 +77,13 @@ const Interpreter = struct {
             .x_max = -std.math.floatMax(f32),
             .y_max = -std.math.floatMax(f32),
             .num_hints = 0,
+            .h_stems = .empty,
+            .v_stems = .empty,
+            .masks = .empty,
+            .h_stem_acc = 0,
+            .v_stem_acc = 0,
+            .total_points = 0,
+            .contour_count = 0,
             .global_subrs = global_subrs,
             .local_subrs = local_subrs,
         };
@@ -82,6 +97,9 @@ const Interpreter = struct {
             self.allocator.free(contour.points);
         }
         self.contours.deinit(self.allocator);
+        self.h_stems.deinit(self.allocator);
+        self.v_stems.deinit(self.allocator);
+        self.masks.deinit(self.allocator);
     }
 
     fn push(self: *Interpreter, val: f32) !void {
@@ -113,12 +131,14 @@ const Interpreter = struct {
             .on_curve = on_curve,
             .is_cubic = is_cubic,
         });
+        self.total_points += 1;
     }
 
     fn closeContour(self: *Interpreter) !void {
         if (self.current_points.items.len > 0) {
             const points = try self.current_points.toOwnedSlice(self.allocator);
             try self.contours.append(self.allocator, .{ .points = points });
+            self.contour_count += 1;
         }
     }
 
@@ -144,7 +164,7 @@ const Interpreter = struct {
         }
     }
 
-    fn clearHintStack(self: *Interpreter) void {
+    fn clearHintStack(self: *Interpreter, is_vertical: bool) !void {
         if (!self.has_width and self.sp % 2 != 0) {
             // odd number of values: first is width
             self.has_width = true;
@@ -160,7 +180,28 @@ const Interpreter = struct {
         } else if (!self.has_width) {
             self.has_width = true;
         }
-        self.num_hints += @intCast(self.sp / 2);
+
+        var si: usize = 0;
+        while (si + 1 < self.sp) {
+            const pos_delta = self.stack[si];
+            const w = self.stack[si + 1];
+            if (is_vertical) {
+                self.v_stem_acc += pos_delta;
+                if (self.v_stems.items.len < MAX_HINTS) {
+                    try self.v_stems.append(self.allocator, .{ .position = self.v_stem_acc, .width = w });
+                }
+                self.v_stem_acc += w;
+            } else {
+                self.h_stem_acc += pos_delta;
+                if (self.h_stems.items.len < MAX_HINTS) {
+                    try self.h_stems.append(self.allocator, .{ .position = self.h_stem_acc, .width = w });
+                }
+                self.h_stem_acc += w;
+            }
+            si += 2;
+        }
+
+        self.num_hints +|= @intCast(self.sp / 2);
         self.sp = 0;
     }
 
@@ -209,8 +250,11 @@ const Interpreter = struct {
                 // --- Operators ---
 
                 // hstem (1), vstem (3)
-                1, 3 => {
-                    self.clearHintStack();
+                1 => {
+                    try self.clearHintStack(false);
+                },
+                3 => {
+                    try self.clearHintStack(true);
                 },
 
                 // vmoveto (4)
@@ -316,13 +360,24 @@ const Interpreter = struct {
 
                 // hstemhm (18)
                 18 => {
-                    self.clearHintStack();
+                    try self.clearHintStack(false);
                 },
 
                 // hintmask (19), cntrmask (20)
                 19, 20 => {
-                    self.clearHintStack();
+                    try self.clearHintStack(true);
                     const mask_bytes = self.hintMaskBytes();
+                    if (i + mask_bytes <= data.len and self.masks.items.len < MAX_HINTS * 16) {
+                        var entry: glyph_mod.HintMaskEntry = .{
+                            .data = .{0} ** 12,
+                            .point_index = self.total_points,
+                            .contour_index = self.contour_count,
+                            .is_counter = (b0 == 20),
+                        };
+                        const copy_len = @min(mask_bytes, 12);
+                        @memcpy(entry.data[0..copy_len], data[i..][0..copy_len]);
+                        try self.masks.append(self.allocator, entry);
+                    }
                     i += mask_bytes;
                 },
 
@@ -352,7 +407,7 @@ const Interpreter = struct {
 
                 // vstemhm (23)
                 23 => {
-                    self.clearHintStack();
+                    try self.clearHintStack(true);
                 },
 
                 // rcurveline (24)
@@ -728,6 +783,12 @@ const Interpreter = struct {
 
         // Take ownership of contours from the interpreter
         const contours = try self.contours.toOwnedSlice(self.allocator);
+        errdefer {
+            for (contours) |contour| {
+                self.allocator.free(contour.points);
+            }
+            self.allocator.free(contours);
+        }
 
         // Handle case where no points were drawn (bounding box is still default)
         var x_min: i16 = 0;
@@ -742,12 +803,35 @@ const Interpreter = struct {
             y_max = @intFromFloat(@ceil(self.y_max));
         }
 
+        const hints: ?glyph_mod.HintData = if (self.h_stems.items.len > 0 or self.v_stems.items.len > 0) blk: {
+            const h_stems = try self.h_stems.toOwnedSlice(self.allocator);
+            errdefer self.allocator.free(h_stems);
+            const v_stems = try self.v_stems.toOwnedSlice(self.allocator);
+            errdefer self.allocator.free(v_stems);
+            const masks = try self.masks.toOwnedSlice(self.allocator);
+            break :blk glyph_mod.HintData{
+                .h_stems = h_stems,
+                .v_stems = v_stems,
+                .masks = masks,
+                .allocator = self.allocator,
+            };
+        } else blk: {
+            self.h_stems.deinit(self.allocator);
+            self.v_stems.deinit(self.allocator);
+            self.masks.deinit(self.allocator);
+            self.h_stems = .empty;
+            self.v_stems = .empty;
+            self.masks = .empty;
+            break :blk null;
+        };
+
         return .{
             .contours = contours,
             .x_min = x_min,
             .y_min = y_min,
             .x_max = x_max,
             .y_max = y_max,
+            .hints = hints,
             .allocator = self.allocator,
         };
     }
