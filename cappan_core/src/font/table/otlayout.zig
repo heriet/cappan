@@ -59,7 +59,9 @@ pub const Coverage = struct {
                 const end_glyph = parser.readU16(self.data, 4 + rec_idx * 6 + 2) catch return null;
                 const start_cov_idx = parser.readU16(self.data, 4 + rec_idx * 6 + 4) catch return null;
                 if (glyph_id < start_glyph or glyph_id > end_glyph) return null;
-                return start_cov_idx + (glyph_id - start_glyph);
+                const result = @as(u32, start_cov_idx) + @as(u32, glyph_id - start_glyph);
+                if (result > std.math.maxInt(u16)) return null;
+                return @intCast(result);
             },
             else => return null,
         }
@@ -364,6 +366,26 @@ pub fn getSubtableOffset(
 }
 
 // ============================================================
+// Anchor
+// ============================================================
+
+pub const Anchor = struct {
+    x: i16,
+    y: i16,
+};
+
+/// Parse an Anchor table (Format 1/2/3). Returns x,y coordinates.
+/// Format 2 (contour point) and Format 3 (device table) extra fields are ignored.
+pub fn parseAnchor(data: []const u8, offset: usize) ?Anchor {
+    if (offset + 6 > data.len) return null;
+    const format = parser.readU16(data, offset) catch return null;
+    if (format < 1 or format > 3) return null;
+    const x = parser.readI16(data, offset + 2) catch return null;
+    const y = parser.readI16(data, offset + 4) catch return null;
+    return .{ .x = x, .y = y };
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -467,4 +489,57 @@ test "ValueRecord: all fields" {
     try std.testing.expectEqual(@as(i16, 2), vr.y_placement);
     try std.testing.expectEqual(@as(i16, 3), vr.x_advance);
     try std.testing.expectEqual(@as(i16, 4), vr.y_advance);
+}
+
+test "parseAnchor Format 1" {
+    const data = [_]u8{
+        0x00, 0x01, // format = 1
+        0x01, 0x00, // x = 256
+        0xFF, 0x00, // y = -256 (signed)
+    };
+    const anchor = parseAnchor(&data, 0);
+    try std.testing.expect(anchor != null);
+    try std.testing.expectEqual(@as(i16, 256), anchor.?.x);
+    try std.testing.expectEqual(@as(i16, -256), anchor.?.y);
+}
+
+test "parseAnchor Format 2 ignores contour point" {
+    const data = [_]u8{
+        0x00, 0x02, // format = 2
+        0x00, 0x64, // x = 100
+        0x00, 0xC8, // y = 200
+        0x00, 0x05, // anchorPoint = 5 (ignored)
+    };
+    const anchor = parseAnchor(&data, 0);
+    try std.testing.expect(anchor != null);
+    try std.testing.expectEqual(@as(i16, 100), anchor.?.x);
+    try std.testing.expectEqual(@as(i16, 200), anchor.?.y);
+}
+
+test "parseAnchor Format 3 ignores device tables" {
+    const data = [_]u8{
+        0x00, 0x03, // format = 3
+        0x00, 0x32, // x = 50
+        0x00, 0x96, // y = 150
+        0x00, 0x00, // xDeviceOffset (ignored)
+        0x00, 0x00, // yDeviceOffset (ignored)
+    };
+    const anchor = parseAnchor(&data, 0);
+    try std.testing.expect(anchor != null);
+    try std.testing.expectEqual(@as(i16, 50), anchor.?.x);
+    try std.testing.expectEqual(@as(i16, 150), anchor.?.y);
+}
+
+test "parseAnchor invalid format returns null" {
+    const data = [_]u8{
+        0x00, 0x04, // format = 4 (invalid)
+        0x00, 0x00,
+        0x00, 0x00,
+    };
+    try std.testing.expectEqual(@as(?Anchor, null), parseAnchor(&data, 0));
+}
+
+test "parseAnchor truncated data returns null" {
+    const data = [_]u8{ 0x00, 0x01, 0x00 }; // only 3 bytes
+    try std.testing.expectEqual(@as(?Anchor, null), parseAnchor(&data, 0));
 }

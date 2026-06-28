@@ -540,6 +540,26 @@ pub const Font = struct {
         return 0;
     }
 
+    pub fn getMarkBaseAnchors(self: Font, base_glyph: u16, mark_glyph: u16) ?gpos_mod.AnchorPair {
+        const gpos = self.gpos orelse return null;
+        return gpos.getMarkBaseAnchors(base_glyph, mark_glyph);
+    }
+
+    pub fn getMarkMarkAnchors(self: Font, mark1_glyph: u16, mark2_glyph: u16) ?gpos_mod.AnchorPair {
+        const gpos = self.gpos orelse return null;
+        return gpos.getMarkMarkAnchors(mark1_glyph, mark2_glyph);
+    }
+
+    pub fn getMarkLigAnchors(self: Font, lig_glyph: u16, mark_glyph: u16, component_index: u16) ?gpos_mod.AnchorPair {
+        const gpos = self.gpos orelse return null;
+        return gpos.getMarkLigAnchors(lig_glyph, mark_glyph, component_index);
+    }
+
+    pub fn getCursiveAnchors(self: Font, glyph: u16) ?gpos_mod.CursiveAnchors {
+        const gpos = self.gpos orelse return null;
+        return gpos.getCursiveAnchors(glyph);
+    }
+
     pub fn getGsubTable(self: Font) ?gsub_mod.GsubTable {
         return self.gsub;
     }

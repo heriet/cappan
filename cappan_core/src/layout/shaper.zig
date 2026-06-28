@@ -1,5 +1,6 @@
 const std = @import("std");
 const font_mod = @import("../font/font.zig");
+const gdef_mod = @import("../font/table/gdef.zig");
 
 pub const GlyphPosition = struct {
     glyph_id: u16,
@@ -138,6 +139,9 @@ pub fn layoutText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     const num_lines = current_line + 1;
 
     const result = try positions.toOwnedSlice(allocator);
+
+    applyGposPositioning(result, fonts);
+
     var num_lines_var = num_lines;
     var max_width_var = max_width;
 
@@ -338,6 +342,9 @@ pub fn layoutStyledText(
     const num_lines = current_line + 1;
 
     const result = try positions.toOwnedSlice(allocator);
+
+    applyGposPositioning(result, fonts);
+
     var num_lines_var = num_lines;
     var max_width_var = max_width;
 
@@ -362,6 +369,53 @@ pub fn layoutStyledText(
         .num_lines = num_lines_var,
         .allocator = allocator,
     };
+}
+
+fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font) void {
+    for (positions, 0..) |*pos, i| {
+        const font = &fonts[pos.font_index];
+        const gdef = font.getGdefTable() orelse continue;
+
+        if (gdef.getGlyphClass(pos.glyph_id) != .mark) continue;
+
+        // Mark-to-Mark (Type 6): attach to preceding mark
+        if (i > 0) {
+            const prev = positions[i - 1];
+            if (prev.font_index == pos.font_index and
+                @abs(prev.y_offset - pos.y_offset) < 0.1)
+            {
+                const prev_class = gdef.getGlyphClass(prev.glyph_id);
+                if (prev_class == .mark) {
+                    if (font.getMarkMarkAnchors(prev.glyph_id, pos.glyph_id)) |anchors| {
+                        const scale = pos.pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
+                        pos.x_offset = prev.x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
+                        pos.y_offset = prev.y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Mark-to-Base (Type 4): attach to preceding base glyph
+        const max_scan: usize = 64;
+        var j: usize = i;
+        var scanned: usize = 0;
+        while (j > 0 and scanned < max_scan) {
+            j -= 1;
+            scanned += 1;
+            if (positions[j].font_index != pos.font_index) break;
+            if (@abs(positions[j].y_offset - pos.y_offset) >= 0.1) break;
+            const base_class = gdef.getGlyphClass(positions[j].glyph_id);
+            if (base_class == .base or base_class == .ligature) {
+                if (font.getMarkBaseAnchors(positions[j].glyph_id, pos.glyph_id)) |anchors| {
+                    const scale = pos.pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
+                    pos.x_offset = positions[j].x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
+                    pos.y_offset = positions[j].y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+                }
+                break;
+            }
+        }
+    }
 }
 
 fn applyWordWrap(
