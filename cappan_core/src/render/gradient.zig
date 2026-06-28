@@ -221,4 +221,17 @@ test "interpolateColorLine two stops midpoint" {
     try std.testing.expect(mid.a >= 126 and mid.a <= 129);
 }
 
+test "radialGradientParam concentric circles" {
+    // 同心円: center=(0,0), r0=0, r1=100
+    // 点 (50,0) → t=0.5
+    const t = radialGradientParam(50, 0, 0, 0, 0, 0, 0, 100);
+    try std.testing.expect(t != null);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), t.?, 0.01);
+
+    // 円外: (150,0) → t=1.5
+    const t2 = radialGradientParam(150, 0, 0, 0, 0, 0, 0, 100);
+    try std.testing.expect(t2 != null);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), t2.?, 0.01);
+}
+
 

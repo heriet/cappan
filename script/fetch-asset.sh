@@ -12,6 +12,8 @@ SOURCE_SANS_SHA256="08df266400933d3178d081a45f94a08814c3e55b4b7dd2e0ff69cb1329f1
 NOTO_SANS_CJK_SHA256="68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5"
 NOTO_SANS_JP_SHA256="dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073"
 BROTLI_DICT_SHA256="20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70"
+TEST_COLR_V1_SHA256="e87738d4e9f7f319e34045340c0a17bba948ed638345aba47d4a0d7d6d09f163"
+TEST_GLYPHS_COLR_1_SHA256="8aa611b1ca97044ac6f13dc982fde29256612f0a5acc6ef47ca541a7a5b99b28"
 
 verify_sha256() {
   local file="$1" expected="$2"
@@ -135,6 +137,34 @@ if ! file_ok "$FONT_DIR/brotli_dictionary.bin" "$BROTLI_DICT_SHA256"; then
   echo "  OK: brotli_dictionary.bin"
 else
   echo "  OK: brotli_dictionary.bin (cached)"
+fi
+
+# --- TestCOLRv1.ttf (COLR v1 test font, MIT, HarfBuzz) ---
+if ! file_ok "$FONT_DIR/TestCOLRv1.ttf" "$TEST_COLR_V1_SHA256"; then
+  echo "Downloading TestCOLRv1.ttf (HarfBuzz test font)..."
+  curl -fsSL "https://raw.githubusercontent.com/harfbuzz/harfbuzz/main/test/subset/data/fonts/TestCOLRv1.ttf" \
+    -o "$FONT_DIR/TestCOLRv1.ttf"
+  if ! verify_sha256 "$FONT_DIR/TestCOLRv1.ttf" "$TEST_COLR_V1_SHA256"; then
+    echo "ERROR: TestCOLRv1.ttf checksum mismatch" >&2
+    exit 1
+  fi
+  echo "  OK: TestCOLRv1.ttf"
+else
+  echo "  OK: TestCOLRv1.ttf (cached)"
+fi
+
+# --- test_glyphs-glyf_colr_1.ttf (COLR v1 test font, Apache 2.0, googlefonts) ---
+if ! file_ok "$FONT_DIR/test_glyphs-glyf_colr_1.ttf" "$TEST_GLYPHS_COLR_1_SHA256"; then
+  echo "Downloading test_glyphs-glyf_colr_1.ttf (googlefonts color-fonts)..."
+  curl -fsSL "https://raw.githubusercontent.com/googlefonts/color-fonts/main/fonts/test_glyphs-glyf_colr_1.ttf" \
+    -o "$FONT_DIR/test_glyphs-glyf_colr_1.ttf"
+  if ! verify_sha256 "$FONT_DIR/test_glyphs-glyf_colr_1.ttf" "$TEST_GLYPHS_COLR_1_SHA256"; then
+    echo "ERROR: test_glyphs-glyf_colr_1.ttf checksum mismatch" >&2
+    exit 1
+  fi
+  echo "  OK: test_glyphs-glyf_colr_1.ttf"
+else
+  echo "  OK: test_glyphs-glyf_colr_1.ttf (cached)"
 fi
 
 # --- SourceSans3-Variable.ttf ---

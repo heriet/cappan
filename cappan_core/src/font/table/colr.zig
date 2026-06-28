@@ -766,3 +766,138 @@ test "colr v1 readColorLine" {
     try std.testing.expectEqual(@as(u16, 1), cl.stops[1].palette_index);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), cl.stops[1].alpha, 0.001);
 }
+
+test "colr v1 findBaseGlyphV1Paint" {
+    // BaseGlyphList at offset 26 (base_glyph_list_offset = 26).
+    // Layout:
+    //   offset 26: numRecords = 3 (u32 BE)
+    //   offset 30: Record 0: glyphID=5  (u16 BE), paintOffset=100 (u32 BE)
+    //   offset 36: Record 1: glyphID=10 (u16 BE), paintOffset=200 (u32 BE)
+    //   offset 42: Record 2: glyphID=20 (u16 BE), paintOffset=44  (u32 BE)
+    var buf = [_]u8{0} ** 48;
+    // numRecords = 3
+    buf[26] = 0x00; buf[27] = 0x00; buf[28] = 0x00; buf[29] = 0x03;
+    // Record 0: glyphID=5, paintOffset=100
+    buf[30] = 0x00; buf[31] = 0x05;
+    buf[32] = 0x00; buf[33] = 0x00; buf[34] = 0x00; buf[35] = 0x64;
+    // Record 1: glyphID=10, paintOffset=200
+    buf[36] = 0x00; buf[37] = 0x0A;
+    buf[38] = 0x00; buf[39] = 0x00; buf[40] = 0x00; buf[41] = 0xC8;
+    // Record 2: glyphID=20, paintOffset=44
+    buf[42] = 0x00; buf[43] = 0x14;
+    buf[44] = 0x00; buf[45] = 0x00; buf[46] = 0x00; buf[47] = 0x2C;
+
+    const table = ColrTable{
+        .data = &buf,
+        .version = 1,
+        .num_base_glyphs = 0,
+        .base_glyph_offset = 0,
+        .layer_offset = 0,
+        .num_layers = 0,
+        .base_glyph_list_offset = 26,
+        .layer_list_offset = 0,
+        .clip_list_offset = 0,
+    };
+
+    // glyph 10 → base_glyph_list_offset + paintOffset = 26 + 200 = 226
+    const paint10 = table.findBaseGlyphV1Paint(10);
+    try std.testing.expect(paint10 != null);
+    try std.testing.expectEqual(@as(u32, 226), paint10.?);
+
+    // glyph 5 → 26 + 100 = 126
+    const paint5 = table.findBaseGlyphV1Paint(5);
+    try std.testing.expect(paint5 != null);
+    try std.testing.expectEqual(@as(u32, 126), paint5.?);
+
+    // glyph 99 → not found
+    const paint99 = table.findBaseGlyphV1Paint(99);
+    try std.testing.expect(paint99 == null);
+}
+
+test "colr v1 getLayerListPaint" {
+    // LayerList at offset 10 (layer_list_offset = 10).
+    // Layout:
+    //   offset 10: numLayers = 2 (u32 BE)
+    //   offset 14: paintOffset[0] = 50 (u32 BE)
+    //   offset 18: paintOffset[1] = 80 (u32 BE)
+    var buf = [_]u8{0} ** 22;
+    // numLayers = 2
+    buf[10] = 0x00; buf[11] = 0x00; buf[12] = 0x00; buf[13] = 0x02;
+    // paintOffset[0] = 50
+    buf[14] = 0x00; buf[15] = 0x00; buf[16] = 0x00; buf[17] = 0x32;
+    // paintOffset[1] = 80
+    buf[18] = 0x00; buf[19] = 0x00; buf[20] = 0x00; buf[21] = 0x50;
+
+    const table = ColrTable{
+        .data = &buf,
+        .version = 1,
+        .num_base_glyphs = 0,
+        .base_glyph_offset = 0,
+        .layer_offset = 0,
+        .num_layers = 0,
+        .base_glyph_list_offset = 0,
+        .layer_list_offset = 10,
+        .clip_list_offset = 0,
+    };
+
+    // layer 0 → layer_list_offset + paintOffset[0] = 10 + 50 = 60
+    const p0 = table.getLayerListPaint(0);
+    try std.testing.expect(p0 != null);
+    try std.testing.expectEqual(@as(u32, 60), p0.?);
+
+    // layer 1 → 10 + 80 = 90
+    const p1 = table.getLayerListPaint(1);
+    try std.testing.expect(p1 != null);
+    try std.testing.expectEqual(@as(u32, 90), p1.?);
+
+    // layer 2 → out of range
+    const p2 = table.getLayerListPaint(2);
+    try std.testing.expect(p2 == null);
+}
+
+test "colr v1 getClipBox" {
+    // ClipList at offset 10 (clip_list_offset = 10).
+    // Layout:
+    //   offset 10: format = 1 (u8)
+    //   offset 11: numClips = 1 (u32 BE)
+    //   offset 15: ClipRecord: startGlyph=5 (u16 BE), endGlyph=15 (u16 BE), clipBoxOffset=24 (Offset24 BE)
+    //   offset 34 (= 10+24): ClipBox format=1, xMin=-100, yMin=-200, xMax=500, yMax=700
+    var buf = [_]u8{0} ** 43;
+    // ClipList header
+    buf[10] = 0x01; // format = 1
+    buf[11] = 0x00; buf[12] = 0x00; buf[13] = 0x00; buf[14] = 0x01; // numClips = 1
+    // ClipRecord at offset 15
+    buf[15] = 0x00; buf[16] = 0x05; // startGlyph = 5
+    buf[17] = 0x00; buf[18] = 0x0F; // endGlyph = 15
+    buf[19] = 0x00; buf[20] = 0x00; buf[21] = 0x18; // clipBoxOffset = 24 (Offset24 BE)
+    // ClipBox at offset 34 (= clip_list_offset 10 + clipBoxOffset 24)
+    buf[34] = 0x01; // ClipBox format = 1
+    buf[35] = 0xFF; buf[36] = 0x9C; // xMin = -100 (i16 BE)
+    buf[37] = 0xFF; buf[38] = 0x38; // yMin = -200 (i16 BE)
+    buf[39] = 0x01; buf[40] = 0xF4; // xMax =  500 (i16 BE)
+    buf[41] = 0x02; buf[42] = 0xBC; // yMax =  700 (i16 BE)
+
+    const table = ColrTable{
+        .data = &buf,
+        .version = 1,
+        .num_base_glyphs = 0,
+        .base_glyph_offset = 0,
+        .layer_offset = 0,
+        .num_layers = 0,
+        .base_glyph_list_offset = 0,
+        .layer_list_offset = 0,
+        .clip_list_offset = 10,
+    };
+
+    // glyph 10 is in range [5, 15] → ClipBox should be found
+    const box10 = table.getClipBox(10);
+    try std.testing.expect(box10 != null);
+    try std.testing.expectEqual(@as(i16, -100), box10.?.x_min);
+    try std.testing.expectEqual(@as(i16, -200), box10.?.y_min);
+    try std.testing.expectEqual(@as(i16, 500), box10.?.x_max);
+    try std.testing.expectEqual(@as(i16, 700), box10.?.y_max);
+
+    // glyph 20 is outside range → null
+    const box20 = table.getClipBox(20);
+    try std.testing.expect(box20 == null);
+}

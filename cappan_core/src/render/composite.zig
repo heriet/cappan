@@ -172,3 +172,16 @@ test "composite multiply fully opaque" {
     try std.testing.expect(dst.pixels[0] >= 126 and dst.pixels[0] <= 130);
     try std.testing.expectEqual(@as(u8, 255), dst.pixels[3]);
 }
+
+test "composite soft_light" {
+    var dst = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 128, .g = 128, .b = 128, .a = 255 });
+    defer dst.deinit();
+    var src = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 200, .g = 200, .b = 200, .a = 255 });
+    defer src.deinit();
+
+    composite(&dst, src, .soft_light);
+
+    // soft_light: mid-gray dst + light src → result > 128
+    try std.testing.expect(dst.pixels[0] > 128);
+    try std.testing.expectEqual(@as(u8, 255), dst.pixels[3]);
+}
