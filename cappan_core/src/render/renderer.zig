@@ -12,6 +12,7 @@ const png_decoder_mod = @import("../image/png_decoder.zig");
 const paint_mod = @import("paint.zig");
 const glyph_mod = @import("../font/glyph.zig");
 const auto_hinting_mod = @import("../raster/auto_hinting.zig");
+const colr_painter_mod = @import("colr_painter.zig");
 const ft = @import("../features.zig").features;
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
@@ -234,6 +235,8 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
                     blendBitmapGlyph(&bitmap, decoded.pixels, decoded.width, decoded.height, dst_x, dst_y, bmp_width, bmp_height);
                 }
+            } else if (try tryRenderColrV1(allocator, &bitmap, &glyph_font, pos, glyph_scale, raster_options, options, base_baseline_y, pad, bmp_width, bmp_height)) {
+                // COLR v1 rendered successfully, skip other paths
             } else if (glyph_font.getColorLayers(pos.glyph_id)) |base| {
                 var layer_idx: u16 = base.first_layer_idx;
                 const end_idx: u16 = base.first_layer_idx + base.num_layers;
@@ -740,6 +743,65 @@ fn blendBitmapGlyph(
             dst.pixels[dst_idx + 3] = @intCast(@min(@as(u16, 255), @as(u16, dst.pixels[dst_idx + 3]) + alpha));
         }
     }
+}
+
+fn blendColrV1Bitmap(
+    dst: *rgba_bitmap_mod.RgbaBitmap,
+    result: colr_painter_mod.RenderResult,
+    pos: shaper.GlyphPosition,
+    base_baseline_y: f32,
+    pad: f32,
+    bmp_width: u32,
+    bmp_height: u32,
+) void {
+    const origin_x = pos.x_offset + pad;
+    const origin_y = base_baseline_y + pos.y_offset;
+    const raw_x = origin_x - result.offset_x;
+    const raw_y = origin_y - result.offset_y;
+    if (!(@abs(raw_x) < 2e9 and @abs(raw_y) < 2e9)) return;
+    const dst_x = @as(i32, @intFromFloat(@round(raw_x)));
+    const dst_y = @as(i32, @intFromFloat(@round(raw_y)));
+
+    blendBitmapGlyph(dst, result.bitmap.pixels, result.bitmap.width, result.bitmap.height, dst_x, dst_y, bmp_width, bmp_height);
+}
+
+fn tryRenderColrV1(
+    allocator: std.mem.Allocator,
+    bitmap: *rgba_bitmap_mod.RgbaBitmap,
+    glyph_font: *const font_mod.Font,
+    pos: shaper.GlyphPosition,
+    glyph_scale: f32,
+    raster_options: scanline_mod.RasterOptions,
+    options: RenderOptions,
+    base_baseline_y: f32,
+    pad: f32,
+    bmp_width: u32,
+    bmp_height: u32,
+) !bool {
+    if (comptime !ft.enable_color) return false;
+    const colr = glyph_font.colr orelse return false;
+    if (colr.findBaseGlyphV1Paint(pos.glyph_id) == null) return false;
+    const cpal = glyph_font.cpal;
+    const result = colr_painter_mod.renderColrV1Glyph(
+        allocator,
+        glyph_font,
+        colr,
+        cpal,
+        pos.glyph_id,
+        glyph_scale,
+        options.fg_color,
+        raster_options,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return false,
+    };
+    if (result) |r| {
+        var cr = r;
+        defer cr.deinit();
+        blendColrV1Bitmap(bitmap, cr, pos, base_baseline_y, pad, bmp_width, bmp_height);
+        return true;
+    }
+    return false;
 }
 
 test "render text produces non-empty bitmap" {

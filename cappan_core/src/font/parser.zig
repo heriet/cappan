@@ -51,6 +51,16 @@ pub fn readF2Dot14(data: []const u8, offset: usize) !f32 {
     return @as(f32, @floatFromInt(raw)) / 16384.0;
 }
 
+pub fn readU24(data: []const u8, offset: usize) !u24 {
+    if (offset + 3 > data.len) return error.UnexpectedEof;
+    return @as(u24, data[offset]) << 16 | @as(u24, data[offset + 1]) << 8 | @as(u24, data[offset + 2]);
+}
+
+pub fn readFixed(data: []const u8, offset: usize) !f32 {
+    const raw = try readI32(data, offset);
+    return @as(f32, @floatFromInt(raw)) / 65536.0;
+}
+
 pub const ParseError = error{
     InvalidSfntVersion,
     UnexpectedEof,
