@@ -68,6 +68,7 @@ const CommonOptions = struct {
     stem_darkening: bool = false,
     cff_hinting: bool = false,
     auto_hinting: bool = false,
+    vertical: bool = false,
     raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
@@ -145,6 +146,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
         return true;
     } else if (std.mem.eql(u8, arg, "--lcd")) {
         opts.lcd_rendering = true;
+        return true;
+    } else if (std.mem.eql(u8, arg, "--vertical")) {
+        opts.vertical = true;
         return true;
     } else if (std.mem.eql(u8, arg, "--stem-darkening")) {
         opts.stem_darkening = true;
@@ -380,11 +384,20 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     fonts_list.appendSlice(allocator, fallback_fonts.items) catch return;
     const fonts = fonts_list.items;
 
+    if (common.vertical and comptime !ft.enable_vertical) {
+        std.debug.print("Error: vertical layout is disabled at compile time\n", .{});
+        return;
+    }
+
     if (common.lcd_rendering and common.paint_ops.items.len > 0) {
         std.debug.print("Warning: LCD rendering is not supported with paint stack, LCD will be disabled\n", .{});
         common.lcd_rendering = false;
     }
-    if (common.lcd_rendering or common.paint_ops.items.len > 0) {
+    if (common.vertical and common.lcd_rendering) {
+        std.debug.print("Warning: LCD rendering is not supported with vertical layout, LCD will be disabled\n", .{});
+        common.lcd_rendering = false;
+    }
+    if (common.lcd_rendering or common.paint_ops.items.len > 0 or common.vertical) {
         var bitmap = cappan_core.render.renderer.renderText(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
             .fg_color = common.fg_color,
@@ -399,6 +412,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .stem_darkening = common.stem_darkening,
             .cff_hinting = common.cff_hinting,
             .auto_hinting = common.auto_hinting,
+            .vertical = common.vertical,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -452,6 +466,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .stem_darkening = common.stem_darkening,
             .cff_hinting = common.cff_hinting,
             .auto_hinting = common.auto_hinting,
+            .vertical = common.vertical,
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -1932,6 +1947,7 @@ fn printUsage() void {
         \\  --max-width          Maximum text width in pixels; lines wrap automatically if exceeded
         \\  --text-align         Text alignment: left (default), center, right, justify
         \\  --lcd                Enable LCD sub-pixel rendering (render only)
+        \\  --vertical           Use vertical-rl layout (render only)
         \\  --stem-darkening     Enable stem darkening for small text
         \\  --cff-hinting        Enable CFF hinting
         \\  --auto-hinting       Enable auto-hinting for unhinted fonts

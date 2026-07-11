@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-vertical
 
 setup: fetch-asset generate-subset
 
@@ -70,6 +70,20 @@ test-colr-v1:
 		--size 32 \
 		--output /tmp/test_colr_v1_glyphs.png
 	@echo "test-colr-v1: PASS (no crash)"
+
+test-vertical:
+	@if [ ! -f .font/NotoSansJP-Regular.otf ]; then \
+		echo "NotoSansJP-Regular.otf not found, running fetch-asset.sh..."; \
+		$(DOCKER_RUN) bash script/fetch-asset.sh; \
+	fi
+	$(DOCKER_RUN) zig build
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/NotoSansJP-Regular.otf \
+		--text "$$(printf '縦書きの\nテスト')" \
+		--size 32 \
+		--vertical \
+		--output /tmp/test_vertical.png
+	@echo "test-vertical: PASS (no crash)"
 
 serve-docs:
 	python3 -m http.server $(DOCS_PORT) -d docs

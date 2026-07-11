@@ -621,6 +621,30 @@ pub const Font = struct {
         return result;
     }
 
+    /// Substitute a single glyph for vertical writing using vrt2 first, then vert.
+    pub fn substituteVerticalGlyph(self: Font, glyph_id: u16) u16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
+        if (self.gsub == null) return glyph_id;
+        return self.substituteVerticalGlyphImpl(glyph_id);
+    }
+
+    fn substituteVerticalGlyphImpl(self: Font, glyph_id: u16) u16 {
+        var input = [_]u16{glyph_id};
+        const scripts = [_][4]u8{ "kana".*, "hani".*, "hang".*, "DFLT".*, "latn".* };
+        const features = [_][4]u8{ "vrt2".*, "vert".* };
+
+        for (scripts) |script| {
+            for (features) |feature| {
+                const result = self.applyGsubFeatures(self.allocator, script, null, &.{feature}, &input) catch continue;
+                defer self.allocator.free(result);
+                if (result.len == 1 and result[0] != glyph_id) {
+                    return result[0];
+                }
+            }
+        }
+        return glyph_id;
+    }
+
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {
         if (comptime !ft.enable_color) return null;
         if (self.colr) |colr| {
