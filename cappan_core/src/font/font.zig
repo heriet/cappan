@@ -24,6 +24,7 @@ const avar_mod = @import("table/avar.zig");
 const hvar_mod = @import("table/hvar.zig");
 const vhea_mod = @import("table/vhea.zig");
 const vmtx_mod = @import("table/vmtx.zig");
+const vorg_mod = @import("table/vorg.zig");
 const vvar_mod = @import("table/vvar.zig");
 const mvar_mod = @import("table/mvar.zig");
 const stat_mod = @import("table/stat.zig");
@@ -66,6 +67,7 @@ pub const Font = struct {
     hvar: if (ft.enable_variable) ?hvar_mod.HvarTable else void,
     vhea: if (ft.enable_vertical) ?vhea_mod.VheaTable else void,
     vmtx: if (ft.enable_vertical) ?vmtx_mod.VmtxTable else void,
+    vorg: if (ft.enable_vertical) ?vorg_mod.VorgTable else void,
     vvar: if (ft.enable_variable) ?vvar_mod.VvarTable else void,
     mvar: if (ft.enable_variable) ?mvar_mod.MvarTable else void,
     stat: if (ft.enable_variable) ?stat_mod.StatTable else void,
@@ -331,6 +333,15 @@ pub const Font = struct {
             }
             break :blk null;
         } else {};
+        const vorg_table: if (ft.enable_vertical) ?vorg_mod.VorgTable else void = if (comptime ft.enable_vertical) blk: {
+            const vorg_record = parser.findTable(offset_table, "VORG".*);
+            if (vorg_record) |rec| {
+                const vorg_data = try parser.getTableData(data, rec);
+                break :blk vorg_mod.parse(vorg_data) catch null;
+            } else {
+                break :blk null;
+            }
+        } else {};
         const vvar_table: if (ft.enable_variable) ?vvar_mod.VvarTable else void = if (comptime ft.enable_variable) blk: {
             const vvar_record = parser.findTable(offset_table, "VVAR".*);
             if (vvar_record) |rec| {
@@ -395,6 +406,7 @@ pub const Font = struct {
             .hvar = hvar_table,
             .vhea = vhea_table,
             .vmtx = vmtx_table,
+            .vorg = vorg_table,
             .vvar = vvar_table,
             .mvar = mvar_table,
             .stat = stat_table,
@@ -504,6 +516,12 @@ pub const Font = struct {
         return null;
     }
 
+    pub fn getVertOriginY(self: Font, glyph_id: u16) ?i16 {
+        if (comptime !ft.enable_vertical) return null;
+        if (self.vorg) |vorg| return vorg.getVertOriginY(glyph_id);
+        return null;
+    }
+
     pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
         if (comptime !ft.enable_vertical) return null;
         var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
@@ -566,6 +584,12 @@ pub const Font = struct {
         if (self.kern) |kern| {
             return kern.getKerning(left_glyph, right_glyph);
         }
+        return 0;
+    }
+
+    pub fn getVerticalKerning(self: Font, top_glyph: u16, bottom_glyph: u16) i16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return 0;
+        if (self.gpos) |gpos| return gpos.getVerticalKerning(top_glyph, bottom_glyph);
         return 0;
     }
 

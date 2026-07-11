@@ -397,7 +397,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         std.debug.print("Warning: LCD rendering is not supported with vertical layout, LCD will be disabled\n", .{});
         common.lcd_rendering = false;
     }
-    if (common.lcd_rendering or common.paint_ops.items.len > 0 or common.vertical) {
+    if (common.lcd_rendering or common.paint_ops.items.len > 0) {
         var bitmap = cappan_core.render.renderer.renderText(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
             .fg_color = common.fg_color,

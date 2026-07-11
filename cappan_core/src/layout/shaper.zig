@@ -30,6 +30,7 @@ pub const StyledSpan = struct {
 pub const StyledLayoutOptions = struct {
     max_width: ?f32 = null,
     text_align: TextAlign = .left,
+    vertical: bool = false,
 };
 
 pub const TextLayout = struct {
@@ -182,7 +183,8 @@ fn processVerticalCodepoint(
     allocator: std.mem.Allocator,
     fonts: []const font_mod.Font,
     codepoint: u21,
-    options: LayoutOptions,
+    pixel_size: f32,
+    max_width: ?f32,
     ascender_px: f32,
     descender_px: f32,
     positions: *std.ArrayList(GlyphPosition),
@@ -191,11 +193,16 @@ fn processVerticalCodepoint(
     current_column: *u32,
     pen_y: *f32,
     max_column_height: *f32,
+    prev_glyph_id: *?u16,
+    prev_font_index: *?u8,
 ) !void {
+    _ = ascender_px;
     if (codepoint == '\n') {
         if (pen_y.* > max_column_height.*) max_column_height.* = pen_y.*;
         current_column.* += 1;
         pen_y.* = 0;
+        prev_glyph_id.* = null;
+        prev_font_index.* = null;
         return;
     }
 
@@ -212,7 +219,7 @@ fn processVerticalCodepoint(
 
     glyph_id = fonts[font_index].substituteVerticalGlyph(glyph_id);
 
-    const font_scale = options.pixel_size / @as(f32, @floatFromInt(fonts[font_index].getUnitsPerEm()));
+    const font_scale = pixel_size / @as(f32, @floatFromInt(fonts[font_index].getUnitsPerEm()));
     const vm = fonts[font_index].getVMetrics(glyph_id) catch null;
     const fallback_advance_units = @as(i32, fonts[font_index].getAscender()) - @as(i32, fonts[font_index].getDescender());
     const advance_h_units: f32 = if (vm) |m|
@@ -225,15 +232,32 @@ fn processVerticalCodepoint(
     const advance_w_px: f32 = if (h_metrics) |m|
         @as(f32, @floatFromInt(m.advance_width)) * font_scale
     else
-        options.pixel_size;
+        pixel_size;
 
-    if (options.max_width) |max_h| {
+    if (max_width) |max_h| {
         if (pen_y.* > 0 and pen_y.* + advance_h_px > max_h) {
             if (pen_y.* > max_column_height.*) max_column_height.* = pen_y.*;
             current_column.* += 1;
             pen_y.* = 0;
+            prev_glyph_id.* = null;
+            prev_font_index.* = null;
         }
     }
+
+    if (prev_glyph_id.*) |pid| {
+        if (prev_font_index.*) |pfi| {
+            if (pfi == font_index) {
+                const kv = fonts[font_index].getVerticalKerning(pid, glyph_id);
+                // GPOS yAdvance is positive upward in font coordinates; pen_y is positive downward.
+                pen_y.* -= @as(f32, @floatFromInt(kv)) * font_scale;
+            }
+        }
+    }
+
+    const vert_origin_px: f32 = if (fonts[font_index].getVertOriginY(glyph_id)) |vy|
+        @as(f32, @floatFromInt(vy)) * font_scale
+    else
+        @as(f32, @floatFromInt(fonts[font_index].getAscender())) * font_scale;
 
     try columns.append(allocator, current_column.*);
     try advances.append(allocator, advance_h_px);
@@ -242,13 +266,15 @@ fn processVerticalCodepoint(
         .font_index = font_index,
         .codepoint = codepoint,
         .x_offset = advance_w_px,
-        .y_offset = pen_y.* + ascender_px,
-        .pixel_size = options.pixel_size,
+        .y_offset = pen_y.* + vert_origin_px,
+        .pixel_size = pixel_size,
     });
 
     pen_y.* += advance_h_px;
     const column_extent = pen_y.* + @max(0.0, -descender_px);
     if (column_extent > max_column_height.*) max_column_height.* = column_extent;
+    prev_glyph_id.* = glyph_id;
+    prev_font_index.* = font_index;
 }
 
 fn layoutTextVertical(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: LayoutOptions) !TextLayout {
@@ -269,15 +295,17 @@ fn layoutTextVertical(allocator: std.mem.Allocator, fonts: []const font_mod.Font
     var current_column: u32 = 0;
     var pen_y: f32 = 0;
     var max_column_height: f32 = 0;
+    var prev_glyph_id: ?u16 = null;
+    var prev_font_index: ?u8 = null;
 
     if (std.unicode.Utf8View.init(text)) |view| {
         var iter = view.iterator();
         while (iter.nextCodepoint()) |codepoint| {
-            try processVerticalCodepoint(allocator, fonts, codepoint, options, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height);
+            try processVerticalCodepoint(allocator, fonts, codepoint, options.pixel_size, options.max_width, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
         }
     } else |_| {
         for (text) |byte| {
-            try processVerticalCodepoint(allocator, fonts, @as(u21, byte), options, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height);
+            try processVerticalCodepoint(allocator, fonts, @as(u21, byte), options.pixel_size, options.max_width, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
         }
     }
 
@@ -330,6 +358,12 @@ pub fn layoutStyledText(
             .vertical = false,
             .allocator = allocator,
         };
+    }
+
+    if (comptime ft.enable_vertical) {
+        if (options.vertical) {
+            return layoutStyledTextVertical(allocator, fonts, spans, options);
+        }
     }
 
     // Compute line metrics as max ascender, min descender, max line_gap across all spans.
@@ -513,6 +547,85 @@ pub fn layoutStyledText(
         .line_height = line_height,
         .num_lines = num_lines_var,
         .vertical = false,
+        .allocator = allocator,
+    };
+}
+
+fn layoutStyledTextVertical(
+    allocator: std.mem.Allocator,
+    fonts: []const font_mod.Font,
+    spans: []const StyledSpan,
+    options: StyledLayoutOptions,
+) !TextLayout {
+    var max_ascender_px: f32 = 0;
+    var min_descender_px: f32 = 0;
+    var max_line_gap_px: f32 = 0;
+    for (spans) |span| {
+        const fi = @min(@as(usize, span.font_index), fonts.len - 1);
+        const scale = span.pixel_size / @as(f32, @floatFromInt(fonts[fi].getUnitsPerEm()));
+        const asc = @as(f32, @floatFromInt(fonts[fi].getAscender())) * scale;
+        const desc = @as(f32, @floatFromInt(fonts[fi].getDescender())) * scale;
+        const gap = @as(f32, @floatFromInt(fonts[fi].getLineGap())) * scale;
+        if (asc > max_ascender_px) max_ascender_px = asc;
+        if (desc < min_descender_px) min_descender_px = desc;
+        if (gap > max_line_gap_px) max_line_gap_px = gap;
+    }
+    const line_height = max_ascender_px - min_descender_px + max_line_gap_px;
+    const column_width = line_height;
+
+    var positions: std.ArrayList(GlyphPosition) = .empty;
+    errdefer positions.deinit(allocator);
+    var columns: std.ArrayList(u32) = .empty;
+    defer columns.deinit(allocator);
+    var advances: std.ArrayList(f32) = .empty;
+    defer advances.deinit(allocator);
+
+    var current_column: u32 = 0;
+    var pen_y: f32 = 0;
+    var max_column_height: f32 = 0;
+    var prev_glyph_id: ?u16 = null;
+    var prev_font_index: ?u8 = null;
+
+    for (spans) |span| {
+        if (std.unicode.Utf8View.init(span.text)) |view| {
+            var iter = view.iterator();
+            while (iter.nextCodepoint()) |codepoint| {
+                try processVerticalCodepoint(allocator, fonts, codepoint, span.pixel_size, options.max_width, max_ascender_px, min_descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+            }
+        } else |_| {
+            for (span.text) |byte| {
+                try processVerticalCodepoint(allocator, fonts, @as(u21, byte), span.pixel_size, options.max_width, max_ascender_px, min_descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+            }
+        }
+    }
+
+    if (pen_y > max_column_height) max_column_height = pen_y;
+    const num_columns = if (positions.items.len == 0) @as(u32, 0) else current_column + 1;
+    const total_width = @as(f32, @floatFromInt(num_columns)) * column_width;
+    var total_height = max_column_height;
+    if (options.max_width) |max_h| {
+        if (max_h > total_height) total_height = max_h;
+    }
+
+    for (positions.items, columns.items) |*pos, column| {
+        const column_center_x = total_width - (@as(f32, @floatFromInt(column)) + 0.5) * column_width;
+        pos.x_offset = column_center_x - pos.x_offset / 2.0;
+    }
+
+    if (options.text_align != .left and total_height > 0) {
+        try applyVerticalAlignment(allocator, positions.items, columns.items, advances.items, options.text_align, total_height, max_ascender_px, num_columns);
+    }
+
+    const result = try positions.toOwnedSlice(allocator);
+    return .{
+        .positions = result,
+        .total_width = total_width,
+        .total_height = total_height,
+        .ascender_px = max_ascender_px,
+        .descender_px = min_descender_px,
+        .line_height = line_height,
+        .num_lines = num_columns,
+        .vertical = true,
         .allocator = allocator,
     };
 }
@@ -970,4 +1083,42 @@ test "vertical layout without vmtx does not crash" {
     defer layout.deinit();
 
     try std.testing.expect(layout.total_height > 0);
+}
+
+test "vertical styled layout stacks glyphs downward" {
+    if (comptime !ft.enable_vertical) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const spans = [_]StyledSpan{
+        .{ .text = "Big ", .pixel_size = 48.0 },
+        .{ .text = "small", .pixel_size = 24.0 },
+    };
+    var layout = try layoutStyledText(std.testing.allocator, &[_]font_mod.Font{font}, &spans, .{ .vertical = true });
+    defer layout.deinit();
+
+    try std.testing.expect(layout.vertical);
+    try std.testing.expect(layout.positions[1].y_offset > layout.positions[0].y_offset);
+    try std.testing.expect(layout.total_height > 0);
+    try std.testing.expectEqual(@as(f32, 48.0), layout.positions[0].pixel_size);
+    try std.testing.expectEqual(@as(f32, 24.0), layout.positions[4].pixel_size);
+}
+
+test "vertical styled layout columns right to left" {
+    if (comptime !ft.enable_vertical) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const spans = [_]StyledSpan{
+        .{ .text = "AB\nCD", .pixel_size = 48.0 },
+    };
+    var layout = try layoutStyledText(std.testing.allocator, &[_]font_mod.Font{font}, &spans, .{ .vertical = true });
+    defer layout.deinit();
+
+    try std.testing.expect(layout.vertical);
+    try std.testing.expectEqual(@as(usize, 4), layout.positions.len);
+    try std.testing.expect(layout.positions[2].x_offset < layout.positions[0].x_offset);
+    try std.testing.expectEqual(@as(u32, 2), layout.num_lines);
 }
