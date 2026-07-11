@@ -10,7 +10,7 @@ pub const font = struct {
     pub const charstring = if (ft.enable_cff) @import("font/charstring.zig") else struct {};
     pub const Font = @import("font/font.zig").Font;
     pub const woff = if (ft.enable_woff) @import("font/woff.zig") else struct {};
-    pub const woff2 = if (ft.enable_woff) @import("font/woff2.zig") else struct {};
+    pub const woff2 = if (ft.enable_woff2) @import("font/woff2.zig") else struct {};
     pub const woff2_glyf = if (ft.enable_woff2) @import("font/woff2_glyf.zig") else struct {};
     pub const table = struct {
         pub const head = @import("font/table/head.zig");
@@ -70,7 +70,7 @@ pub const render = struct {
     pub const renderer = @import("render/renderer.zig");
     pub const incremental = if (ft.enable_incremental) @import("render/incremental.zig") else struct {};
     pub const glyph_reveal = if (ft.enable_incremental) @import("render/glyph_reveal.zig") else struct {};
-    pub const colr_painter = if (ft.enable_color) @import("render/colr_painter.zig") else struct {};
+    pub const colr_painter = if (ft.enable_colr_v1) @import("render/colr_painter.zig") else struct {};
 };
 
 pub const image = struct {
@@ -113,6 +113,8 @@ test {
     if (ft.enable_color) {
         _ = @import("font/table/colr.zig");
         _ = @import("font/table/cpal.zig");
+    }
+    if (ft.enable_colr_v1) {
         _ = @import("render/gradient.zig");
         _ = @import("render/composite.zig");
         _ = @import("render/colr_painter.zig");

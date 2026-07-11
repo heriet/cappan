@@ -630,7 +630,7 @@ pub const Font = struct {
     }
 
     pub fn getColrV1Paint(self: Font, glyph_id: u16) ?u32 {
-        if (comptime !ft.enable_color) return null;
+        if (comptime !ft.enable_colr_v1) return null;
         if (self.colr) |colr| {
             return colr.findBaseGlyphV1Paint(glyph_id);
         }

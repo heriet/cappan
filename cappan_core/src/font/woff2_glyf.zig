@@ -550,4 +550,3 @@ test "hasBBox" {
     try std.testing.expect(!hasBBox(&bitmap, 3));
     try std.testing.expect(hasBBox(&bitmap, 15));
 }
-

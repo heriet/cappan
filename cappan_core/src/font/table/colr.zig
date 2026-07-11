@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
+const ft = @import("../../features.zig").features;
 
 pub const ColorLayer = struct {
     glyph_id: u16,
@@ -266,6 +267,7 @@ pub const ColrTable = struct {
 
     /// Find the absolute paint offset for a v1 base glyph, or null if not found.
     pub fn findBaseGlyphV1Paint(self: ColrTable, glyph_id: u16) ?u32 {
+        if (comptime !ft.enable_colr_v1) return null;
         if (self.version < 1 or self.base_glyph_list_offset == 0) return null;
         const list_off: usize = @intCast(self.base_glyph_list_offset);
         const num_records = parser.readU32(self.data, list_off) catch return null;
@@ -291,6 +293,7 @@ pub const ColrTable = struct {
 
     /// Return the absolute paint offset for a given layer index, or null.
     pub fn getLayerListPaint(self: ColrTable, layer_index: u32) ?u32 {
+        if (comptime !ft.enable_colr_v1) return null;
         if (self.layer_list_offset == 0) return null;
         const list_off: usize = @intCast(self.layer_list_offset);
         const num_layers = parser.readU32(self.data, list_off) catch return null;
@@ -303,6 +306,7 @@ pub const ColrTable = struct {
 
     /// Parse a Paint record at the given absolute offset.
     pub fn readPaint(self: ColrTable, abs_offset: u32) ?Paint {
+        if (comptime !ft.enable_colr_v1) return null;
         const off: usize = @intCast(abs_offset);
         if (off > std.math.maxInt(usize) - 24) return null;
         const fmt = parser.readU8(self.data, off) catch return null;
@@ -337,9 +341,12 @@ pub const ColrTable = struct {
                 const y2 = parser.readI16(self.data, off + 14) catch return null;
                 return Paint{ .linear_gradient = .{
                     .color_line_offset = cl_abs,
-                    .x0 = x0, .y0 = y0,
-                    .x1 = x1, .y1 = y1,
-                    .x2 = x2, .y2 = y2,
+                    .x0 = x0,
+                    .y0 = y0,
+                    .x1 = x1,
+                    .y1 = y1,
+                    .x2 = x2,
+                    .y2 = y2,
                     .is_var = (fmt == 5),
                 } };
             },
@@ -355,8 +362,12 @@ pub const ColrTable = struct {
                 const r1 = parser.readU16(self.data, off + 14) catch return null;
                 return Paint{ .radial_gradient = .{
                     .color_line_offset = cl_abs,
-                    .x0 = x0, .y0 = y0, .radius0 = r0,
-                    .x1 = x1, .y1 = y1, .radius1 = r1,
+                    .x0 = x0,
+                    .y0 = y0,
+                    .radius0 = r0,
+                    .x1 = x1,
+                    .y1 = y1,
+                    .radius1 = r1,
                     .is_var = (fmt == 7),
                 } };
             },
@@ -370,8 +381,10 @@ pub const ColrTable = struct {
                 const end_ang = parser.readF2Dot14(self.data, off + 10) catch return null;
                 return Paint{ .sweep_gradient = .{
                     .color_line_offset = cl_abs,
-                    .center_x = cx, .center_y = cy,
-                    .start_angle = start_ang, .end_angle = end_ang,
+                    .center_x = cx,
+                    .center_y = cy,
+                    .start_angle = start_ang,
+                    .end_angle = end_ang,
                     .is_var = (fmt == 9),
                 } };
             },
@@ -404,9 +417,12 @@ pub const ColrTable = struct {
                 const dy = parser.readFixed(self.data, xform_off + 20) catch return null;
                 return Paint{ .transform = .{
                     .paint_offset = paint_abs,
-                    .xx = xx, .yx = yx,
-                    .xy = xy, .yy = yy,
-                    .dx = dx, .dy = dy,
+                    .xx = xx,
+                    .yx = yx,
+                    .xy = xy,
+                    .yy = yy,
+                    .dx = dx,
+                    .dy = dy,
                 } };
             },
             // PaintTranslate, PaintVarTranslate
@@ -417,7 +433,8 @@ pub const ColrTable = struct {
                 const dy = parser.readI16(self.data, off + 6) catch return null;
                 return Paint{ .translate = .{
                     .paint_offset = paint_abs,
-                    .dx = dx, .dy = dy,
+                    .dx = dx,
+                    .dy = dy,
                 } };
             },
             // PaintScale, PaintVarScale
@@ -428,7 +445,8 @@ pub const ColrTable = struct {
                 const sy = parser.readF2Dot14(self.data, off + 6) catch return null;
                 return Paint{ .scale = .{
                     .paint_offset = paint_abs,
-                    .scale_x = sx, .scale_y = sy,
+                    .scale_x = sx,
+                    .scale_y = sy,
                 } };
             },
             // PaintScaleAroundCenter, PaintVarScaleAroundCenter
@@ -441,8 +459,10 @@ pub const ColrTable = struct {
                 const cy = parser.readI16(self.data, off + 10) catch return null;
                 return Paint{ .scale_around_center = .{
                     .paint_offset = paint_abs,
-                    .scale_x = sx, .scale_y = sy,
-                    .center_x = cx, .center_y = cy,
+                    .scale_x = sx,
+                    .scale_y = sy,
+                    .center_x = cx,
+                    .center_y = cy,
                 } };
             },
             // PaintScaleUniform, PaintVarScaleUniform
@@ -465,7 +485,8 @@ pub const ColrTable = struct {
                 return Paint{ .scale_uniform_around_center = .{
                     .paint_offset = paint_abs,
                     .scale = s,
-                    .center_x = cx, .center_y = cy,
+                    .center_x = cx,
+                    .center_y = cy,
                 } };
             },
             // PaintRotate, PaintVarRotate
@@ -488,7 +509,8 @@ pub const ColrTable = struct {
                 return Paint{ .rotate_around_center = .{
                     .paint_offset = paint_abs,
                     .angle = angle,
-                    .center_x = cx, .center_y = cy,
+                    .center_x = cx,
+                    .center_y = cy,
                 } };
             },
             // PaintSkew, PaintVarSkew
@@ -499,7 +521,8 @@ pub const ColrTable = struct {
                 const ys = parser.readF2Dot14(self.data, off + 6) catch return null;
                 return Paint{ .skew = .{
                     .paint_offset = paint_abs,
-                    .x_skew_angle = xs, .y_skew_angle = ys,
+                    .x_skew_angle = xs,
+                    .y_skew_angle = ys,
                 } };
             },
             // PaintSkewAroundCenter, PaintVarSkewAroundCenter
@@ -512,8 +535,10 @@ pub const ColrTable = struct {
                 const cy = parser.readI16(self.data, off + 10) catch return null;
                 return Paint{ .skew_around_center = .{
                     .paint_offset = paint_abs,
-                    .x_skew_angle = xs, .y_skew_angle = ys,
-                    .center_x = cx, .center_y = cy,
+                    .x_skew_angle = xs,
+                    .y_skew_angle = ys,
+                    .center_x = cx,
+                    .center_y = cy,
                 } };
             },
             // PaintComposite
@@ -535,6 +560,13 @@ pub const ColrTable = struct {
 
     /// Parse a ColorLine at the given absolute offset.
     pub fn readColorLine(self: ColrTable, allocator: std.mem.Allocator, abs_offset: u32, is_var: bool) !ColorLine {
+        if (comptime !ft.enable_colr_v1) {
+            return ColorLine{
+                .extend = .pad,
+                .stops = try allocator.alloc(ColorStop, 0),
+                .allocator = allocator,
+            };
+        }
         const off: usize = @intCast(abs_offset);
         const extend_byte = try parser.readU8(self.data, off);
         const num_stops = try parser.readU16(self.data, off + 1);
@@ -560,6 +592,7 @@ pub const ColrTable = struct {
 
     /// Return the ClipBox for a glyph, or null if not found.
     pub fn getClipBox(self: ColrTable, glyph_id: u16) ?ClipBox {
+        if (comptime !ft.enable_colr_v1) return null;
         if (self.clip_list_offset == 0) return null;
         const list_off: usize = @intCast(self.clip_list_offset);
         const fmt = parser.readU8(self.data, list_off) catch return null;
@@ -612,10 +645,12 @@ pub fn parse(data: []const u8) !ColrTable {
     var layer_list_offset: u32 = 0;
     var clip_list_offset: u32 = 0;
 
-    if (version == 1 and data.len >= 26) {
-        base_glyph_list_offset = parser.readU32(data, 14) catch 0;
-        layer_list_offset = parser.readU32(data, 18) catch 0;
-        clip_list_offset = parser.readU32(data, 22) catch 0;
+    if (comptime ft.enable_colr_v1) {
+        if (version == 1 and data.len >= 26) {
+            base_glyph_list_offset = parser.readU32(data, 14) catch 0;
+            layer_list_offset = parser.readU32(data, 18) catch 0;
+            clip_list_offset = parser.readU32(data, 22) catch 0;
+        }
     }
 
     return ColrTable{
@@ -637,6 +672,7 @@ test "colr parse does not crash on missing table" {
 }
 
 test "colr v1 parse header" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // Minimal v1 COLR header (26 bytes):
     // version=1 (u16), numBaseGlyphRecords=0 (u16), baseGlyphRecordsOffset=0 (u32),
     // layerRecordsOffset=0 (u32), numLayerRecords=0 (u16),
@@ -668,6 +704,7 @@ test "colr v1 parse header" {
 }
 
 test "colr v1 readPaint solid" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // PaintSolid format 2: [format=2, paletteIndex_hi, paletteIndex_lo, alpha_hi, alpha_lo]
     // paletteIndex = 5, alpha = 0x4000 (F2Dot14 = 1.0)
     var buf = [_]u8{0} ** 26;
@@ -694,6 +731,7 @@ test "colr v1 readPaint solid" {
 }
 
 test "colr v1 readPaint colr layers" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // PaintColrLayers format 1: [format=1, numLayers=3, firstIdx u32 big-endian = 7]
     var full_buf = [_]u8{0} ** 33;
     // v1 header
@@ -727,6 +765,7 @@ test "colr v1 readPaint colr layers" {
 }
 
 test "colr v1 readColorLine" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // ColorLine: extend=0, numStops=2, stop0=[F2Dot14 0.0, pal=0, alpha=1.0], stop1=[F2Dot14 1.0, pal=1, alpha=0.5]
     // F2Dot14 0.0 = 0x0000, 1.0 = 0x4000, 0.5 = 0x2000
     var buf = [_]u8{0} ** (3 + 2 * 6);
@@ -734,13 +773,19 @@ test "colr v1 readColorLine" {
     buf[1] = 0; // numStops hi
     buf[2] = 2; // numStops lo = 2
     // stop 0 at offset 3: stopOffset=0.0, pal=0, alpha=1.0
-    buf[3] = 0x00; buf[4] = 0x00; // stopOffset = 0.0
-    buf[5] = 0x00; buf[6] = 0x00; // paletteIndex = 0
-    buf[7] = 0x40; buf[8] = 0x00; // alpha = 1.0
+    buf[3] = 0x00;
+    buf[4] = 0x00; // stopOffset = 0.0
+    buf[5] = 0x00;
+    buf[6] = 0x00; // paletteIndex = 0
+    buf[7] = 0x40;
+    buf[8] = 0x00; // alpha = 1.0
     // stop 1 at offset 9: stopOffset=1.0, pal=1, alpha=0.5
-    buf[9] = 0x40; buf[10] = 0x00; // stopOffset = 1.0
-    buf[11] = 0x00; buf[12] = 0x01; // paletteIndex = 1
-    buf[13] = 0x20; buf[14] = 0x00; // alpha = 0.5
+    buf[9] = 0x40;
+    buf[10] = 0x00; // stopOffset = 1.0
+    buf[11] = 0x00;
+    buf[12] = 0x01; // paletteIndex = 1
+    buf[13] = 0x20;
+    buf[14] = 0x00; // alpha = 0.5
 
     const table = ColrTable{
         .data = &buf,
@@ -768,6 +813,7 @@ test "colr v1 readColorLine" {
 }
 
 test "colr v1 findBaseGlyphV1Paint" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // BaseGlyphList at offset 26 (base_glyph_list_offset = 26).
     // Layout:
     //   offset 26: numRecords = 3 (u32 BE)
@@ -776,16 +822,31 @@ test "colr v1 findBaseGlyphV1Paint" {
     //   offset 42: Record 2: glyphID=20 (u16 BE), paintOffset=44  (u32 BE)
     var buf = [_]u8{0} ** 48;
     // numRecords = 3
-    buf[26] = 0x00; buf[27] = 0x00; buf[28] = 0x00; buf[29] = 0x03;
+    buf[26] = 0x00;
+    buf[27] = 0x00;
+    buf[28] = 0x00;
+    buf[29] = 0x03;
     // Record 0: glyphID=5, paintOffset=100
-    buf[30] = 0x00; buf[31] = 0x05;
-    buf[32] = 0x00; buf[33] = 0x00; buf[34] = 0x00; buf[35] = 0x64;
+    buf[30] = 0x00;
+    buf[31] = 0x05;
+    buf[32] = 0x00;
+    buf[33] = 0x00;
+    buf[34] = 0x00;
+    buf[35] = 0x64;
     // Record 1: glyphID=10, paintOffset=200
-    buf[36] = 0x00; buf[37] = 0x0A;
-    buf[38] = 0x00; buf[39] = 0x00; buf[40] = 0x00; buf[41] = 0xC8;
+    buf[36] = 0x00;
+    buf[37] = 0x0A;
+    buf[38] = 0x00;
+    buf[39] = 0x00;
+    buf[40] = 0x00;
+    buf[41] = 0xC8;
     // Record 2: glyphID=20, paintOffset=44
-    buf[42] = 0x00; buf[43] = 0x14;
-    buf[44] = 0x00; buf[45] = 0x00; buf[46] = 0x00; buf[47] = 0x2C;
+    buf[42] = 0x00;
+    buf[43] = 0x14;
+    buf[44] = 0x00;
+    buf[45] = 0x00;
+    buf[46] = 0x00;
+    buf[47] = 0x2C;
 
     const table = ColrTable{
         .data = &buf,
@@ -815,6 +876,7 @@ test "colr v1 findBaseGlyphV1Paint" {
 }
 
 test "colr v1 getLayerListPaint" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // LayerList at offset 10 (layer_list_offset = 10).
     // Layout:
     //   offset 10: numLayers = 2 (u32 BE)
@@ -822,11 +884,20 @@ test "colr v1 getLayerListPaint" {
     //   offset 18: paintOffset[1] = 80 (u32 BE)
     var buf = [_]u8{0} ** 22;
     // numLayers = 2
-    buf[10] = 0x00; buf[11] = 0x00; buf[12] = 0x00; buf[13] = 0x02;
+    buf[10] = 0x00;
+    buf[11] = 0x00;
+    buf[12] = 0x00;
+    buf[13] = 0x02;
     // paintOffset[0] = 50
-    buf[14] = 0x00; buf[15] = 0x00; buf[16] = 0x00; buf[17] = 0x32;
+    buf[14] = 0x00;
+    buf[15] = 0x00;
+    buf[16] = 0x00;
+    buf[17] = 0x32;
     // paintOffset[1] = 80
-    buf[18] = 0x00; buf[19] = 0x00; buf[20] = 0x00; buf[21] = 0x50;
+    buf[18] = 0x00;
+    buf[19] = 0x00;
+    buf[20] = 0x00;
+    buf[21] = 0x50;
 
     const table = ColrTable{
         .data = &buf,
@@ -856,6 +927,7 @@ test "colr v1 getLayerListPaint" {
 }
 
 test "colr v1 getClipBox" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
     // ClipList at offset 10 (clip_list_offset = 10).
     // Layout:
     //   offset 10: format = 1 (u8)
@@ -865,17 +937,28 @@ test "colr v1 getClipBox" {
     var buf = [_]u8{0} ** 43;
     // ClipList header
     buf[10] = 0x01; // format = 1
-    buf[11] = 0x00; buf[12] = 0x00; buf[13] = 0x00; buf[14] = 0x01; // numClips = 1
+    buf[11] = 0x00;
+    buf[12] = 0x00;
+    buf[13] = 0x00;
+    buf[14] = 0x01; // numClips = 1
     // ClipRecord at offset 15
-    buf[15] = 0x00; buf[16] = 0x05; // startGlyph = 5
-    buf[17] = 0x00; buf[18] = 0x0F; // endGlyph = 15
-    buf[19] = 0x00; buf[20] = 0x00; buf[21] = 0x18; // clipBoxOffset = 24 (Offset24 BE)
+    buf[15] = 0x00;
+    buf[16] = 0x05; // startGlyph = 5
+    buf[17] = 0x00;
+    buf[18] = 0x0F; // endGlyph = 15
+    buf[19] = 0x00;
+    buf[20] = 0x00;
+    buf[21] = 0x18; // clipBoxOffset = 24 (Offset24 BE)
     // ClipBox at offset 34 (= clip_list_offset 10 + clipBoxOffset 24)
     buf[34] = 0x01; // ClipBox format = 1
-    buf[35] = 0xFF; buf[36] = 0x9C; // xMin = -100 (i16 BE)
-    buf[37] = 0xFF; buf[38] = 0x38; // yMin = -200 (i16 BE)
-    buf[39] = 0x01; buf[40] = 0xF4; // xMax =  500 (i16 BE)
-    buf[41] = 0x02; buf[42] = 0xBC; // yMax =  700 (i16 BE)
+    buf[35] = 0xFF;
+    buf[36] = 0x9C; // xMin = -100 (i16 BE)
+    buf[37] = 0xFF;
+    buf[38] = 0x38; // yMin = -200 (i16 BE)
+    buf[39] = 0x01;
+    buf[40] = 0xF4; // xMax =  500 (i16 BE)
+    buf[41] = 0x02;
+    buf[42] = 0xBC; // yMax =  700 (i16 BE)
 
     const table = ColrTable{
         .data = &buf,

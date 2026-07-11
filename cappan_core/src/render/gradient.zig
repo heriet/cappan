@@ -233,5 +233,3 @@ test "radialGradientParam concentric circles" {
     try std.testing.expect(t2 != null);
     try std.testing.expectApproxEqAbs(@as(f32, 1.5), t2.?, 0.01);
 }
-
-

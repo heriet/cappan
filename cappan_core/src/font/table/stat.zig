@@ -223,26 +223,51 @@ test "parse STAT from SourceSans3VF-Subset" {
 
 test "STAT with synthetic format 1 data" {
     var data: [42]u8 = .{0} ** 42;
-    data[0] = 0x00; data[1] = 0x01;
-    data[2] = 0x00; data[3] = 0x01;
-    data[4] = 0x00; data[5] = 0x08;
-    data[6] = 0x00; data[7] = 0x01;
-    data[8] = 0x00; data[9] = 0x00; data[10] = 0x00; data[11] = 0x14;
-    data[12] = 0x00; data[13] = 0x01;
-    data[14] = 0x00; data[15] = 0x00; data[16] = 0x00; data[17] = 0x1C;
-    data[18] = 0x01; data[19] = 0x00;
+    data[0] = 0x00;
+    data[1] = 0x01;
+    data[2] = 0x00;
+    data[3] = 0x01;
+    data[4] = 0x00;
+    data[5] = 0x08;
+    data[6] = 0x00;
+    data[7] = 0x01;
+    data[8] = 0x00;
+    data[9] = 0x00;
+    data[10] = 0x00;
+    data[11] = 0x14;
+    data[12] = 0x00;
+    data[13] = 0x01;
+    data[14] = 0x00;
+    data[15] = 0x00;
+    data[16] = 0x00;
+    data[17] = 0x1C;
+    data[18] = 0x01;
+    data[19] = 0x00;
 
-    data[20] = 'w'; data[21] = 'g'; data[22] = 'h'; data[23] = 't';
-    data[24] = 0x01; data[25] = 0x01;
-    data[26] = 0x00; data[27] = 0x00;
+    data[20] = 'w';
+    data[21] = 'g';
+    data[22] = 'h';
+    data[23] = 't';
+    data[24] = 0x01;
+    data[25] = 0x01;
+    data[26] = 0x00;
+    data[27] = 0x00;
 
-    data[28] = 0x00; data[29] = 0x02;
+    data[28] = 0x00;
+    data[29] = 0x02;
 
-    data[30] = 0x00; data[31] = 0x01;
-    data[32] = 0x00; data[33] = 0x00;
-    data[34] = 0x00; data[35] = 0x02;
-    data[36] = 0x01; data[37] = 0x02;
-    data[38] = 0x01; data[39] = 0x90; data[40] = 0x00; data[41] = 0x00;
+    data[30] = 0x00;
+    data[31] = 0x01;
+    data[32] = 0x00;
+    data[33] = 0x00;
+    data[34] = 0x00;
+    data[35] = 0x02;
+    data[36] = 0x01;
+    data[37] = 0x02;
+    data[38] = 0x01;
+    data[39] = 0x90;
+    data[40] = 0x00;
+    data[41] = 0x00;
 
     const stat = try parse(&data);
     try std.testing.expectEqual(@as(u16, 1), stat.getDesignAxisCount());
