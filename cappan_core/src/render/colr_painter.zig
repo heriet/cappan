@@ -8,7 +8,6 @@ const composite_mod = @import("composite.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const scanline_mod = @import("../raster/scanline.zig");
 
-
 const MAX_RECURSION_DEPTH = 16;
 
 pub const Affine2x3 = struct {

@@ -191,4 +191,3 @@ test "write PNG and verify signature" {
     // Verify IHDR chunk type at offset 12
     try std.testing.expectEqualSlices(u8, "IHDR", written[12..16]);
 }
-

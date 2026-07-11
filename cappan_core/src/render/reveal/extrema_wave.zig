@@ -151,11 +151,11 @@ pub const apply = distance_field_mod.apply;
 test "basic extrema detection" {
     const allocator = std.testing.allocator;
     var coverage = [_]u8{
-        0,   0,   0,   0,   0,
-        0,   255, 255, 255, 0,
-        0,   255, 255, 255, 0,
-        0,   255, 255, 255, 0,
-        0,   0,   0,   0,   0,
+        0, 0,   0,   0,   0,
+        0, 255, 255, 255, 0,
+        0, 255, 255, 255, 0,
+        0, 255, 255, 255, 0,
+        0, 0,   0,   0,   0,
     };
     // Square contour
     const points = [_]outline_mod.ScaledPoint{

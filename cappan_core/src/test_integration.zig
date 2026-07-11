@@ -70,7 +70,6 @@ test "render UTF-8 text Héllo does not crash" {
     try std.testing.expect(bmp.height > 0);
 }
 
-
 test "CFF font renders 'A' without crash" {
     if (comptime !ft.enable_cff) return error.SkipZigTest;
     const font_data = @embedFile("fixture/SourceSans3-Regular.otf");

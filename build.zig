@@ -8,6 +8,8 @@ pub fn build(b: *std.Build) void {
     const enable_cff = b.option(bool, "enable_cff", "Enable CFF/OTF outline support") orelse true;
     const enable_opentype_layout = b.option(bool, "enable_opentype_layout", "Enable GSUB/GPOS/GDEF") orelse true;
     const enable_color = b.option(bool, "enable_color", "Enable COLR/CPAL color glyphs") orelse true;
+    const enable_colr_v1_opt = b.option(bool, "enable_colr_v1", "Enable COLR v1 gradient/composite rendering (requires enable_color)") orelse true;
+    const enable_colr_v1 = enable_colr_v1_opt and enable_color;
     const enable_bitmap = b.option(bool, "enable_bitmap", "Enable CBLC/CBDT bitmap glyphs") orelse true;
     const enable_variable = b.option(bool, "enable_variable", "Enable Variable Fonts") orelse true;
     const enable_hinting = b.option(bool, "enable_hinting", "Enable hinting and stem darkening") orelse true;
@@ -20,6 +22,7 @@ pub fn build(b: *std.Build) void {
     feature_options.addOption(bool, "enable_cff", enable_cff);
     feature_options.addOption(bool, "enable_opentype_layout", enable_opentype_layout);
     feature_options.addOption(bool, "enable_color", enable_color);
+    feature_options.addOption(bool, "enable_colr_v1", enable_colr_v1);
     feature_options.addOption(bool, "enable_bitmap", enable_bitmap);
     feature_options.addOption(bool, "enable_variable", enable_variable);
     feature_options.addOption(bool, "enable_hinting", enable_hinting);

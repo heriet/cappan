@@ -12,8 +12,8 @@ const png_decoder_mod = @import("../image/png_decoder.zig");
 const paint_mod = @import("paint.zig");
 const glyph_mod = @import("../font/glyph.zig");
 const auto_hinting_mod = @import("../raster/auto_hinting.zig");
-const colr_painter_mod = @import("colr_painter.zig");
 const ft = @import("../features.zig").features;
+const colr_painter_mod = if (ft.enable_colr_v1) @import("colr_painter.zig") else struct {};
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -778,7 +778,7 @@ fn tryRenderColrV1(
     bmp_width: u32,
     bmp_height: u32,
 ) !bool {
-    if (comptime !ft.enable_color) return false;
+    if (comptime !ft.enable_colr_v1) return false;
     const colr = glyph_font.colr orelse return false;
     if (colr.findBaseGlyphV1Paint(pos.glyph_id) == null) return false;
     const cpal = glyph_font.cpal;

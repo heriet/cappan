@@ -11,8 +11,8 @@ pub const kNDBits = [21]u5{ 10, 10, 11, 11, 10, 10, 10, 10, 10, 9, 9, 8, 7, 7, 8
 
 /// Byte offset into the dictionary for each word length (lengths 4-24).
 const kDOffset = [21]u32{
-    0,     4096,  9216,  21504, 35840, 44032,  53248,
-    63488, 74752, 87040, 93696, 100864, 104704, 106752,
+    0,      4096,   9216,   21504,  35840,  44032,  53248,
+    63488,  74752,  87040,  93696,  100864, 104704, 106752,
     108928, 113536, 115968, 118528, 119872, 121280, 122016,
 };
 
@@ -122,245 +122,245 @@ const PS = struct {
 /// The 121 transforms from RFC 7932 / google/brotli transform.c
 pub const transforms: [NUM_TRANSFORMS]Transform = .{
     // [ 0] prefix=49 (""),  IDENTITY,       suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s49 },
     // [ 1] prefix=49 (""),  IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s00 },
     // [ 2] prefix= 0 (" "), IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s00 },
     // [ 3] prefix=49 (""),  OMIT_FIRST_1,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_1, .suffix = PS.s49 },
     // [ 4] prefix=49 (""),  UPPERCASE_FIRST,suffix= 0 (" ")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s00 },
     // [ 5] prefix=49 (""),  IDENTITY,       suffix=47 (" the ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s47 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s47 },
     // [ 6] prefix= 0 (" "), IDENTITY,       suffix=49 ("")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s49 },
     // [ 7] prefix= 4 ("s "),IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s04, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s04, .transform_type = .identity, .suffix = PS.s00 },
     // [ 8] prefix=49 (""),  IDENTITY,       suffix= 3 (" of ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s03 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s03 },
     // [ 9] prefix=49 (""),  UPPERCASE_FIRST,suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s49 },
     // [10] prefix=49 (""),  IDENTITY,       suffix= 6 (" and ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s06 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s06 },
     // [11] prefix=49 (""),  OMIT_FIRST_2,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_2, .suffix = PS.s49 },
     // [12] prefix=49 (""),  OMIT_LAST_1,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_1,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_1, .suffix = PS.s49 },
     // [13] prefix= 1 (", "),IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s01, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s01, .transform_type = .identity, .suffix = PS.s00 },
     // [14] prefix=49 (""),  IDENTITY,       suffix= 1 (", ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s01 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s01 },
     // [15] prefix= 0 (" "), UPPERCASE_FIRST,suffix= 0 (" ")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s00 },
     // [16] prefix=49 (""),  IDENTITY,       suffix= 7 (" in ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s07 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s07 },
     // [17] prefix=49 (""),  IDENTITY,       suffix= 9 (" to ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s09 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s09 },
     // [18] prefix=48 ("e "),IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s48, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s48, .transform_type = .identity, .suffix = PS.s00 },
     // [19] prefix=49 (""),  IDENTITY,       suffix= 8 ("\"")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s08 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s08 },
     // [20] prefix=49 (""),  IDENTITY,       suffix= 5 (".")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s05 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s05 },
     // [21] prefix=49 (""),  IDENTITY,       suffix=10 ("\">")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s10 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s10 },
     // [22] prefix=49 (""),  IDENTITY,       suffix=11 ("\n")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s11 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s11 },
     // [23] prefix=49 (""),  OMIT_LAST_3,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_3,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_3, .suffix = PS.s49 },
     // [24] prefix=49 (""),  IDENTITY,       suffix=13 ("]")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s13 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s13 },
     // [25] prefix=49 (""),  IDENTITY,       suffix=14 (" for ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s14 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s14 },
     // [26] prefix=49 (""),  OMIT_FIRST_3,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_3, .suffix = PS.s49 },
     // [27] prefix=49 (""),  OMIT_LAST_2,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_2,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_2, .suffix = PS.s49 },
     // [28] prefix=49 (""),  IDENTITY,       suffix=15 (" a ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s15 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s15 },
     // [29] prefix=49 (""),  IDENTITY,       suffix=16 (" that ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s16 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s16 },
     // [30] prefix= 0 (" "), UPPERCASE_FIRST,suffix=49 ("")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s49 },
     // [31] prefix=49 (""),  IDENTITY,       suffix=12 (". ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s12 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s12 },
     // [32] prefix= 5 ("."), IDENTITY,       suffix=49 ("")
-    .{ .prefix = PS.s05, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s05, .transform_type = .identity, .suffix = PS.s49 },
     // [33] prefix= 0 (" "), IDENTITY,       suffix= 1 (", ")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s01 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s01 },
     // [34] prefix=49 (""),  OMIT_FIRST_4,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_4, .suffix = PS.s49 },
     // [35] prefix=49 (""),  IDENTITY,       suffix=18 (" with ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s18 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s18 },
     // [36] prefix=49 (""),  IDENTITY,       suffix=17 ("'")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s17 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s17 },
     // [37] prefix=49 (""),  IDENTITY,       suffix=19 (" from ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s19 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s19 },
     // [38] prefix=49 (""),  IDENTITY,       suffix=20 (" by ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s20 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s20 },
     // [39] prefix=49 (""),  OMIT_FIRST_5,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_5, .suffix = PS.s49 },
     // [40] prefix=49 (""),  OMIT_FIRST_6,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_6, .suffix = PS.s49 },
     // [41] prefix=47 (" the "), IDENTITY,   suffix=49 ("")
-    .{ .prefix = PS.s47, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s47, .transform_type = .identity, .suffix = PS.s49 },
     // [42] prefix=49 (""),  OMIT_LAST_4,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_4,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_4, .suffix = PS.s49 },
     // [43] prefix=49 (""),  IDENTITY,       suffix=22 (". The ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s22 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s22 },
     // [44] prefix=49 (""),  UPPERCASE_ALL,  suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s49 },
     // [45] prefix=49 (""),  IDENTITY,       suffix=23 (" on ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s23 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s23 },
     // [46] prefix=49 (""),  IDENTITY,       suffix=24 (" as ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s24 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s24 },
     // [47] prefix=49 (""),  IDENTITY,       suffix=25 (" is ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s25 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s25 },
     // [48] prefix=49 (""),  OMIT_LAST_7,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_7,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_7, .suffix = PS.s49 },
     // [49] prefix=49 (""),  OMIT_LAST_1,    suffix=26 ("ing ")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_1,  .suffix = PS.s26 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_1, .suffix = PS.s26 },
     // [50] prefix=49 (""),  IDENTITY,       suffix=27 ("\n\t")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s27 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s27 },
     // [51] prefix=49 (""),  IDENTITY,       suffix=28 (":")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s28 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s28 },
     // [52] prefix= 0 (" "), IDENTITY,       suffix=12 (". ")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s12 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s12 },
     // [53] prefix=49 (""),  IDENTITY,       suffix=29 ("ed ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s29 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s29 },
     // [54] prefix=49 (""),  OMIT_FIRST_9,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_9, .suffix = PS.s49 },
     // [55] prefix=49 (""),  OMIT_FIRST_7,   suffix=49 ("")
     .{ .prefix = PS.s49, .transform_type = .omit_first_7, .suffix = PS.s49 },
     // [56] prefix=49 (""),  OMIT_LAST_6,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_6,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_6, .suffix = PS.s49 },
     // [57] prefix=49 (""),  IDENTITY,       suffix=21 ("(")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s21 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s21 },
     // [58] prefix=49 (""),  UPPERCASE_FIRST,suffix= 1 (", ")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s01 },
     // [59] prefix=49 (""),  OMIT_LAST_8,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_8,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_8, .suffix = PS.s49 },
     // [60] prefix=49 (""),  IDENTITY,       suffix=31 (" at ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s31 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s31 },
     // [61] prefix=49 (""),  IDENTITY,       suffix=32 ("ly ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s32 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s32 },
     // [62] prefix=47 (" the "), IDENTITY,   suffix= 3 (" of ")
-    .{ .prefix = PS.s47, .transform_type = .identity,    .suffix = PS.s03 },
+    .{ .prefix = PS.s47, .transform_type = .identity, .suffix = PS.s03 },
     // [63] prefix=49 (""),  OMIT_LAST_5,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_5,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_5, .suffix = PS.s49 },
     // [64] prefix=49 (""),  OMIT_LAST_9,    suffix=49 ("")
-    .{ .prefix = PS.s49, .transform_type = .omit_last_9,  .suffix = PS.s49 },
+    .{ .prefix = PS.s49, .transform_type = .omit_last_9, .suffix = PS.s49 },
     // [65] prefix= 0 (" "), UPPERCASE_FIRST,suffix= 1 (", ")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s01 },
     // [66] prefix=49 (""),  UPPERCASE_FIRST,suffix= 8 ("\"")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s08 },
     // [67] prefix= 5 ("."), IDENTITY,       suffix=21 ("(")
-    .{ .prefix = PS.s05, .transform_type = .identity,    .suffix = PS.s21 },
+    .{ .prefix = PS.s05, .transform_type = .identity, .suffix = PS.s21 },
     // [68] prefix=49 (""),  UPPERCASE_ALL,  suffix= 0 (" ")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s00 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s00 },
     // [69] prefix=49 (""),  UPPERCASE_FIRST,suffix=10 ("\">")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s10 },
     // [70] prefix=49 (""),  IDENTITY,       suffix=30 ("=\"")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s30 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s30 },
     // [71] prefix= 0 (" "), IDENTITY,       suffix= 5 (".")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s05 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s05 },
     // [72] prefix=35 (".com/"), IDENTITY,   suffix=49 ("")
-    .{ .prefix = PS.s35, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s35, .transform_type = .identity, .suffix = PS.s49 },
     // [73] prefix=47 (" the "), IDENTITY,   suffix= 2 (" of the ")
-    .{ .prefix = PS.s47, .transform_type = .identity,    .suffix = PS.s02 },
+    .{ .prefix = PS.s47, .transform_type = .identity, .suffix = PS.s02 },
     // [74] prefix=49 (""),  UPPERCASE_FIRST,suffix=17 ("'")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s17 },
     // [75] prefix=49 (""),  IDENTITY,       suffix=36 (". This ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s36 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s36 },
     // [76] prefix=49 (""),  IDENTITY,       suffix=33 (",")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s33 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s33 },
     // [77] prefix= 5 ("."), IDENTITY,       suffix= 0 (" ")
-    .{ .prefix = PS.s05, .transform_type = .identity,    .suffix = PS.s00 },
+    .{ .prefix = PS.s05, .transform_type = .identity, .suffix = PS.s00 },
     // [78] prefix=49 (""),  UPPERCASE_FIRST,suffix=21 ("(")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s21 },
     // [79] prefix=49 (""),  UPPERCASE_FIRST,suffix= 5 (".")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s05 },
     // [80] prefix=49 (""),  IDENTITY,       suffix=37 (" not ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s37 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s37 },
     // [81] prefix= 0 (" "), IDENTITY,       suffix=30 ("=\"")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s30 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s30 },
     // [82] prefix=49 (""),  IDENTITY,       suffix=38 ("er ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s38 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s38 },
     // [83] prefix= 0 (" "), UPPERCASE_ALL,  suffix= 0 (" ")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s00 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s00 },
     // [84] prefix=49 (""),  IDENTITY,       suffix=39 ("al ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s39 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s39 },
     // [85] prefix= 0 (" "), UPPERCASE_ALL,  suffix=49 ("")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s49 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s49 },
     // [86] prefix=49 (""),  IDENTITY,       suffix=34 ("='")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s34 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s34 },
     // [87] prefix=49 (""),  UPPERCASE_ALL,  suffix= 8 ("\"")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s08 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s08 },
     // [88] prefix=49 (""),  UPPERCASE_FIRST,suffix=12 (". ")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s12 },
     // [89] prefix= 0 (" "), IDENTITY,       suffix=21 ("(")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s21 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s21 },
     // [90] prefix=49 (""),  IDENTITY,       suffix=40 ("ful ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s40 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s40 },
     // [91] prefix= 0 (" "), UPPERCASE_FIRST,suffix=12 (". ")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s12 },
     // [92] prefix=49 (""),  IDENTITY,       suffix=41 ("ive ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s41 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s41 },
     // [93] prefix=49 (""),  IDENTITY,       suffix=42 ("less ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s42 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s42 },
     // [94] prefix=49 (""),  UPPERCASE_ALL,  suffix=17 ("'")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s17 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s17 },
     // [95] prefix=49 (""),  IDENTITY,       suffix=43 ("est ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s43 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s43 },
     // [96] prefix= 0 (" "), UPPERCASE_FIRST,suffix= 5 (".")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s05 },
     // [97] prefix=49 (""),  UPPERCASE_ALL,  suffix=10 ("\">")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s10 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s10 },
     // [98] prefix= 0 (" "), IDENTITY,       suffix=34 ("='")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s34 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s34 },
     // [99] prefix=49 (""),  UPPERCASE_FIRST,suffix=33 (",")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s33 },
     // [100] prefix=49 (""), IDENTITY,       suffix=44 ("ize ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s44 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s44 },
     // [101] prefix=49 (""), UPPERCASE_ALL,  suffix= 5 (".")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s05 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s05 },
     // [102] prefix=45 ("\xC2\xA0"), IDENTITY, suffix=49 ("")
-    .{ .prefix = PS.s45, .transform_type = .identity,    .suffix = PS.s49 },
+    .{ .prefix = PS.s45, .transform_type = .identity, .suffix = PS.s49 },
     // [103] prefix= 0 (" "),IDENTITY,       suffix=33 (",")
-    .{ .prefix = PS.s00, .transform_type = .identity,    .suffix = PS.s33 },
+    .{ .prefix = PS.s00, .transform_type = .identity, .suffix = PS.s33 },
     // [104] prefix=49 (""), UPPERCASE_FIRST,suffix=30 ("=\"")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s30 },
     // [105] prefix=49 (""), UPPERCASE_ALL,  suffix=30 ("=\"")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s30 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s30 },
     // [106] prefix=49 (""), IDENTITY,       suffix=46 ("ous ")
-    .{ .prefix = PS.s49, .transform_type = .identity,    .suffix = PS.s46 },
+    .{ .prefix = PS.s49, .transform_type = .identity, .suffix = PS.s46 },
     // [107] prefix=49 (""), UPPERCASE_ALL,  suffix= 1 (", ")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s01 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s01 },
     // [108] prefix=49 (""), UPPERCASE_FIRST,suffix=34 ("='")
     .{ .prefix = PS.s49, .transform_type = .ferment_first, .suffix = PS.s34 },
     // [109] prefix= 0 (" "),UPPERCASE_FIRST,suffix=33 (",")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s33 },
     // [110] prefix= 0 (" "),UPPERCASE_ALL,  suffix=30 ("=\"")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s30 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s30 },
     // [111] prefix= 0 (" "),UPPERCASE_ALL,  suffix= 1 (", ")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s01 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s01 },
     // [112] prefix=49 (""), UPPERCASE_ALL,  suffix=33 (",")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s33 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s33 },
     // [113] prefix=49 (""), UPPERCASE_ALL,  suffix=21 ("(")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s21 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s21 },
     // [114] prefix=49 (""), UPPERCASE_ALL,  suffix=12 (". ")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s12 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s12 },
     // [115] prefix= 0 (" "),UPPERCASE_ALL,  suffix= 5 (".")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s05 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s05 },
     // [116] prefix=49 (""), UPPERCASE_ALL,  suffix=34 ("='")
-    .{ .prefix = PS.s49, .transform_type = .ferment_all,  .suffix = PS.s34 },
+    .{ .prefix = PS.s49, .transform_type = .ferment_all, .suffix = PS.s34 },
     // [117] prefix= 0 (" "),UPPERCASE_ALL,  suffix=12 (". ")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s12 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s12 },
     // [118] prefix= 0 (" "),UPPERCASE_FIRST,suffix=30 ("=\"")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s30 },
     // [119] prefix= 0 (" "),UPPERCASE_ALL,  suffix=34 ("='")
-    .{ .prefix = PS.s00, .transform_type = .ferment_all,  .suffix = PS.s34 },
+    .{ .prefix = PS.s00, .transform_type = .ferment_all, .suffix = PS.s34 },
     // [120] prefix= 0 (" "),UPPERCASE_FIRST,suffix=34 ("='")
     .{ .prefix = PS.s00, .transform_type = .ferment_first, .suffix = PS.s34 },
 };

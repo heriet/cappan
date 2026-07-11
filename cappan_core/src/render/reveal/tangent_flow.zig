@@ -126,11 +126,11 @@ test "basic tangent flow" {
     const allocator = std.testing.allocator;
     // 5x5 coverage with a filled 3x3 square
     var coverage = [_]u8{
-        0,   0,   0,   0,   0,
-        0,   255, 255, 255, 0,
-        0,   255, 255, 255, 0,
-        0,   255, 255, 255, 0,
-        0,   0,   0,   0,   0,
+        0, 0,   0,   0,   0,
+        0, 255, 255, 255, 0,
+        0, 255, 255, 255, 0,
+        0, 255, 255, 255, 0,
+        0, 0,   0,   0,   0,
     };
     // Square contour matching the filled region
     const points = [_]outline_mod.ScaledPoint{
