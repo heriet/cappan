@@ -315,6 +315,46 @@ fn loadFont(allocator: std.mem.Allocator, io: std.Io, font_path: []const u8, fon
     return .{ .data = font_data, .font = font };
 }
 
+/// Primary font plus any successfully-loaded fallback fonts, ready to pass to the renderer.
+/// Owns the fallback fonts/data; call `deinit` when done. The primary font/data passed in
+/// remains owned by the caller.
+const FontSet = struct {
+    fonts_list: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty,
+    fallback_fonts: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty,
+    fallback_data_list: std.ArrayListUnmanaged([]u8) = .empty,
+
+    fn deinit(self: *FontSet, allocator: std.mem.Allocator) void {
+        self.fonts_list.deinit(allocator);
+        for (self.fallback_fonts.items) |*f| f.deinit();
+        self.fallback_fonts.deinit(allocator);
+        for (self.fallback_data_list.items) |d| allocator.free(d);
+        self.fallback_data_list.deinit(allocator);
+    }
+};
+
+/// Loads fallback fonts (best-effort, skipping any that fail) and combines them with
+/// `primary_font` into a single fonts list suitable for rendering.
+fn loadFontSet(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    primary_font: cappan_core.font.Font,
+    fallback_font_paths: []const []const u8,
+) !FontSet {
+    var result: FontSet = .{};
+    errdefer result.deinit(allocator);
+
+    for (fallback_font_paths) |fb_path| {
+        const fb_loaded = loadFont(allocator, io, fb_path, null) orelse continue;
+        result.fallback_data_list.append(allocator, fb_loaded.data) catch continue;
+        result.fallback_fonts.append(allocator, fb_loaded.font) catch continue;
+    }
+
+    try result.fonts_list.append(allocator, primary_font);
+    try result.fonts_list.appendSlice(allocator, result.fallback_fonts.items);
+
+    return result;
+}
+
 // --- cappan render ---
 
 const BitmapRowAdapter = struct {
@@ -325,6 +365,66 @@ const BitmapRowAdapter = struct {
         return self.bitmap.pixels[offset .. offset + @as(usize, self.bitmap.width) * 4];
     }
 };
+
+/// Selects how a PNG should be written: `.whole` hands the fully-materialized bitmap to
+/// `writePngRgba`, `.streaming` drives `writePngRgbaStreaming` off of `row_source`.
+const PngWriteMode = union(enum) {
+    whole: RgbaBitmap,
+    streaming,
+};
+
+/// Creates `output_path`, dispatches to the BMP/PPM/PNG writer based on file extension,
+/// flushes, and prints the "Rendered to ..." summary line. Mirrors the write skeleton
+/// shared by cmdRender's two output branches; error messages are verbatim matches of the
+/// original inlined code.
+fn writeImageByExtension(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    output_path: []const u8,
+    width: u32,
+    height: u32,
+    row_source: anytype,
+    png_mode: PngWriteMode,
+) void {
+    const cwd = std.Io.Dir.cwd();
+    const file = cwd.createFile(io, output_path, .{}) catch |err| {
+        std.debug.print("Error: could not create output file '{s}': {}\n", .{ output_path, err });
+        return;
+    };
+    defer file.close(io);
+
+    var buf: [4096]u8 = undefined;
+    var writer = file.writer(io, &buf);
+    const ext = getFileExtension(output_path);
+    if (std.mem.eql(u8, ext, ".bmp")) {
+        bmp_mod.writeBmp(allocator, width, height, row_source, &writer.interface) catch |err| {
+            std.debug.print("Error: could not write BMP: {}\n", .{err});
+            return;
+        };
+    } else if (std.mem.eql(u8, ext, ".ppm")) {
+        ppm_mod.writePpm(width, height, row_source, &writer.interface) catch |err| {
+            std.debug.print("Error: could not write PPM: {}\n", .{err});
+            return;
+        };
+    } else {
+        switch (png_mode) {
+            .whole => |bitmap| png_mod.writePngRgba(allocator, bitmap, &writer.interface) catch |err| {
+                std.debug.print("Error: could not write PNG: {}\n", .{err});
+                return;
+            },
+            .streaming => png_mod.writePngRgbaStreaming(allocator, width, height, row_source, &writer.interface) catch |err| {
+                std.debug.print("Error: could not write PNG: {}\n", .{err});
+                return;
+            },
+        }
+    }
+    writer.interface.flush() catch |err| {
+        std.debug.print("Error: could not flush output: {}\n", .{err});
+        return;
+    };
+
+    std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path, width, height });
+}
 
 fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
@@ -361,28 +461,9 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     var font = loaded.font;
     defer font.deinit();
 
-    var fallback_fonts: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty;
-    defer {
-        for (fallback_fonts.items) |*f| f.deinit();
-        fallback_fonts.deinit(allocator);
-    }
-    var fallback_data_list: std.ArrayListUnmanaged([]u8) = .empty;
-    defer {
-        for (fallback_data_list.items) |d| allocator.free(d);
-        fallback_data_list.deinit(allocator);
-    }
-
-    for (fallback_font_paths.items) |fb_path| {
-        const fb_loaded = loadFont(allocator, io, fb_path, null) orelse continue;
-        fallback_data_list.append(allocator, fb_loaded.data) catch continue;
-        fallback_fonts.append(allocator, fb_loaded.font) catch continue;
-    }
-
-    var fonts_list: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty;
-    defer fonts_list.deinit(allocator);
-    fonts_list.append(allocator, font) catch return;
-    fonts_list.appendSlice(allocator, fallback_fonts.items) catch return;
-    const fonts = fonts_list.items;
+    var font_set = loadFontSet(allocator, io, font, fallback_font_paths.items) catch return;
+    defer font_set.deinit(allocator);
+    const fonts = font_set.fonts_list.items;
 
     if (common.vertical and comptime !ft.enable_vertical) {
         std.debug.print("Error: vertical layout is disabled at compile time\n", .{});
@@ -419,40 +500,8 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         };
         defer bitmap.deinit();
 
-        const cwd = std.Io.Dir.cwd();
-        const file = cwd.createFile(io, output_path.?, .{}) catch |err| {
-            std.debug.print("Error: could not create output file '{s}': {}\n", .{ output_path.?, err });
-            return;
-        };
-        defer file.close(io);
-
-        var buf: [4096]u8 = undefined;
-        var writer = file.writer(io, &buf);
-        const ext = getFileExtension(output_path.?);
-        if (std.mem.eql(u8, ext, ".bmp")) {
-            var adapter = BitmapRowAdapter{ .bitmap = &bitmap };
-            bmp_mod.writeBmp(allocator, bitmap.width, bitmap.height, &adapter, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write BMP: {}\n", .{err});
-                return;
-            };
-        } else if (std.mem.eql(u8, ext, ".ppm")) {
-            var adapter = BitmapRowAdapter{ .bitmap = &bitmap };
-            ppm_mod.writePpm(bitmap.width, bitmap.height, &adapter, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write PPM: {}\n", .{err});
-                return;
-            };
-        } else {
-            png_mod.writePngRgba(allocator, bitmap, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write PNG: {}\n", .{err});
-                return;
-            };
-        }
-        writer.interface.flush() catch |err| {
-            std.debug.print("Error: could not flush output: {}\n", .{err});
-            return;
-        };
-
-        std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path.?, bitmap.width, bitmap.height });
+        var adapter = BitmapRowAdapter{ .bitmap = &bitmap };
+        writeImageByExtension(allocator, io, output_path.?, bitmap.width, bitmap.height, &adapter, .{ .whole = bitmap });
     } else {
         var row_renderer = cappan_core.render.renderer.RowRenderer.init(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
@@ -473,38 +522,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         };
         defer row_renderer.deinit();
 
-        const cwd = std.Io.Dir.cwd();
-        const file = cwd.createFile(io, output_path.?, .{}) catch |err| {
-            std.debug.print("Error: could not create output file '{s}': {}\n", .{ output_path.?, err });
-            return;
-        };
-        defer file.close(io);
-
-        var buf: [4096]u8 = undefined;
-        var writer = file.writer(io, &buf);
-        const ext = getFileExtension(output_path.?);
-        if (std.mem.eql(u8, ext, ".bmp")) {
-            bmp_mod.writeBmp(allocator, row_renderer.width, row_renderer.height, &row_renderer, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write BMP: {}\n", .{err});
-                return;
-            };
-        } else if (std.mem.eql(u8, ext, ".ppm")) {
-            ppm_mod.writePpm(row_renderer.width, row_renderer.height, &row_renderer, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write PPM: {}\n", .{err});
-                return;
-            };
-        } else {
-            png_mod.writePngRgbaStreaming(allocator, row_renderer.width, row_renderer.height, &row_renderer, &writer.interface) catch |err| {
-                std.debug.print("Error: could not write PNG: {}\n", .{err});
-                return;
-            };
-        }
-        writer.interface.flush() catch |err| {
-            std.debug.print("Error: could not flush output: {}\n", .{err});
-            return;
-        };
-
-        std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path.?, row_renderer.width, row_renderer.height });
+        writeImageByExtension(allocator, io, output_path.?, row_renderer.width, row_renderer.height, &row_renderer, .streaming);
     }
 }
 
@@ -602,28 +620,9 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
     var font = loaded.font;
     defer font.deinit();
 
-    var fallback_fonts: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty;
-    defer {
-        for (fallback_fonts.items) |*f| f.deinit();
-        fallback_fonts.deinit(allocator);
-    }
-    var fallback_data_list: std.ArrayListUnmanaged([]u8) = .empty;
-    defer {
-        for (fallback_data_list.items) |d| allocator.free(d);
-        fallback_data_list.deinit(allocator);
-    }
-
-    for (fallback_font_paths.items) |fb_path| {
-        const fb_loaded = loadFont(allocator, io, fb_path, null) orelse continue;
-        fallback_data_list.append(allocator, fb_loaded.data) catch continue;
-        fallback_fonts.append(allocator, fb_loaded.font) catch continue;
-    }
-
-    var fonts_list: std.ArrayListUnmanaged(cappan_core.font.Font) = .empty;
-    defer fonts_list.deinit(allocator);
-    fonts_list.append(allocator, font) catch return;
-    fonts_list.appendSlice(allocator, fallback_fonts.items) catch return;
-    const fonts = fonts_list.items;
+    var font_set = loadFontSet(allocator, io, font, fallback_font_paths.items) catch return;
+    defer font_set.deinit(allocator);
+    const fonts = font_set.fonts_list.items;
 
     // Parse sweep direction
     const sweep_dir: incremental_mod.SweepDirection = if (std.mem.eql(u8, sweep_dir_name, "right-to-left"))

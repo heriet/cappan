@@ -60,7 +60,64 @@ pub const CachedRaster = struct {
     height: u32,
     offset_x: f32,
     offset_y: f32,
+
+    fn empty(allocator: std.mem.Allocator) !CachedRaster {
+        return .{
+            .pixels = try allocator.alloc(u8, 0),
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+        };
+    }
 };
+
+/// Looks up `(font_index, glyph_id)` in `glyph_cache`; on a miss, rasterizes the glyph
+/// outline (optionally applying hinting, matching the call site's original behavior) and
+/// inserts the result (or an empty placeholder, if the font has no outline for this glyph)
+/// before returning it. Shared by renderText's plain-outline path, its COLRv0 palette-layer
+/// path (which historically does not apply hinting), and RowRenderer.init.
+fn getOrRasterizeGlyph(
+    glyph_cache: *std.AutoHashMapUnmanaged(u32, CachedRaster),
+    allocator: std.mem.Allocator,
+    glyph_font: font_mod.Font,
+    font_index: u8,
+    glyph_id: u16,
+    raster_options: scanline_mod.RasterOptions,
+    options: RenderOptions,
+    apply_hinting: bool,
+) !CachedRaster {
+    const cache_key = glyphCacheKey(font_index, glyph_id);
+    if (glyph_cache.get(cache_key)) |cached| return cached;
+
+    const outline_opt = glyph_font.getGlyphOutline(allocator, glyph_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    if (outline_opt == null) {
+        const empty_entry = try CachedRaster.empty(allocator);
+        try glyph_cache.put(allocator, cache_key, empty_entry);
+        return empty_entry;
+    }
+    var outline = outline_opt.?;
+    defer outline.deinit();
+
+    if (apply_hinting) {
+        try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options);
+    }
+
+    const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
+    const result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
+    const entry = CachedRaster{
+        .pixels = result.pixels,
+        .width = result.width,
+        .height = result.height,
+        .offset_x = result.offset_x,
+        .offset_y = result.offset_y,
+    };
+    try glyph_cache.put(allocator, cache_key, entry);
+    return entry;
+}
 
 const CachedLcdRaster = struct {
     r_coverage: []u8,
@@ -274,61 +331,13 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                             rgba_bitmap_mod.Color{ .r = pc.r, .g = pc.g, .b = pc.b, .a = pc.a }
                         else
                             options.fg_color;
-                        const layer_cache_key = glyphCacheKey(pos.font_index, layer.glyph_id);
-                        if (glyph_cache.get(layer_cache_key)) |cached| {
-                            if (cached.width == 0 or cached.height == 0) continue;
-                            blendRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
-                            continue;
-                        }
-                        const layer_outline_opt = glyph_font.getGlyphOutline(allocator, layer.glyph_id) catch |err| switch (err) {
-                            error.OutOfMemory => return error.OutOfMemory,
-                            else => null,
-                        };
-                        if (layer_outline_opt == null) {
-                            const empty_pixels = try allocator.alloc(u8, 0);
-                            try glyph_cache.put(allocator, layer_cache_key, .{ .pixels = empty_pixels, .width = 0, .height = 0, .offset_x = 0, .offset_y = 0 });
-                            continue;
-                        }
-                        var layer_outline = layer_outline_opt.?;
-                        defer layer_outline.deinit();
-                        const layer_result = try rasterizer_mod.rasterizeGlyph(allocator, layer_outline, glyph_scale, options.padding, raster_options);
-                        const layer_entry = CachedRaster{ .pixels = layer_result.pixels, .width = layer_result.width, .height = layer_result.height, .offset_x = layer_result.offset_x, .offset_y = layer_result.offset_y };
-                        try glyph_cache.put(allocator, layer_cache_key, layer_entry);
+                        const layer_entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, layer.glyph_id, raster_options, options, false);
                         if (layer_entry.width == 0 or layer_entry.height == 0) continue;
                         blendRaster(&bitmap, layer_entry, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
                     }
                 }
             } else {
-                const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => null,
-                };
-                if (outline_opt == null) {
-                    const empty_pixels = try allocator.alloc(u8, 0);
-                    try glyph_cache.put(allocator, cache_key, .{
-                        .pixels = empty_pixels,
-                        .width = 0,
-                        .height = 0,
-                        .offset_x = 0,
-                        .offset_y = 0,
-                    });
-                    continue;
-                }
-                var outline = outline_opt.?;
-                defer outline.deinit();
-
-                try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
-                const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
-
-                const entry = CachedRaster{
-                    .pixels = glyph_result.pixels,
-                    .width = glyph_result.width,
-                    .height = glyph_result.height,
-                    .offset_x = glyph_result.offset_x,
-                    .offset_y = glyph_result.offset_y,
-                };
-                try glyph_cache.put(allocator, cache_key, entry);
-
+                const entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true);
                 if (entry.width == 0 or entry.height == 0) continue;
                 blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
             }
@@ -1032,35 +1041,7 @@ pub const RowRenderer = struct {
             if (glyph_cache.get(cache_key) != null) continue;
 
             const glyph_font = fonts[pos.font_index];
-            const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
-
-            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => null,
-            };
-            if (outline_opt == null) {
-                const empty_pixels = try allocator.alloc(u8, 0);
-                try glyph_cache.put(allocator, cache_key, .{
-                    .pixels = empty_pixels,
-                    .width = 0,
-                    .height = 0,
-                    .offset_x = 0,
-                    .offset_y = 0,
-                });
-                continue;
-            }
-            var outline = outline_opt.?;
-            defer outline.deinit();
-
-            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
-            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
-            try glyph_cache.put(allocator, cache_key, .{
-                .pixels = glyph_result.pixels,
-                .width = glyph_result.width,
-                .height = glyph_result.height,
-                .offset_x = glyph_result.offset_x,
-                .offset_y = glyph_result.offset_y,
-            });
+            _ = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true);
         }
 
         const row_buffer = try allocator.alloc(u8, @as(usize, width) * 4);

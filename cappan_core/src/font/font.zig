@@ -39,6 +39,28 @@ const ft = @import("../features.zig").features;
 
 pub const RasterResult = rasterizer_mod.RasterResult;
 
+/// Reads a required top-level table: looks it up by tag, records a diagnostic and returns
+/// `err` if missing, otherwise parses its data with `parseFn`. Mirrors `parseOptionalTable`
+/// but for tables whose absence is fatal. Only for the simple
+/// findTable -> getTableData -> parseFn(data) shape; tables with extra parse arguments or
+/// cross-table dependencies (loca/glyf, CFF, hmtx) are handled individually.
+fn requireTable(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    offset_table: parser.OffsetTable,
+    data: []const u8,
+    comptime tag: [4]u8,
+    comptime parseFn: anytype,
+    diag: ?*err_mod.Diagnostics,
+    comptime err: anyerror,
+) !T {
+    const record = parser.findTable(offset_table, tag) orelse {
+        if (diag) |d| d.addError(allocator, .{ .table_tag = tag }, "required table '" ++ tag ++ "' not found") catch {};
+        return err;
+    };
+    return try parseFn(try parser.getTableData(data, record));
+}
+
 fn parseOptionalTable(
     comptime T: type,
     comptime enabled: bool,
@@ -200,29 +222,10 @@ pub const Font = struct {
         const offset_table = try parser.parseOffsetTableAt(allocator, data, start_offset);
         errdefer allocator.free(offset_table.table_records);
 
-        const head_record = parser.findTable(offset_table, "head".*) orelse {
-            if (diag) |d| d.addError(allocator, .{ .table_tag = "head".* }, "required table 'head' not found") catch {};
-            return error.TableNotFound;
-        };
-        const head = try head_mod.parse(try parser.getTableData(data, head_record));
-
-        const maxp_record = parser.findTable(offset_table, "maxp".*) orelse {
-            if (diag) |d| d.addError(allocator, .{ .table_tag = "maxp".* }, "required table 'maxp' not found") catch {};
-            return error.TableNotFound;
-        };
-        const maxp = try maxp_mod.parse(try parser.getTableData(data, maxp_record));
-
-        const hhea_record = parser.findTable(offset_table, "hhea".*) orelse {
-            if (diag) |d| d.addError(allocator, .{ .table_tag = "hhea".* }, "required table 'hhea' not found") catch {};
-            return error.TableNotFound;
-        };
-        const hhea = try hhea_mod.parse(try parser.getTableData(data, hhea_record));
-
-        const cmap_record = parser.findTable(offset_table, "cmap".*) orelse {
-            if (diag) |d| d.addError(allocator, .{ .table_tag = "cmap".* }, "required table 'cmap' not found") catch {};
-            return error.TableNotFound;
-        };
-        const cmap = try cmap_mod.parse(try parser.getTableData(data, cmap_record));
+        const head = try requireTable(head_mod.HeadTable, allocator, offset_table, data, "head".*, head_mod.parse, diag, error.TableNotFound);
+        const maxp = try requireTable(maxp_mod.MaxpTable, allocator, offset_table, data, "maxp".*, maxp_mod.parse, diag, error.TableNotFound);
+        const hhea = try requireTable(hhea_mod.HheaTable, allocator, offset_table, data, "hhea".*, hhea_mod.parse, diag, error.TableNotFound);
+        const cmap = try requireTable(cmap_mod.CmapTable, allocator, offset_table, data, "cmap".*, cmap_mod.parse, diag, error.TableNotFound);
 
         // CFF/TrueType 分岐
         const is_cff = offset_table.sfnt_version == 0x4F54544F;
