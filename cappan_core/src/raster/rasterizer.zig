@@ -19,15 +19,32 @@ pub const RasterResult = struct {
     }
 };
 
-/// Rasterize a single glyph outline at the given scale
-pub fn rasterizeGlyph(
+const PreparedGlyphRasterization = struct {
+    width: u32,
+    height: u32,
+    offset_x: f32,
+    offset_y: f32,
+    scaled: ?[][]outline_mod.ScaledPoint,
+    segments: std.ArrayList(outline_mod.Segment),
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *PreparedGlyphRasterization) void {
+        if (self.scaled) |scaled| {
+            outline_mod.freeScaledContours(self.allocator, scaled);
+        }
+        self.segments.deinit(self.allocator);
+    }
+};
+
+fn prepareGlyphRasterization(
     allocator: std.mem.Allocator,
     glyph_outline: glyph_mod.GlyphOutline,
     scale: f32,
     padding: u32,
     raster_options: scanline_mod.RasterOptions,
-) !RasterResult {
-    // Calculate glyph bounding box in pixel coordinates
+    scale_offset_x: f32,
+    comptime lcd_transform: bool,
+) !PreparedGlyphRasterization {
     const embolden = @max(0.0, raster_options.embolden_strength);
     const half_embolden = embolden * 0.5;
     const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden;
@@ -45,7 +62,74 @@ pub fn rasterizeGlyph(
     const width: u32 = if (w_f > max_dim or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
     const height: u32 = if (h_f > max_dim or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
 
+    const offset_x = -x_min_px + pad_f;
+    const offset_y = y_max_px + pad_f;
+
     if (width == 0 or height == 0) {
+        return .{
+            .width = width,
+            .height = height,
+            .offset_x = offset_x,
+            .offset_y = offset_y,
+            .scaled = null,
+            .segments = .empty,
+            .allocator = allocator,
+        };
+    }
+
+    const outline_offset_x = if (comptime lcd_transform) scale_offset_x else offset_x;
+    const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, outline_offset_x, offset_y);
+    errdefer outline_mod.freeScaledContours(allocator, scaled);
+
+    if (comptime ft.enable_hinting) {
+        if (glyph_outline.hints) |hint_data| {
+            cff_hinting_mod.applyHints(scaled, hint_data, scale);
+        }
+        if (embolden > 0.0) {
+            try stem_darkening_mod.emboldenContours(allocator, scaled, embolden);
+        }
+    }
+
+    if (comptime lcd_transform) {
+        for (scaled) |contour_points| {
+            for (contour_points) |*pt| {
+                pt.x = pt.x * 3.0 + offset_x * 3.0;
+            }
+        }
+    }
+
+    var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
+    errdefer all_segments.deinit(allocator);
+
+    for (scaled) |contour_points| {
+        const segs = try outline_mod.flattenContour(allocator, contour_points);
+        defer allocator.free(segs);
+        try all_segments.appendSlice(allocator, segs);
+    }
+
+    return .{
+        .width = width,
+        .height = height,
+        .offset_x = offset_x,
+        .offset_y = offset_y,
+        .scaled = scaled,
+        .segments = all_segments,
+        .allocator = allocator,
+    };
+}
+
+/// Rasterize a single glyph outline at the given scale
+pub fn rasterizeGlyph(
+    allocator: std.mem.Allocator,
+    glyph_outline: glyph_mod.GlyphOutline,
+    scale: f32,
+    padding: u32,
+    raster_options: scanline_mod.RasterOptions,
+) !RasterResult {
+    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, false);
+    defer prepared.deinit();
+
+    if (prepared.width == 0 or prepared.height == 0) {
         const pixels = try allocator.alloc(u8, 0);
         return .{
             .pixels = pixels,
@@ -57,42 +141,15 @@ pub fn rasterizeGlyph(
         };
     }
 
-    // offset: position in pixel space where font origin maps to
-    const offset_x = -x_min_px + pad_f;
-    const offset_y = y_max_px + pad_f; // Y flipped: top of glyph
-
-    // Scale and flatten outline
-    const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, offset_x, offset_y);
-    defer outline_mod.freeScaledContours(allocator, scaled);
-
-    if (comptime ft.enable_hinting) {
-        if (glyph_outline.hints) |hint_data| {
-            cff_hinting_mod.applyHints(scaled, hint_data, scale);
-        }
-        if (embolden > 0.0) {
-            try stem_darkening_mod.emboldenContours(allocator, scaled, embolden);
-        }
-    }
-
-    // Flatten all contours into segments
-    var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
-    defer all_segments.deinit(allocator);
-
-    for (scaled) |contour_points| {
-        const segs = try outline_mod.flattenContour(allocator, contour_points);
-        defer allocator.free(segs);
-        try all_segments.appendSlice(allocator, segs);
-    }
-
     // Rasterize
-    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height, raster_options);
+    const pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, prepared.width, prepared.height, raster_options);
 
     return .{
         .pixels = pixels,
-        .width = width,
-        .height = height,
-        .offset_x = offset_x,
-        .offset_y = offset_y,
+        .width = prepared.width,
+        .height = prepared.height,
+        .offset_x = prepared.offset_x,
+        .offset_y = prepared.offset_y,
         .allocator = allocator,
     };
 }
@@ -152,24 +209,10 @@ pub fn rasterizeGlyphLcd(
     padding: u32,
     raster_options: scanline_mod.RasterOptions,
 ) !LcdRasterResult {
-    const embolden_lcd = @max(0.0, raster_options.embolden_strength);
-    const half_embolden_lcd = embolden_lcd * 0.5;
-    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden_lcd;
-    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale - half_embolden_lcd;
-    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale + half_embolden_lcd;
-    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale + half_embolden_lcd;
+    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, true);
+    defer prepared.deinit();
 
-    const glyph_width = @max(0.0, x_max_px - x_min_px);
-    const glyph_height = @max(0.0, y_max_px - y_min_px);
-
-    const pad_f = @as(f32, @floatFromInt(padding));
-    const max_dim: f32 = 16384.0;
-    const w_f = @ceil(glyph_width + pad_f * 2);
-    const h_f = @ceil(glyph_height + pad_f * 2);
-    const width: u32 = if (w_f > max_dim or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
-    const height: u32 = if (h_f > max_dim or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
-
-    if (width == 0 or height == 0) {
+    if (prepared.width == 0 or prepared.height == 0) {
         const empty_r = try allocator.alloc(u8, 0);
         errdefer allocator.free(empty_r);
         const empty_g = try allocator.alloc(u8, 0);
@@ -188,42 +231,12 @@ pub fn rasterizeGlyphLcd(
         };
     }
 
-    const offset_x = -x_min_px + pad_f;
-    const offset_y = y_max_px + pad_f;
-    const wide_width = width * 3;
+    const wide_width = prepared.width * 3;
 
-    // Scale with offset_x=0, then transform X into the 3x-wide LCD coordinate space.
-    const scaled = try outline_mod.scaleOutline(allocator, glyph_outline, scale, 0.0, offset_y);
-    defer outline_mod.freeScaledContours(allocator, scaled);
-
-    if (comptime ft.enable_hinting) {
-        if (glyph_outline.hints) |hint_data| {
-            cff_hinting_mod.applyHints(scaled, hint_data, scale);
-        }
-        if (embolden_lcd > 0.0) {
-            try stem_darkening_mod.emboldenContours(allocator, scaled, embolden_lcd);
-        }
-    }
-
-    for (scaled) |contour_points| {
-        for (contour_points) |*pt| {
-            pt.x = pt.x * 3.0 + offset_x * 3.0;
-        }
-    }
-
-    var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
-    defer all_segments.deinit(allocator);
-
-    for (scaled) |contour_points| {
-        const segs = try outline_mod.flattenContour(allocator, contour_points);
-        defer allocator.free(segs);
-        try all_segments.appendSlice(allocator, segs);
-    }
-
-    const wide_pixels = try scanline_mod.rasterize(allocator, all_segments.items, wide_width, height, raster_options);
+    const wide_pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, wide_width, prepared.height, raster_options);
     defer allocator.free(wide_pixels);
 
-    const pixel_count = @as(usize, width) * @as(usize, height);
+    const pixel_count = @as(usize, prepared.width) * @as(usize, prepared.height);
     const r_cov = try allocator.alloc(u8, pixel_count);
     errdefer allocator.free(r_cov);
     const g_cov = try allocator.alloc(u8, pixel_count);
@@ -231,9 +244,9 @@ pub fn rasterizeGlyphLcd(
     const b_cov = try allocator.alloc(u8, pixel_count);
     errdefer allocator.free(b_cov);
 
-    for (0..height) |y| {
-        for (0..@as(usize, width)) |x| {
-            const dst = y * @as(usize, width) + x;
+    for (0..prepared.height) |y| {
+        for (0..@as(usize, prepared.width)) |x| {
+            const dst = y * @as(usize, prepared.width) + x;
             const src_base = y * @as(usize, wide_width) + x * 3;
             r_cov[dst] = wide_pixels[src_base];
             g_cov[dst] = wide_pixels[src_base + 1];
@@ -245,10 +258,10 @@ pub fn rasterizeGlyphLcd(
         .r_coverage = r_cov,
         .g_coverage = g_cov,
         .b_coverage = b_cov,
-        .width = width,
-        .height = height,
-        .offset_x = offset_x,
-        .offset_y = offset_y,
+        .width = prepared.width,
+        .height = prepared.height,
+        .offset_x = prepared.offset_x,
+        .offset_y = prepared.offset_y,
         .allocator = allocator,
     };
 }

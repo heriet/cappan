@@ -9,7 +9,9 @@ pub const CmapTable = struct {
     pub fn charToGlyphId(self: CmapTable, codepoint: u32) !u16 {
         // Try format 12 first (supports full Unicode range)
         if (self.format12_offset) |f12_off| {
-            const subtable = self.data[f12_off..];
+            const f12_start: usize = @intCast(f12_off);
+            if (f12_start >= self.data.len) return 0;
+            const subtable = self.data[f12_start..];
             // format12 header: format(u16) reserved(u16) length(u32) language(u32) numGroups(u32)
             // numGroups is at offset 12
             const num_groups = try parser.readU32(subtable, 12);
@@ -44,7 +46,9 @@ pub const CmapTable = struct {
         if (self.format4_offset) |f4_off| {
             if (codepoint > 0xFFFF) return 0;
             const cp16: u16 = @intCast(codepoint);
-            const subtable = self.data[f4_off..];
+            const f4_start: usize = @intCast(f4_off);
+            if (f4_start >= self.data.len) return 0;
+            const subtable = self.data[f4_start..];
 
             const seg_count_x2 = try parser.readU16(subtable, 6);
             const seg_count = seg_count_x2 / 2;
@@ -126,7 +130,8 @@ pub fn parse(data: []const u8) !CmapTable {
             (platform_id == 3 and encoding_id == 10);
 
         if (is_bmp or is_full) {
-            if (subtable_offset + 2 > data.len) continue;
+            const subtable_start: usize = @intCast(subtable_offset);
+            if (subtable_start > data.len or data.len - subtable_start < 2) continue;
             const format = try parser.readU16(data, subtable_offset);
             if (format == 4 and format4_offset == null) {
                 format4_offset = subtable_offset;

@@ -232,16 +232,34 @@ pub fn layoutText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
     applyGposPositioning(result, fonts);
 
-    var num_lines_var = num_lines;
-    var max_width_var = max_width;
+    return finishHorizontalLayout(allocator, result, fonts, options.max_width, options.text_align, max_width, num_lines, line_height, ascender_px, descender_px);
+}
 
-    if (options.max_width) |max_w| {
+/// Applies word-wrap and alignment (mirroring the layout options) to an already-shaped
+/// horizontal glyph run and builds the resulting `TextLayout`. Shared tail of `layoutText`
+/// and `layoutStyledText`; symmetric with `finishVerticalLayout` for the vertical path.
+fn finishHorizontalLayout(
+    allocator: std.mem.Allocator,
+    result: []GlyphPosition,
+    fonts: []const font_mod.Font,
+    max_width: ?f32,
+    text_align: TextAlign,
+    computed_max_width: f32,
+    num_lines: u32,
+    line_height: f32,
+    ascender_px: f32,
+    descender_px: f32,
+) TextLayout {
+    var num_lines_var = num_lines;
+    var max_width_var = computed_max_width;
+
+    if (max_width) |max_w| {
         applyWordWrap(result, fonts, max_w, line_height, &max_width_var, &num_lines_var);
     }
 
-    if (options.text_align != .left) {
-        const effective_width = options.max_width orelse max_width_var;
-        applyAlignment(result, options.text_align, effective_width, fonts);
+    if (text_align != .left) {
+        const effective_width = max_width orelse max_width_var;
+        applyAlignment(result, text_align, effective_width, fonts);
         if (effective_width > max_width_var) max_width_var = effective_width;
     }
 
@@ -583,31 +601,7 @@ pub fn layoutStyledText(
 
     applyGposPositioning(result, fonts);
 
-    var num_lines_var = num_lines;
-    var max_width_var = max_width;
-
-    if (options.max_width) |max_w| {
-        applyWordWrap(result, fonts, max_w, line_height, &max_width_var, &num_lines_var);
-    }
-
-    if (options.text_align != .left) {
-        const effective_width = options.max_width orelse max_width_var;
-        applyAlignment(result, options.text_align, effective_width, fonts);
-        if (effective_width > max_width_var) max_width_var = effective_width;
-    }
-
-    const total_height = @as(f32, @floatFromInt(num_lines_var)) * line_height;
-    return .{
-        .positions = result,
-        .total_width = max_width_var,
-        .total_height = total_height,
-        .ascender_px = max_ascender_px,
-        .descender_px = min_descender_px,
-        .line_height = line_height,
-        .num_lines = num_lines_var,
-        .vertical = false,
-        .allocator = allocator,
-    };
+    return finishHorizontalLayout(allocator, result, fonts, options.max_width, options.text_align, max_width, num_lines, line_height, max_ascender_px, min_descender_px);
 }
 
 fn layoutStyledTextVertical(

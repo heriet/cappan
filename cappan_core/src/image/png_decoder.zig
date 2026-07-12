@@ -20,6 +20,7 @@ const PNG_SIGNATURE = [8]u8{ 137, 80, 78, 71, 13, 10, 26, 10 };
 pub const DecodeError = error{
     InvalidPngSignature,
     InvalidChunkLayout,
+    InvalidPng,
     MissingIhdrChunk,
     UnsupportedColorType,
     UnsupportedBitDepth,
@@ -37,12 +38,13 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
     var pos: usize = 8;
 
     // Read IHDR
-    if (pos + 12 > data.len) return error.MissingIhdrChunk;
+    if (pos > data.len or data.len - pos < 12) return error.MissingIhdrChunk;
     const ihdr_len = readU32Be(data, pos);
     pos += 4;
     if (!std.mem.eql(u8, data[pos..][0..4], "IHDR")) return error.MissingIhdrChunk;
     pos += 4;
-    if (ihdr_len < 13 or pos + ihdr_len > data.len) return error.MissingIhdrChunk;
+    const ihdr_end = std.math.add(usize, pos, @as(usize, ihdr_len)) catch return error.MissingIhdrChunk;
+    if (ihdr_len < 13 or ihdr_end > data.len) return error.MissingIhdrChunk;
 
     const width = readU32Be(data, pos);
     const height = readU32Be(data, pos + 4);
@@ -55,22 +57,25 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
     if (bit_depth != 8) return error.UnsupportedBitDepth;
     if (color_type != 2 and color_type != 6) return error.UnsupportedColorType;
     if (interlace_method != 0) return error.UnsupportedInterlace;
+    if (width == 0 or height == 0 or width > 32768 or height > 32768) return error.InvalidPng;
 
-    pos += @as(usize, ihdr_len) + 4; // skip chunk data + CRC
+    pos = std.math.add(usize, ihdr_end, 4) catch return error.MissingIhdrChunk; // skip chunk data + CRC
+    if (pos > data.len) return error.MissingIhdrChunk;
 
     const channels: u8 = if (color_type == 6) 4 else 3;
-    const stride = @as(usize, width) * @as(usize, channels);
+    const stride = std.math.mul(usize, @as(usize, width), @as(usize, channels)) catch return error.InvalidPng;
 
     // Collect all IDAT chunks into a single buffer
     var idat_buf: std.ArrayList(u8) = .empty;
     defer idat_buf.deinit(allocator);
 
-    while (pos + 8 <= data.len) {
+    while (pos <= data.len and data.len - pos >= 8) {
         const chunk_len = readU32Be(data, pos);
         const chunk_type = data[pos + 4 .. pos + 8];
         const chunk_data_start = pos + 8;
-        const chunk_data_end = chunk_data_start + @as(usize, chunk_len);
-        if (chunk_data_end + 4 > data.len) break;
+        const chunk_data_end = std.math.add(usize, chunk_data_start, @as(usize, chunk_len)) catch break;
+        const chunk_end = std.math.add(usize, chunk_data_end, 4) catch break;
+        if (chunk_end > data.len) break;
 
         if (std.mem.eql(u8, chunk_type, "IDAT")) {
             try idat_buf.appendSlice(allocator, data[chunk_data_start..chunk_data_end]);
@@ -78,11 +83,12 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
             break;
         }
 
-        pos = chunk_data_end + 4; // skip CRC
+        pos = chunk_end; // skip CRC
     }
 
     // Decompress the IDAT data (zlib format)
-    const filtered_size = @as(usize, height) * (stride + 1); // +1 for filter byte per row
+    const filtered_stride = std.math.add(usize, stride, 1) catch return error.InvalidPng; // +1 for filter byte per row
+    const filtered_size = std.math.mul(usize, @as(usize, height), filtered_stride) catch return error.InvalidPng;
     var decompressed = try allocator.alloc(u8, filtered_size);
     defer allocator.free(decompressed);
 
@@ -100,18 +106,22 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
     }
 
     // Allocate output RGBA buffer
-    const out_size = @as(usize, width) * @as(usize, height) * 4;
+    const pixel_count = std.math.mul(usize, @as(usize, width), @as(usize, height)) catch return error.InvalidPng;
+    const out_size = std.math.mul(usize, pixel_count, 4) catch return error.InvalidPng;
     const pixels = try allocator.alloc(u8, out_size);
     errdefer allocator.free(pixels);
 
     // Unfilter each scanline and convert to RGBA
     var row_src: usize = 0;
     for (0..@as(usize, height)) |y| {
+        if (row_src >= decompressed.len) return error.UnexpectedEof;
         const filter_type = decompressed[row_src];
         row_src += 1;
-        const src_row = decompressed[row_src .. row_src + stride];
-        const dst_row_start = y * @as(usize, width) * 4;
-        const prev_row_start: ?usize = if (y > 0) (y - 1) * @as(usize, width) * 4 else null;
+        const row_end = std.math.add(usize, row_src, stride) catch return error.UnexpectedEof;
+        if (row_end > decompressed.len) return error.UnexpectedEof;
+        const src_row = decompressed[row_src..row_end];
+        const dst_row_start = std.math.mul(usize, y, @as(usize, width) * 4) catch return error.InvalidPng;
+        const prev_row_start: ?usize = if (y > 0) std.math.mul(usize, y - 1, @as(usize, width) * 4) catch return error.InvalidPng else null;
 
         // Apply PNG filter reconstruction
         switch (filter_type) {
@@ -141,7 +151,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
         // Write to output RGBA buffer
         if (channels == 4) {
             // RGBA -> RGBA
-            @memcpy(pixels[dst_row_start .. dst_row_start + @as(usize, width) * 4], src_row[0 .. @as(usize, width) * 4]);
+            const dst_row_end = std.math.add(usize, dst_row_start, @as(usize, width) * 4) catch return error.InvalidPng;
+            @memcpy(pixels[dst_row_start..dst_row_end], src_row[0 .. @as(usize, width) * 4]);
         } else {
             // RGB -> RGBA (add alpha=255)
             for (0..@as(usize, width)) |x| {

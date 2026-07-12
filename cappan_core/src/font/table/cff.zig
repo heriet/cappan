@@ -24,9 +24,11 @@ pub const Index = struct {
         const off1 = self.readOffset(index); // 1-indexed offset
         const off2 = self.readOffset(index + 1);
         if (off1 == 0 or off2 < off1) return null;
-        const start = self.data_start + off1 - 1; // offset は 1-indexed
-        const end = self.data_start + off2 - 1;
-        if (end > self.data.len) return null;
+        const start_delta = std.math.sub(usize, off1, 1) catch return null;
+        const end_delta = std.math.sub(usize, off2, 1) catch return null;
+        const start = std.math.add(usize, self.data_start, start_delta) catch return null; // offset は 1-indexed
+        const end = std.math.add(usize, self.data_start, end_delta) catch return null;
+        if (start > end or end > self.data.len) return null;
         return self.data[start..end];
     }
 

@@ -78,12 +78,12 @@ pub fn woffToSfnt(allocator: std.mem.Allocator, woff_data: []const u8) ![]u8 {
 
         // Decompress/copy table data
         const comp_start: usize = @intCast(comp_offset);
-        const comp_data_end: usize = comp_start + @as(usize, @intCast(comp_length));
+        const comp_data_end = std.math.add(usize, comp_start, @as(usize, comp_length)) catch return error.UnexpectedEof;
         if (comp_data_end > woff_data.len) return error.UnexpectedEof;
         const compressed = woff_data[comp_start..comp_data_end];
 
         const dest_start: usize = @intCast(sfnt_data_offset);
-        const dest_end: usize = dest_start + @as(usize, @intCast(orig_length));
+        const dest_end = std.math.add(usize, dest_start, @as(usize, orig_length)) catch return error.UnexpectedEof;
         if (dest_end > sfnt.len) return error.UnexpectedEof;
 
         if (comp_length == orig_length) {

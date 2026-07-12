@@ -14,6 +14,32 @@ pub const MapEntry = struct {
     inner: u16,
 };
 
+pub fn getMappedDelta(data: []const u8, mapping_offset: u32, store_offset: u32, glyph_id: u16, normalized_coords: []const f32) !i32 {
+    var outer: u16 = 0;
+    var inner: u16 = glyph_id;
+
+    if (mapping_offset != 0) {
+        const mapping = try readDeltaSetIndexMap(data, mapping_offset);
+        if (glyph_id < mapping.map_count) {
+            const entry = try readMapEntry(data, mapping, glyph_id);
+            outer = entry.outer;
+            inner = entry.inner;
+        }
+    }
+
+    return getItemDelta(data, @as(usize, store_offset), outer, inner, normalized_coords);
+}
+
+pub fn getMappedSideBearingDelta(data: []const u8, mapping_offset: u32, store_offset: u32, glyph_id: u16, normalized_coords: []const f32) !i32 {
+    if (mapping_offset == 0) return 0;
+
+    const mapping = try readDeltaSetIndexMap(data, mapping_offset);
+    if (glyph_id >= mapping.map_count) return 0;
+
+    const entry = try readMapEntry(data, mapping, glyph_id);
+    return getItemDelta(data, @as(usize, store_offset), entry.outer, entry.inner, normalized_coords);
+}
+
 pub fn readDeltaSetIndexMap(data: []const u8, map_offset: u32) !DeltaSetIndexMap {
     const off = @as(usize, map_offset);
     const format = try parser.readU8(data, off);

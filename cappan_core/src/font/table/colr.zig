@@ -304,6 +304,11 @@ pub const ColrTable = struct {
         return std.math.add(u32, self.layer_list_offset, paint_rel) catch return null;
     }
 
+    fn readRelOffset(self: ColrTable, base: u32, field_off: usize) ?u32 {
+        const rel = parser.readU24(self.data, field_off) catch return null;
+        return std.math.add(u32, base, rel) catch return null;
+    }
+
     /// Parse a Paint record at the given absolute offset.
     pub fn readPaint(self: ColrTable, abs_offset: u32) ?Paint {
         if (comptime !ft.enable_colr_v1) return null;
@@ -331,8 +336,7 @@ pub const ColrTable = struct {
             },
             // PaintLinearGradient, PaintVarLinearGradient
             4, 5 => {
-                const cl_rel = parser.readU24(self.data, off + 1) catch return null;
-                const cl_abs: u32 = std.math.add(u32, abs_offset, cl_rel) catch return null;
+                const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const x0 = parser.readI16(self.data, off + 4) catch return null;
                 const y0 = parser.readI16(self.data, off + 6) catch return null;
                 const x1 = parser.readI16(self.data, off + 8) catch return null;
@@ -352,8 +356,7 @@ pub const ColrTable = struct {
             },
             // PaintRadialGradient, PaintVarRadialGradient
             6, 7 => {
-                const cl_rel = parser.readU24(self.data, off + 1) catch return null;
-                const cl_abs: u32 = std.math.add(u32, abs_offset, cl_rel) catch return null;
+                const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const x0 = parser.readI16(self.data, off + 4) catch return null;
                 const y0 = parser.readI16(self.data, off + 6) catch return null;
                 const r0 = parser.readU16(self.data, off + 8) catch return null;
@@ -373,8 +376,7 @@ pub const ColrTable = struct {
             },
             // PaintSweepGradient, PaintVarSweepGradient
             8, 9 => {
-                const cl_rel = parser.readU24(self.data, off + 1) catch return null;
-                const cl_abs: u32 = std.math.add(u32, abs_offset, cl_rel) catch return null;
+                const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const cx = parser.readI16(self.data, off + 4) catch return null;
                 const cy = parser.readI16(self.data, off + 6) catch return null;
                 const start_ang = parser.readF2Dot14(self.data, off + 8) catch return null;
@@ -390,8 +392,7 @@ pub const ColrTable = struct {
             },
             // PaintGlyph
             10 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const gid = parser.readU16(self.data, off + 4) catch return null;
                 return Paint{ .glyph = .{
                     .paint_offset = paint_abs,
@@ -405,10 +406,8 @@ pub const ColrTable = struct {
             },
             // PaintTransform, PaintVarTransform
             12, 13 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
-                const xform_rel = parser.readU24(self.data, off + 4) catch return null;
-                const xform_off: usize = @intCast(std.math.add(u32, abs_offset, xform_rel) catch return null);
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
+                const xform_off: usize = @intCast(self.readRelOffset(abs_offset, off + 4) orelse return null);
                 const xx = parser.readFixed(self.data, xform_off) catch return null;
                 const yx = parser.readFixed(self.data, xform_off + 4) catch return null;
                 const xy = parser.readFixed(self.data, xform_off + 8) catch return null;
@@ -427,8 +426,7 @@ pub const ColrTable = struct {
             },
             // PaintTranslate, PaintVarTranslate
             14, 15 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const dx = parser.readI16(self.data, off + 4) catch return null;
                 const dy = parser.readI16(self.data, off + 6) catch return null;
                 return Paint{ .translate = .{
@@ -439,8 +437,7 @@ pub const ColrTable = struct {
             },
             // PaintScale, PaintVarScale
             16, 17 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const sx = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const sy = parser.readF2Dot14(self.data, off + 6) catch return null;
                 return Paint{ .scale = .{
@@ -451,8 +448,7 @@ pub const ColrTable = struct {
             },
             // PaintScaleAroundCenter, PaintVarScaleAroundCenter
             18, 19 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const sx = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const sy = parser.readF2Dot14(self.data, off + 6) catch return null;
                 const cx = parser.readI16(self.data, off + 8) catch return null;
@@ -467,8 +463,7 @@ pub const ColrTable = struct {
             },
             // PaintScaleUniform, PaintVarScaleUniform
             20, 21 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const s = parser.readF2Dot14(self.data, off + 4) catch return null;
                 return Paint{ .scale_uniform = .{
                     .paint_offset = paint_abs,
@@ -477,8 +472,7 @@ pub const ColrTable = struct {
             },
             // PaintScaleUniformAroundCenter, PaintVarScaleUniformAroundCenter
             22, 23 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const s = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const cx = parser.readI16(self.data, off + 6) catch return null;
                 const cy = parser.readI16(self.data, off + 8) catch return null;
@@ -491,8 +485,7 @@ pub const ColrTable = struct {
             },
             // PaintRotate, PaintVarRotate
             24, 25 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const angle = parser.readF2Dot14(self.data, off + 4) catch return null;
                 return Paint{ .rotate = .{
                     .paint_offset = paint_abs,
@@ -501,8 +494,7 @@ pub const ColrTable = struct {
             },
             // PaintRotateAroundCenter, PaintVarRotateAroundCenter
             26, 27 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const angle = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const cx = parser.readI16(self.data, off + 6) catch return null;
                 const cy = parser.readI16(self.data, off + 8) catch return null;
@@ -515,8 +507,7 @@ pub const ColrTable = struct {
             },
             // PaintSkew, PaintVarSkew
             28, 29 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const xs = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const ys = parser.readF2Dot14(self.data, off + 6) catch return null;
                 return Paint{ .skew = .{
@@ -527,8 +518,7 @@ pub const ColrTable = struct {
             },
             // PaintSkewAroundCenter, PaintVarSkewAroundCenter
             30, 31 => {
-                const paint_rel = parser.readU24(self.data, off + 1) catch return null;
-                const paint_abs: u32 = std.math.add(u32, abs_offset, paint_rel) catch return null;
+                const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const xs = parser.readF2Dot14(self.data, off + 4) catch return null;
                 const ys = parser.readF2Dot14(self.data, off + 6) catch return null;
                 const cx = parser.readI16(self.data, off + 8) catch return null;
@@ -543,11 +533,9 @@ pub const ColrTable = struct {
             },
             // PaintComposite
             32 => {
-                const src_rel = parser.readU24(self.data, off + 1) catch return null;
-                const src_abs: u32 = std.math.add(u32, abs_offset, src_rel) catch return null;
+                const src_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const mode_byte = parser.readU8(self.data, off + 4) catch return null;
-                const backdrop_rel = parser.readU24(self.data, off + 5) catch return null;
-                const backdrop_abs: u32 = std.math.add(u32, abs_offset, backdrop_rel) catch return null;
+                const backdrop_abs = self.readRelOffset(abs_offset, off + 5) orelse return null;
                 return Paint{ .composite = .{
                     .source_paint_offset = src_abs,
                     .mode = @enumFromInt(mode_byte),

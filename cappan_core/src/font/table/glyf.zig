@@ -38,7 +38,7 @@ pub const GlyfTable = struct {
     pub fn isCompoundGlyph(self: GlyfTable, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!bool {
         const loc = try loca.getGlyphLocation(glyph_id);
         if (loc.length == 0) return false;
-        const end = @as(usize, loc.offset) + @as(usize, loc.length);
+        const end = std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length)) catch return error.InvalidGlyphData;
         if (end > self.data.len) return error.InvalidGlyphData;
         const glyph_data = self.data[loc.offset..end];
         const number_of_contours = try parser.readI16(glyph_data, 0);
@@ -48,7 +48,7 @@ pub const GlyfTable = struct {
     pub fn getComponentInfos(self: GlyfTable, allocator: std.mem.Allocator, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!?[]ComponentInfo {
         const loc = try loca.getGlyphLocation(glyph_id);
         if (loc.length == 0) return null;
-        const end = @as(usize, loc.offset) + @as(usize, loc.length);
+        const end = std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length)) catch return error.InvalidGlyphData;
         if (end > self.data.len) return error.InvalidGlyphData;
         const glyph_data = self.data[loc.offset..end];
         const number_of_contours = try parser.readI16(glyph_data, 0);
@@ -135,7 +135,7 @@ pub const GlyfTable = struct {
         const loc = try loca.getGlyphLocation(glyph_id);
         if (loc.length == 0) return null; // empty glyph (e.g. space)
 
-        const end = @as(usize, loc.offset) + @as(usize, loc.length);
+        const end = std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length)) catch return error.InvalidGlyphData;
         if (end > self.data.len) return error.InvalidGlyphData;
         const glyph_data = self.data[loc.offset..end];
         const number_of_contours = try parser.readI16(glyph_data, 0);
@@ -171,6 +171,7 @@ pub const GlyfTable = struct {
         for (0..num_contours) |i| {
             end_pts[i] = try parser.readU16(glyph_data, offset);
             offset += 2;
+            if (i > 0 and end_pts[i] <= end_pts[i - 1]) return error.InvalidGlyphData;
         }
 
         const num_points: usize = if (num_contours > 0) @as(usize, end_pts[num_contours - 1]) + 1 else 0;
@@ -261,6 +262,7 @@ pub const GlyfTable = struct {
         var start_pt: usize = 0;
         for (0..num_contours) |c| {
             const end_pt = @as(usize, end_pts[c]) + 1;
+            if (start_pt > end_pt or end_pt > num_points) return error.InvalidGlyphData;
             const count = end_pt - start_pt;
             const points = try allocator.alloc(glyph_mod.Point, count);
 

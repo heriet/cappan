@@ -28,7 +28,8 @@ pub fn subsetGlyf(
     for (used_glyphs) |glyph_id| {
         const loc = try loca.getGlyphLocation(glyph_id);
         if (loc.length > 0) {
-            total_size += (@as(usize, loc.length) + 3) & ~@as(usize, 3);
+            const aligned_len = std.math.add(usize, @as(usize, loc.length), 3) catch return error.InvalidGlyphData;
+            total_size = std.math.add(usize, total_size, aligned_len & ~@as(usize, 3)) catch return error.InvalidGlyphData;
         }
     }
 
@@ -48,8 +49,12 @@ pub fn subsetGlyf(
         const glyph_offset: usize = @intCast(loc.offset);
         const glyph_len: usize = @intCast(loc.length);
         const dest_offset: usize = @intCast(write_offset);
-        const glyph_bytes = glyf_data[glyph_offset .. glyph_offset + glyph_len];
-        const dest = data[dest_offset .. dest_offset + glyph_len];
+        const glyph_end = std.math.add(usize, glyph_offset, glyph_len) catch return error.InvalidGlyphData;
+        if (glyph_end > glyf_data.len) return error.InvalidGlyphData;
+        const dest_end = std.math.add(usize, dest_offset, glyph_len) catch return error.InvalidGlyphData;
+        if (dest_end > data.len) return error.InvalidGlyphData;
+        const glyph_bytes = glyf_data[glyph_offset..glyph_end];
+        const dest = data[dest_offset..dest_end];
         @memcpy(dest, glyph_bytes);
 
         const num_contours = try cappan_core.font.parser.readI16(glyph_bytes, 0);
