@@ -557,150 +557,13 @@ const Interpreter = struct {
                     i += 1;
                     switch (b1) {
                         // hflex (12 34) — 7 args: dx1 dx2 dy2 dx3 dx4 dx5 dx6
-                        34 => {
-                            if (self.sp < 7) return error.StackUnderflow;
-                            const dx1 = self.stack[0];
-                            const dx2 = self.stack[1];
-                            const dy2 = self.stack[2];
-                            const dx3 = self.stack[3];
-                            const dx4 = self.stack[4];
-                            const dx5 = self.stack[5];
-                            const dx6 = self.stack[6];
-                            // Curve 1
-                            const c1x = self.x + dx1;
-                            const c1y = self.y;
-                            const c2x = c1x + dx2;
-                            const c2y = c1y + dy2;
-                            self.x = c2x + dx3;
-                            self.y = c2y;
-                            try self.addPoint(c1x, c1y, false, true);
-                            try self.addPoint(c2x, c2y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            // Curve 2
-                            const c3x = self.x + dx4;
-                            const c3y = self.y;
-                            const c4x = c3x + dx5;
-                            const c4y = c3y + (-dy2);
-                            self.x = c4x + dx6;
-                            self.y = c4y;
-                            try self.addPoint(c3x, c3y, false, true);
-                            try self.addPoint(c4x, c4y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            self.sp = 0;
-                        },
+                        34 => try self.execFlexOp(b1),
                         // flex (12 35) — 13 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd
-                        35 => {
-                            if (self.sp < 13) return error.StackUnderflow;
-                            const dx1 = self.stack[0];
-                            const dy1 = self.stack[1];
-                            const dx2 = self.stack[2];
-                            const dy2 = self.stack[3];
-                            const dx3 = self.stack[4];
-                            const dy3 = self.stack[5];
-                            const dx4 = self.stack[6];
-                            const dy4 = self.stack[7];
-                            const dx5 = self.stack[8];
-                            const dy5 = self.stack[9];
-                            const dx6 = self.stack[10];
-                            const dy6 = self.stack[11];
-                            // fd (stack[12]) is ignored for rendering
-                            // Curve 1
-                            const c1x = self.x + dx1;
-                            const c1y = self.y + dy1;
-                            const c2x = c1x + dx2;
-                            const c2y = c1y + dy2;
-                            self.x = c2x + dx3;
-                            self.y = c2y + dy3;
-                            try self.addPoint(c1x, c1y, false, true);
-                            try self.addPoint(c2x, c2y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            // Curve 2
-                            const c3x = self.x + dx4;
-                            const c3y = self.y + dy4;
-                            const c4x = c3x + dx5;
-                            const c4y = c3y + dy5;
-                            self.x = c4x + dx6;
-                            self.y = c4y + dy6;
-                            try self.addPoint(c3x, c3y, false, true);
-                            try self.addPoint(c4x, c4y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            self.sp = 0;
-                        },
+                        35 => try self.execFlexOp(b1),
                         // hflex1 (12 36) — 9 args: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
-                        36 => {
-                            if (self.sp < 9) return error.StackUnderflow;
-                            const dx1 = self.stack[0];
-                            const dy1 = self.stack[1];
-                            const dx2 = self.stack[2];
-                            const dy2 = self.stack[3];
-                            const dx3 = self.stack[4];
-                            const dx4 = self.stack[5];
-                            const dx5 = self.stack[6];
-                            const dy5 = self.stack[7];
-                            const dx6 = self.stack[8];
-                            // Curve 1
-                            const c1x = self.x + dx1;
-                            const c1y = self.y + dy1;
-                            const c2x = c1x + dx2;
-                            const c2y = c1y + dy2;
-                            self.x = c2x + dx3;
-                            self.y = c2y;
-                            try self.addPoint(c1x, c1y, false, true);
-                            try self.addPoint(c2x, c2y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            // Curve 2
-                            const c3x = self.x + dx4;
-                            const c3y = self.y;
-                            const c4x = c3x + dx5;
-                            const c4y = c3y + dy5;
-                            self.x = c4x + dx6;
-                            self.y = c4y + (-(dy1 + dy2 + dy5));
-                            try self.addPoint(c3x, c3y, false, true);
-                            try self.addPoint(c4x, c4y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            self.sp = 0;
-                        },
+                        36 => try self.execFlexOp(b1),
                         // flex1 (12 37) — 11 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6
-                        37 => {
-                            if (self.sp < 11) return error.StackUnderflow;
-                            const dx1 = self.stack[0];
-                            const dy1 = self.stack[1];
-                            const dx2 = self.stack[2];
-                            const dy2 = self.stack[3];
-                            const dx3 = self.stack[4];
-                            const dy3 = self.stack[5];
-                            const dx4 = self.stack[6];
-                            const dy4 = self.stack[7];
-                            const dx5 = self.stack[8];
-                            const dy5 = self.stack[9];
-                            const d6 = self.stack[10];
-                            const sum_dx = dx1 + dx2 + dx3 + dx4 + dx5;
-                            const sum_dy = dy1 + dy2 + dy3 + dy4 + dy5;
-                            const use_dx = @abs(sum_dx) > @abs(sum_dy);
-                            const f_dx6: f32 = if (use_dx) d6 else -sum_dx;
-                            const f_dy6: f32 = if (use_dx) -sum_dy else d6;
-                            // Curve 1
-                            const c1x = self.x + dx1;
-                            const c1y = self.y + dy1;
-                            const c2x = c1x + dx2;
-                            const c2y = c1y + dy2;
-                            self.x = c2x + dx3;
-                            self.y = c2y + dy3;
-                            try self.addPoint(c1x, c1y, false, true);
-                            try self.addPoint(c2x, c2y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            // Curve 2
-                            const c3x = self.x + dx4;
-                            const c3y = self.y + dy4;
-                            const c4x = c3x + dx5;
-                            const c4y = c3y + dy5;
-                            self.x = c4x + f_dx6;
-                            self.y = c4y + f_dy6;
-                            try self.addPoint(c3x, c3y, false, true);
-                            try self.addPoint(c4x, c4y, false, true);
-                            try self.addPoint(self.x, self.y, true, false);
-                            self.sp = 0;
-                        },
+                        37 => try self.execFlexOp(b1),
                         else => {
                             // Unknown sub-operator: clear stack
                             self.sp = 0;
@@ -712,6 +575,157 @@ const Interpreter = struct {
                     // Unknown operator: ignore
                 },
             }
+        }
+    }
+
+    fn execFlexOp(self: *Interpreter, subop: u8) !void {
+        switch (subop) {
+            // hflex (12 34) — 7 args: dx1 dx2 dy2 dx3 dx4 dx5 dx6
+            34 => {
+                if (self.sp < 7) return error.StackUnderflow;
+                const dx1 = self.stack[0];
+                const dx2 = self.stack[1];
+                const dy2 = self.stack[2];
+                const dx3 = self.stack[3];
+                const dx4 = self.stack[4];
+                const dx5 = self.stack[5];
+                const dx6 = self.stack[6];
+                // Curve 1
+                const c1x = self.x + dx1;
+                const c1y = self.y;
+                const c2x = c1x + dx2;
+                const c2y = c1y + dy2;
+                self.x = c2x + dx3;
+                self.y = c2y;
+                try self.addPoint(c1x, c1y, false, true);
+                try self.addPoint(c2x, c2y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                // Curve 2
+                const c3x = self.x + dx4;
+                const c3y = self.y;
+                const c4x = c3x + dx5;
+                const c4y = c3y + (-dy2);
+                self.x = c4x + dx6;
+                self.y = c4y;
+                try self.addPoint(c3x, c3y, false, true);
+                try self.addPoint(c4x, c4y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                self.sp = 0;
+            },
+            // flex (12 35) — 13 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd
+            35 => {
+                if (self.sp < 13) return error.StackUnderflow;
+                const dx1 = self.stack[0];
+                const dy1 = self.stack[1];
+                const dx2 = self.stack[2];
+                const dy2 = self.stack[3];
+                const dx3 = self.stack[4];
+                const dy3 = self.stack[5];
+                const dx4 = self.stack[6];
+                const dy4 = self.stack[7];
+                const dx5 = self.stack[8];
+                const dy5 = self.stack[9];
+                const dx6 = self.stack[10];
+                const dy6 = self.stack[11];
+                // fd (stack[12]) is ignored for rendering
+                // Curve 1
+                const c1x = self.x + dx1;
+                const c1y = self.y + dy1;
+                const c2x = c1x + dx2;
+                const c2y = c1y + dy2;
+                self.x = c2x + dx3;
+                self.y = c2y + dy3;
+                try self.addPoint(c1x, c1y, false, true);
+                try self.addPoint(c2x, c2y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                // Curve 2
+                const c3x = self.x + dx4;
+                const c3y = self.y + dy4;
+                const c4x = c3x + dx5;
+                const c4y = c3y + dy5;
+                self.x = c4x + dx6;
+                self.y = c4y + dy6;
+                try self.addPoint(c3x, c3y, false, true);
+                try self.addPoint(c4x, c4y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                self.sp = 0;
+            },
+            // hflex1 (12 36) — 9 args: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
+            36 => {
+                if (self.sp < 9) return error.StackUnderflow;
+                const dx1 = self.stack[0];
+                const dy1 = self.stack[1];
+                const dx2 = self.stack[2];
+                const dy2 = self.stack[3];
+                const dx3 = self.stack[4];
+                const dx4 = self.stack[5];
+                const dx5 = self.stack[6];
+                const dy5 = self.stack[7];
+                const dx6 = self.stack[8];
+                // Curve 1
+                const c1x = self.x + dx1;
+                const c1y = self.y + dy1;
+                const c2x = c1x + dx2;
+                const c2y = c1y + dy2;
+                self.x = c2x + dx3;
+                self.y = c2y;
+                try self.addPoint(c1x, c1y, false, true);
+                try self.addPoint(c2x, c2y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                // Curve 2
+                const c3x = self.x + dx4;
+                const c3y = self.y;
+                const c4x = c3x + dx5;
+                const c4y = c3y + dy5;
+                self.x = c4x + dx6;
+                self.y = c4y + (-(dy1 + dy2 + dy5));
+                try self.addPoint(c3x, c3y, false, true);
+                try self.addPoint(c4x, c4y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                self.sp = 0;
+            },
+            // flex1 (12 37) — 11 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6
+            37 => {
+                if (self.sp < 11) return error.StackUnderflow;
+                const dx1 = self.stack[0];
+                const dy1 = self.stack[1];
+                const dx2 = self.stack[2];
+                const dy2 = self.stack[3];
+                const dx3 = self.stack[4];
+                const dy3 = self.stack[5];
+                const dx4 = self.stack[6];
+                const dy4 = self.stack[7];
+                const dx5 = self.stack[8];
+                const dy5 = self.stack[9];
+                const d6 = self.stack[10];
+                const sum_dx = dx1 + dx2 + dx3 + dx4 + dx5;
+                const sum_dy = dy1 + dy2 + dy3 + dy4 + dy5;
+                const use_dx = @abs(sum_dx) > @abs(sum_dy);
+                const f_dx6: f32 = if (use_dx) d6 else -sum_dx;
+                const f_dy6: f32 = if (use_dx) -sum_dy else d6;
+                // Curve 1
+                const c1x = self.x + dx1;
+                const c1y = self.y + dy1;
+                const c2x = c1x + dx2;
+                const c2y = c1y + dy2;
+                self.x = c2x + dx3;
+                self.y = c2y + dy3;
+                try self.addPoint(c1x, c1y, false, true);
+                try self.addPoint(c2x, c2y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                // Curve 2
+                const c3x = self.x + dx4;
+                const c3y = self.y + dy4;
+                const c4x = c3x + dx5;
+                const c4y = c3y + dy5;
+                self.x = c4x + f_dx6;
+                self.y = c4y + f_dy6;
+                try self.addPoint(c3x, c3y, false, true);
+                try self.addPoint(c4x, c4y, false, true);
+                try self.addPoint(self.x, self.y, true, false);
+                self.sp = 0;
+            },
+            else => unreachable,
         }
     }
 

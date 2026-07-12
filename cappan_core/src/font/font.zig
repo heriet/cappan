@@ -39,6 +39,27 @@ const ft = @import("../features.zig").features;
 
 pub const RasterResult = rasterizer_mod.RasterResult;
 
+fn parseOptionalTable(
+    comptime T: type,
+    comptime enabled: bool,
+    offset_table: parser.OffsetTable,
+    data: []const u8,
+    comptime tag: [4]u8,
+    comptime parseFn: anytype,
+) !(if (enabled) ?T else void) {
+    if (comptime enabled) {
+        const record = parser.findTable(offset_table, tag);
+        if (record) |rec| {
+            const table_data = try parser.getTableData(data, rec);
+            return parseFn(table_data) catch null;
+        } else {
+            return null;
+        }
+    } else {
+        return {};
+    }
+}
+
 pub const VerticalSubstituter = struct {
     allocator: std.mem.Allocator,
     gsub: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void,
@@ -241,15 +262,7 @@ pub const Font = struct {
         };
         const hmtx = hmtx_mod.parse(try parser.getTableData(data, hmtx_record), hhea.number_of_h_metrics);
 
-        const kern_table: ?kern_mod.KernTable = blk: {
-            const kern_record = parser.findTable(offset_table, "kern".*);
-            if (kern_record) |rec| {
-                const kern_data = try parser.getTableData(data, rec);
-                break :blk kern_mod.parse(kern_data) catch null;
-            } else {
-                break :blk null;
-            }
-        };
+        const kern_table: ?kern_mod.KernTable = try parseOptionalTable(kern_mod.KernTable, true, offset_table, data, "kern".*, kern_mod.parse);
 
         const gpos_table: if (ft.enable_opentype_layout) ?gpos_mod.GposTable else void = if (comptime ft.enable_opentype_layout) blk: {
             const gpos_record = parser.findTable(offset_table, "GPOS".*);
@@ -263,15 +276,7 @@ pub const Font = struct {
                 break :blk null;
             }
         } else {};
-        const gdef_table: if (ft.enable_opentype_layout) ?gdef_mod.GdefTable else void = if (comptime ft.enable_opentype_layout) blk: {
-            const gdef_record = parser.findTable(offset_table, "GDEF".*);
-            if (gdef_record) |rec| {
-                const gdef_data = try parser.getTableData(data, rec);
-                break :blk gdef_mod.parse(gdef_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
+        const gdef_table: if (ft.enable_opentype_layout) ?gdef_mod.GdefTable else void = try parseOptionalTable(gdef_mod.GdefTable, ft.enable_opentype_layout, offset_table, data, "GDEF".*, gdef_mod.parse);
         const gsub_table: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void = if (comptime ft.enable_opentype_layout) blk: {
             const gsub_record = parser.findTable(offset_table, "GSUB".*);
             if (gsub_record) |rec| {
@@ -281,96 +286,16 @@ pub const Font = struct {
                 break :blk null;
             }
         } else {};
-        const colr_table: if (ft.enable_color) ?colr_mod.ColrTable else void = if (comptime ft.enable_color) blk: {
-            const colr_record = parser.findTable(offset_table, "COLR".*);
-            if (colr_record) |rec| {
-                const colr_data = try parser.getTableData(data, rec);
-                break :blk colr_mod.parse(colr_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const cpal_table: if (ft.enable_color) ?cpal_mod.CpalTable else void = if (comptime ft.enable_color) blk: {
-            const cpal_record = parser.findTable(offset_table, "CPAL".*);
-            if (cpal_record) |rec| {
-                const cpal_data = try parser.getTableData(data, rec);
-                break :blk cpal_mod.parse(cpal_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const cblc_table: if (ft.enable_bitmap) ?cblc_mod.CblcTable else void = if (comptime ft.enable_bitmap) blk: {
-            const cblc_record = parser.findTable(offset_table, "CBLC".*);
-            if (cblc_record) |rec| {
-                const cblc_data = try parser.getTableData(data, rec);
-                break :blk cblc_mod.parse(cblc_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const cbdt_table: if (ft.enable_bitmap) ?cbdt_mod.CbdtTable else void = if (comptime ft.enable_bitmap) blk: {
-            const cbdt_record = parser.findTable(offset_table, "CBDT".*);
-            if (cbdt_record) |rec| {
-                const cbdt_data = try parser.getTableData(data, rec);
-                break :blk cbdt_mod.parse(cbdt_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const name_table: ?name_mod.NameTable = blk: {
-            const name_record = parser.findTable(offset_table, "name".*);
-            if (name_record) |rec| {
-                const name_data_raw = try parser.getTableData(data, rec);
-                break :blk name_mod.parse(name_data_raw) catch null;
-            } else {
-                break :blk null;
-            }
-        };
-        const fvar_table: if (ft.enable_variable) ?fvar_mod.FvarTable else void = if (comptime ft.enable_variable) blk: {
-            const fvar_record = parser.findTable(offset_table, "fvar".*);
-            if (fvar_record) |rec| {
-                const fvar_data = try parser.getTableData(data, rec);
-                break :blk fvar_mod.parse(fvar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const gvar_table: if (ft.enable_variable) ?gvar_mod.GvarTable else void = if (comptime ft.enable_variable) blk: {
-            const gvar_record = parser.findTable(offset_table, "gvar".*);
-            if (gvar_record) |rec| {
-                const gvar_data = try parser.getTableData(data, rec);
-                break :blk gvar_mod.parse(gvar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const avar_table: if (ft.enable_variable) ?avar_mod.AvarTable else void = if (comptime ft.enable_variable) blk: {
-            const avar_record = parser.findTable(offset_table, "avar".*);
-            if (avar_record) |rec| {
-                const avar_data = try parser.getTableData(data, rec);
-                break :blk avar_mod.parse(avar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const hvar_table: if (ft.enable_variable) ?hvar_mod.HvarTable else void = if (comptime ft.enable_variable) blk: {
-            const hvar_record = parser.findTable(offset_table, "HVAR".*);
-            if (hvar_record) |rec| {
-                const hvar_data = try parser.getTableData(data, rec);
-                break :blk hvar_mod.parse(hvar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const vhea_table: if (ft.enable_vertical) ?vhea_mod.VheaTable else void = if (comptime ft.enable_vertical) blk: {
-            const vhea_record = parser.findTable(offset_table, "vhea".*);
-            if (vhea_record) |rec| {
-                const vhea_data = try parser.getTableData(data, rec);
-                break :blk vhea_mod.parse(vhea_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
+        const colr_table: if (ft.enable_color) ?colr_mod.ColrTable else void = try parseOptionalTable(colr_mod.ColrTable, ft.enable_color, offset_table, data, "COLR".*, colr_mod.parse);
+        const cpal_table: if (ft.enable_color) ?cpal_mod.CpalTable else void = try parseOptionalTable(cpal_mod.CpalTable, ft.enable_color, offset_table, data, "CPAL".*, cpal_mod.parse);
+        const cblc_table: if (ft.enable_bitmap) ?cblc_mod.CblcTable else void = try parseOptionalTable(cblc_mod.CblcTable, ft.enable_bitmap, offset_table, data, "CBLC".*, cblc_mod.parse);
+        const cbdt_table: if (ft.enable_bitmap) ?cbdt_mod.CbdtTable else void = try parseOptionalTable(cbdt_mod.CbdtTable, ft.enable_bitmap, offset_table, data, "CBDT".*, cbdt_mod.parse);
+        const name_table: ?name_mod.NameTable = try parseOptionalTable(name_mod.NameTable, true, offset_table, data, "name".*, name_mod.parse);
+        const fvar_table: if (ft.enable_variable) ?fvar_mod.FvarTable else void = try parseOptionalTable(fvar_mod.FvarTable, ft.enable_variable, offset_table, data, "fvar".*, fvar_mod.parse);
+        const gvar_table: if (ft.enable_variable) ?gvar_mod.GvarTable else void = try parseOptionalTable(gvar_mod.GvarTable, ft.enable_variable, offset_table, data, "gvar".*, gvar_mod.parse);
+        const avar_table: if (ft.enable_variable) ?avar_mod.AvarTable else void = try parseOptionalTable(avar_mod.AvarTable, ft.enable_variable, offset_table, data, "avar".*, avar_mod.parse);
+        const hvar_table: if (ft.enable_variable) ?hvar_mod.HvarTable else void = try parseOptionalTable(hvar_mod.HvarTable, ft.enable_variable, offset_table, data, "HVAR".*, hvar_mod.parse);
+        const vhea_table: if (ft.enable_vertical) ?vhea_mod.VheaTable else void = try parseOptionalTable(vhea_mod.VheaTable, ft.enable_vertical, offset_table, data, "vhea".*, vhea_mod.parse);
         const vmtx_table: if (ft.enable_vertical) ?vmtx_mod.VmtxTable else void = if (comptime ft.enable_vertical) blk: {
             if (vhea_table) |vhea| {
                 const vmtx_record = parser.findTable(offset_table, "vmtx".*);
@@ -381,51 +306,11 @@ pub const Font = struct {
             }
             break :blk null;
         } else {};
-        const vorg_table: if (ft.enable_vertical) ?vorg_mod.VorgTable else void = if (comptime ft.enable_vertical) blk: {
-            const vorg_record = parser.findTable(offset_table, "VORG".*);
-            if (vorg_record) |rec| {
-                const vorg_data = try parser.getTableData(data, rec);
-                break :blk vorg_mod.parse(vorg_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const vvar_table: if (ft.enable_variable) ?vvar_mod.VvarTable else void = if (comptime ft.enable_variable) blk: {
-            const vvar_record = parser.findTable(offset_table, "VVAR".*);
-            if (vvar_record) |rec| {
-                const vvar_data = try parser.getTableData(data, rec);
-                break :blk vvar_mod.parse(vvar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const mvar_table: if (ft.enable_variable) ?mvar_mod.MvarTable else void = if (comptime ft.enable_variable) blk: {
-            const mvar_record = parser.findTable(offset_table, "MVAR".*);
-            if (mvar_record) |rec| {
-                const mvar_data = try parser.getTableData(data, rec);
-                break :blk mvar_mod.parse(mvar_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const stat_table: if (ft.enable_variable) ?stat_mod.StatTable else void = if (comptime ft.enable_variable) blk: {
-            const stat_record = parser.findTable(offset_table, "STAT".*);
-            if (stat_record) |rec| {
-                const stat_data = try parser.getTableData(data, rec);
-                break :blk stat_mod.parse(stat_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
-        const os2_table: if (ft.enable_hinting) ?os2_mod.Os2Table else void = if (comptime ft.enable_hinting) blk: {
-            const os2_record = parser.findTable(offset_table, "OS/2".*);
-            if (os2_record) |rec| {
-                const os2_data = try parser.getTableData(data, rec);
-                break :blk os2_mod.parse(os2_data) catch null;
-            } else {
-                break :blk null;
-            }
-        } else {};
+        const vorg_table: if (ft.enable_vertical) ?vorg_mod.VorgTable else void = try parseOptionalTable(vorg_mod.VorgTable, ft.enable_vertical, offset_table, data, "VORG".*, vorg_mod.parse);
+        const vvar_table: if (ft.enable_variable) ?vvar_mod.VvarTable else void = try parseOptionalTable(vvar_mod.VvarTable, ft.enable_variable, offset_table, data, "VVAR".*, vvar_mod.parse);
+        const mvar_table: if (ft.enable_variable) ?mvar_mod.MvarTable else void = try parseOptionalTable(mvar_mod.MvarTable, ft.enable_variable, offset_table, data, "MVAR".*, mvar_mod.parse);
+        const stat_table: if (ft.enable_variable) ?stat_mod.StatTable else void = try parseOptionalTable(stat_mod.StatTable, ft.enable_variable, offset_table, data, "STAT".*, stat_mod.parse);
+        const os2_table: if (ft.enable_hinting) ?os2_mod.Os2Table else void = try parseOptionalTable(os2_mod.Os2Table, ft.enable_hinting, offset_table, data, "OS/2".*, os2_mod.parse);
         return .{
             .allocator = allocator,
             .data = data,

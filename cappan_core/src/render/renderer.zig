@@ -98,6 +98,30 @@ fn resolveRasterOptions(options: RenderOptions) scanline_mod.RasterOptions {
     return options.raster_options;
 }
 
+pub fn computeStrokePadding(paint_stack: ?[]const paint_mod.PaintOperation, pixel_size: f32, base_padding: u32) u32 {
+    var max_stroke_expansion: f32 = 0.0;
+    const max_expansion_limit: f32 = 4096.0;
+    if (paint_stack) |ps| {
+        for (ps) |op| {
+            switch (op) {
+                .fill => {},
+                .stroke => |stroke| {
+                    const width = stroke.width.resolveToPixels(pixel_size);
+                    if (std.math.isNan(width) or std.math.isInf(width)) continue;
+                    const expansion = switch (stroke.position) {
+                        .center => width * 0.5,
+                        .outside => width,
+                        .inside => 0.0,
+                    };
+                    max_stroke_expansion = @max(max_stroke_expansion, expansion);
+                },
+            }
+        }
+        max_stroke_expansion = @min(max_stroke_expansion, max_expansion_limit);
+    }
+    return base_padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
+}
+
 pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !rgba_bitmap_mod.RgbaBitmap {
     if (options.paint_stack) |paint_stack| {
         return renderTextPaintStack(allocator, fonts, text, options, paint_stack);
@@ -331,26 +355,7 @@ fn renderTextPaintStack(
     });
     defer layout.deinit();
 
-    var max_stroke_expansion: f32 = 0.0;
-    const max_expansion_limit: f32 = 4096.0;
-    for (paint_stack) |op| {
-        switch (op) {
-            .fill => {},
-            .stroke => |stroke| {
-                const width = stroke.width.resolveToPixels(options.pixel_size);
-                if (std.math.isNan(width) or std.math.isInf(width)) continue;
-                const expansion = switch (stroke.position) {
-                    .center => width * 0.5,
-                    .outside => width,
-                    .inside => 0.0,
-                };
-                max_stroke_expansion = @max(max_stroke_expansion, expansion);
-            },
-        }
-    }
-    max_stroke_expansion = @min(max_stroke_expansion, max_expansion_limit);
-
-    const extended_padding = options.padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
+    const extended_padding = computeStrokePadding(paint_stack, options.pixel_size, options.padding);
     const pad = @as(f32, @floatFromInt(extended_padding));
 
     const max_bmp_dim: f32 = 16384.0;

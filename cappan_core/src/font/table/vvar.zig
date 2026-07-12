@@ -9,29 +9,11 @@ pub const VvarTable = struct {
     tsb_mapping_offset: u32,
 
     pub fn getAdvanceHeightDelta(self: VvarTable, glyph_id: u16, normalized_coords: []const f32) !i32 {
-        var outer: u16 = 0;
-        var inner: u16 = glyph_id;
-
-        if (self.advance_height_mapping_offset != 0) {
-            const mapping = try ivs.readDeltaSetIndexMap(self.data, self.advance_height_mapping_offset);
-            if (glyph_id < mapping.map_count) {
-                const entry = try ivs.readMapEntry(self.data, mapping, glyph_id);
-                outer = entry.outer;
-                inner = entry.inner;
-            }
-        }
-
-        return ivs.getItemDelta(self.data, @as(usize, self.item_variation_store_offset), outer, inner, normalized_coords);
+        return ivs.getMappedDelta(self.data, self.advance_height_mapping_offset, self.item_variation_store_offset, glyph_id, normalized_coords);
     }
 
     pub fn getTsbDelta(self: VvarTable, glyph_id: u16, normalized_coords: []const f32) !i32 {
-        if (self.tsb_mapping_offset == 0) return 0;
-
-        const mapping = try ivs.readDeltaSetIndexMap(self.data, self.tsb_mapping_offset);
-        if (glyph_id >= mapping.map_count) return 0;
-
-        const entry = try ivs.readMapEntry(self.data, mapping, glyph_id);
-        return ivs.getItemDelta(self.data, @as(usize, self.item_variation_store_offset), entry.outer, entry.inner, normalized_coords);
+        return ivs.getMappedSideBearingDelta(self.data, self.tsb_mapping_offset, self.item_variation_store_offset, glyph_id, normalized_coords);
     }
 };
 

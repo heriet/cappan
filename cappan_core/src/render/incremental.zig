@@ -120,27 +120,7 @@ pub const IncrementalRenderer = struct {
 
         const scale = options.pixel_size / @as(f32, @floatFromInt(fonts[0].getUnitsPerEm()));
 
-        var max_stroke_expansion: f32 = 0.0;
-        const max_expansion_limit: f32 = 4096.0;
-        if (options.paint_stack) |ps| {
-            for (ps) |op| {
-                switch (op) {
-                    .fill => {},
-                    .stroke => |stroke| {
-                        const width = stroke.width.resolveToPixels(options.pixel_size);
-                        if (std.math.isNan(width) or std.math.isInf(width)) continue;
-                        const expansion = switch (stroke.position) {
-                            .center => width * 0.5,
-                            .outside => width,
-                            .inside => 0.0,
-                        };
-                        max_stroke_expansion = @max(max_stroke_expansion, expansion);
-                    },
-                }
-            }
-            max_stroke_expansion = @min(max_stroke_expansion, max_expansion_limit);
-        }
-        const extended_padding = options.padding +| @as(u32, @intFromFloat(@ceil(max_stroke_expansion)));
+        const extended_padding = renderer_mod.computeStrokePadding(options.paint_stack, options.pixel_size, options.padding);
         const pad = @as(f32, @floatFromInt(extended_padding));
 
         const max_bmp_dim: f32 = 16384.0;
