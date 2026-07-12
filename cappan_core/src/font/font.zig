@@ -24,6 +24,7 @@ const avar_mod = @import("table/avar.zig");
 const hvar_mod = @import("table/hvar.zig");
 const vhea_mod = @import("table/vhea.zig");
 const vmtx_mod = @import("table/vmtx.zig");
+const vorg_mod = @import("table/vorg.zig");
 const vvar_mod = @import("table/vvar.zig");
 const mvar_mod = @import("table/mvar.zig");
 const stat_mod = @import("table/stat.zig");
@@ -37,6 +38,54 @@ const err_mod = @import("../error.zig");
 const ft = @import("../features.zig").features;
 
 pub const RasterResult = rasterizer_mod.RasterResult;
+
+pub const VerticalSubstituter = struct {
+    allocator: std.mem.Allocator,
+    gsub: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void,
+    lookup_indices: []const u16,
+
+    pub fn init(allocator: std.mem.Allocator, font: *const Font) VerticalSubstituter {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) {
+            return .{ .allocator = allocator, .gsub = {}, .lookup_indices = &.{} };
+        }
+
+        const gsub = font.gsub orelse {
+            return .{ .allocator = allocator, .gsub = null, .lookup_indices = &.{} };
+        };
+
+        const scripts = [_][4]u8{ "kana".*, "hani".*, "hang".*, "DFLT".*, "latn".* };
+        const features = [_][4]u8{ "vrt2".*, "vert".* };
+        for (scripts) |script| {
+            for (features) |feature| {
+                const indices = gsub.resolveLookupIndices(allocator, script, null, &.{feature}) catch continue;
+                if (indices.len != 0) {
+                    return .{ .allocator = allocator, .gsub = gsub, .lookup_indices = indices };
+                }
+                allocator.free(indices);
+            }
+        }
+
+        return .{ .allocator = allocator, .gsub = gsub, .lookup_indices = &.{} };
+    }
+
+    pub fn substitute(self: VerticalSubstituter, glyph_id: u16) u16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
+        if (self.lookup_indices.len == 0) return glyph_id;
+        const gsub = self.gsub orelse return glyph_id;
+
+        var input = [_]u16{glyph_id};
+        const result = gsub.applyLookupIndices(self.allocator, self.lookup_indices, &input) catch return glyph_id;
+        defer self.allocator.free(result);
+        if (result.len == 1 and result[0] != glyph_id) return result[0];
+        return glyph_id;
+    }
+
+    pub fn deinit(self: VerticalSubstituter) void {
+        if (comptime ft.enable_vertical and ft.enable_opentype_layout) {
+            if (self.lookup_indices.len != 0) self.allocator.free(self.lookup_indices);
+        }
+    }
+};
 
 pub const Font = struct {
     allocator: std.mem.Allocator,
@@ -66,6 +115,7 @@ pub const Font = struct {
     hvar: if (ft.enable_variable) ?hvar_mod.HvarTable else void,
     vhea: if (ft.enable_vertical) ?vhea_mod.VheaTable else void,
     vmtx: if (ft.enable_vertical) ?vmtx_mod.VmtxTable else void,
+    vorg: if (ft.enable_vertical) ?vorg_mod.VorgTable else void,
     vvar: if (ft.enable_variable) ?vvar_mod.VvarTable else void,
     mvar: if (ft.enable_variable) ?mvar_mod.MvarTable else void,
     stat: if (ft.enable_variable) ?stat_mod.StatTable else void,
@@ -331,6 +381,15 @@ pub const Font = struct {
             }
             break :blk null;
         } else {};
+        const vorg_table: if (ft.enable_vertical) ?vorg_mod.VorgTable else void = if (comptime ft.enable_vertical) blk: {
+            const vorg_record = parser.findTable(offset_table, "VORG".*);
+            if (vorg_record) |rec| {
+                const vorg_data = try parser.getTableData(data, rec);
+                break :blk vorg_mod.parse(vorg_data) catch null;
+            } else {
+                break :blk null;
+            }
+        } else {};
         const vvar_table: if (ft.enable_variable) ?vvar_mod.VvarTable else void = if (comptime ft.enable_variable) blk: {
             const vvar_record = parser.findTable(offset_table, "VVAR".*);
             if (vvar_record) |rec| {
@@ -395,6 +454,7 @@ pub const Font = struct {
             .hvar = hvar_table,
             .vhea = vhea_table,
             .vmtx = vmtx_table,
+            .vorg = vorg_table,
             .vvar = vvar_table,
             .mvar = mvar_table,
             .stat = stat_table,
@@ -504,6 +564,12 @@ pub const Font = struct {
         return null;
     }
 
+    pub fn getVertOriginY(self: Font, glyph_id: u16) ?i16 {
+        if (comptime !ft.enable_vertical) return null;
+        if (self.vorg) |vorg| return vorg.getVertOriginY(glyph_id);
+        return null;
+    }
+
     pub fn getVMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !?vmtx_mod.VMetrics {
         if (comptime !ft.enable_vertical) return null;
         var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
@@ -569,6 +635,12 @@ pub const Font = struct {
         return 0;
     }
 
+    pub fn getVerticalKerning(self: Font, top_glyph: u16, bottom_glyph: u16) i16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return 0;
+        if (self.gpos) |gpos| return gpos.getVerticalKerning(top_glyph, bottom_glyph);
+        return 0;
+    }
+
     pub fn getMarkBaseAnchors(self: Font, base_glyph: u16, mark_glyph: u16) ?gpos_mod.AnchorPair {
         if (comptime !ft.enable_opentype_layout) return null;
         const gpos = self.gpos orelse return null;
@@ -619,6 +691,15 @@ pub const Font = struct {
         const result = try allocator.alloc(u16, glyphs.len);
         @memcpy(result, glyphs);
         return result;
+    }
+
+    /// Substitute a single glyph for vertical writing using vrt2 first, then vert.
+    pub fn substituteVerticalGlyph(self: Font, glyph_id: u16) u16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
+        if (self.gsub == null) return glyph_id;
+        const substituter = VerticalSubstituter.init(self.allocator, &self);
+        defer substituter.deinit();
+        return substituter.substitute(glyph_id);
     }
 
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {

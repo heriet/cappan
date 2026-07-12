@@ -33,6 +33,7 @@ pub const RenderOptions = struct {
     stem_darkening: bool = false,
     cff_hinting: bool = false,
     auto_hinting: bool = false,
+    vertical: bool = false,
 };
 
 fn applyOutlineHinting(
@@ -108,6 +109,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         .pixel_size = options.pixel_size,
         .max_width = options.max_width,
         .text_align = options.text_align,
+        .vertical = options.vertical,
     });
     defer layout.deinit();
 
@@ -123,7 +125,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     var bitmap = try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, options.bg_color);
     errdefer bitmap.deinit();
 
-    const base_baseline_y = pad + layout.ascender_px;
+    const base_baseline_y = layout.baseBaselineY(pad);
     if (options.lcd_rendering) {
         var lcd_cache: std.AutoHashMapUnmanaged(u32, CachedLcdRaster) = .empty;
         defer {
@@ -325,6 +327,7 @@ fn renderTextPaintStack(
         .pixel_size = options.pixel_size,
         .max_width = options.max_width,
         .text_align = options.text_align,
+        .vertical = options.vertical,
     });
     defer layout.deinit();
 
@@ -363,7 +366,7 @@ fn renderTextPaintStack(
     var bitmap = try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, options.bg_color);
     errdefer bitmap.deinit();
 
-    const base_baseline_y = pad + layout.ascender_px;
+    const base_baseline_y = layout.baseBaselineY(pad);
     var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
     defer {
         var it = paint_cache.valueIterator();
@@ -997,6 +1000,7 @@ pub const RowRenderer = struct {
             .pixel_size = options.pixel_size,
             .max_width = options.max_width,
             .text_align = options.text_align,
+            .vertical = options.vertical,
         });
         errdefer layout.deinit();
 
@@ -1065,7 +1069,7 @@ pub const RowRenderer = struct {
             .glyph_cache = glyph_cache,
             .layout = layout,
             .scale = scale,
-            .base_baseline_y = pad + layout.ascender_px,
+            .base_baseline_y = layout.baseBaselineY(pad),
             .pad = pad,
             .fg_color = options.fg_color,
             .bg_color = options.bg_color,

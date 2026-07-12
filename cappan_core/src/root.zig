@@ -38,6 +38,7 @@ pub const font = struct {
         pub const item_variation_store = if (ft.enable_variable) @import("font/table/item_variation_store.zig") else struct {};
         pub const vhea = if (ft.enable_vertical) @import("font/table/vhea.zig") else struct {};
         pub const vmtx = if (ft.enable_vertical) @import("font/table/vmtx.zig") else struct {};
+        pub const vorg = if (ft.enable_vertical) @import("font/table/vorg.zig") else struct {};
         pub const vvar = if (ft.enable_variable) @import("font/table/vvar.zig") else struct {};
         pub const mvar = if (ft.enable_variable) @import("font/table/mvar.zig") else struct {};
         pub const stat = if (ft.enable_variable) @import("font/table/stat.zig") else struct {};
@@ -135,6 +136,7 @@ test {
     if (ft.enable_vertical) {
         _ = @import("font/table/vhea.zig");
         _ = @import("font/table/vmtx.zig");
+        _ = @import("font/table/vorg.zig");
     }
     if (ft.enable_hinting) {
         _ = @import("font/table/os2.zig");

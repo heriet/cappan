@@ -24,26 +24,42 @@ pub const GsubTable = struct {
         feature_tags: []const [4]u8,
         glyphs: []const u16,
     ) ![]u16 {
+        const lookup_indices = try self.resolveLookupIndices(allocator, script_tag, lang_tag, feature_tags);
+        defer allocator.free(lookup_indices);
+        return self.applyLookupIndices(allocator, lookup_indices, glyphs);
+    }
+
+    pub fn resolveLookupIndices(
+        self: GsubTable,
+        allocator: std.mem.Allocator,
+        script_tag: [4]u8,
+        lang_tag: ?[4]u8,
+        feature_tags: []const [4]u8,
+    ) ![]u16 {
         const lang_sys_offset = otlayout.findLangSysOffset(
             self.data,
             self.script_list_offset,
             script_tag,
             lang_tag,
         ) orelse {
-            const result = try allocator.alloc(u16, glyphs.len);
-            @memcpy(result, glyphs);
-            return result;
+            return allocator.alloc(u16, 0);
         };
 
-        const lookup_indices = try otlayout.collectLookupIndices(
+        return otlayout.collectLookupIndices(
             allocator,
             self.data,
             self.feature_list_offset,
             lang_sys_offset,
             feature_tags,
         );
-        defer allocator.free(lookup_indices);
+    }
 
+    pub fn applyLookupIndices(
+        self: GsubTable,
+        allocator: std.mem.Allocator,
+        lookup_indices: []const u16,
+        glyphs: []const u16,
+    ) ![]u16 {
         var buf = std.ArrayListUnmanaged(u16).empty;
         errdefer buf.deinit(allocator);
         try buf.appendSlice(allocator, glyphs);

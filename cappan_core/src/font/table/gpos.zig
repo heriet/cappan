@@ -1,10 +1,14 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
 const otlayout = @import("otlayout.zig");
+const ft = @import("../../features.zig").features;
+
+pub const KernAxis = enum { horizontal, vertical };
 
 pub const GposTable = struct {
     data: []const u8,
     kern_lookups: []const KernLookup,
+    vkrn_lookups: if (ft.enable_vertical) []const KernLookup else void,
     mark_base_lookups: []const GposLookupRef,
     mark_lig_lookups: []const GposLookupRef,
     mark_mark_lookups: []const GposLookupRef,
@@ -14,6 +18,10 @@ pub const GposTable = struct {
     pub fn deinit(self: *GposTable) void {
         for (self.kern_lookups) |lookup| lookup.deinit(self.allocator);
         self.allocator.free(self.kern_lookups);
+        if (comptime ft.enable_vertical) {
+            for (self.vkrn_lookups) |lookup| lookup.deinit(self.allocator);
+            self.allocator.free(self.vkrn_lookups);
+        }
         freeGposLookups(self.allocator, self.mark_base_lookups);
         freeGposLookups(self.allocator, self.mark_lig_lookups);
         freeGposLookups(self.allocator, self.mark_mark_lookups);
@@ -21,11 +29,26 @@ pub const GposTable = struct {
     }
 
     pub fn getKerning(self: GposTable, left: u16, right: u16) i16 {
-        for (self.kern_lookups) |lookup| {
-            const value = lookup.getKerning(self.data, left, right);
+        return self.getKerningAxis(.horizontal, left, right);
+    }
+
+    pub fn getVerticalKerning(self: GposTable, left: u16, right: u16) i16 {
+        return self.getKerningAxis(.vertical, left, right);
+    }
+
+    fn getKerningAxis(self: GposTable, axis: KernAxis, left: u16, right: u16) i16 {
+        for (self.lookupsForAxis(axis)) |lookup| {
+            const value = lookup.getKerningAxis(axis, self.data, left, right);
             if (value != 0) return value;
         }
         return 0;
+    }
+
+    fn lookupsForAxis(self: GposTable, axis: KernAxis) []const KernLookup {
+        return switch (axis) {
+            .horizontal => self.kern_lookups,
+            .vertical => if (comptime ft.enable_vertical) self.vkrn_lookups else &.{},
+        };
     }
 
     pub fn getMarkBaseAnchors(self: GposTable, base_glyph: u16, mark_glyph: u16) ?AnchorPair {
@@ -62,9 +85,9 @@ pub const KernLookup = struct {
         allocator.free(self.subtables);
     }
 
-    pub fn getKerning(self: KernLookup, data: []const u8, left: u16, right: u16) i16 {
+    pub fn getKerningAxis(self: KernLookup, axis: KernAxis, data: []const u8, left: u16, right: u16) i16 {
         for (self.subtables) |sub| {
-            const value = sub.getKerning(data, left, right);
+            const value = sub.getKerningAxis(axis, data, left, right);
             if (value != 0) return value;
         }
         return 0;
@@ -75,11 +98,16 @@ pub const PairPosSubtable = struct {
     offset: usize,
     format: u16,
 
-    pub fn getKerning(self: PairPosSubtable, data: []const u8, left: u16, right: u16) i16 {
-        return switch (self.format) {
-            1 => getKerningFormat1(data, self.offset, left, right),
-            2 => getKerningFormat2(data, self.offset, left, right),
-            else => 0,
+    pub fn getKerningAxis(self: PairPosSubtable, axis: KernAxis, data: []const u8, left: u16, right: u16) i16 {
+        const value_record = switch (self.format) {
+            1 => pairValueFormat1(data, self.offset, left, right),
+            2 => pairValueFormat2(data, self.offset, left, right),
+            else => null,
+        };
+        const vr = value_record orelse return 0;
+        return switch (axis) {
+            .horizontal => vr.x_advance,
+            .vertical => vr.y_advance,
         };
     }
 };
@@ -125,10 +153,14 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
 
     // Collect lookup indices referenced by each feature type
     var kern_lookup_indices = std.ArrayListUnmanaged(u16).empty;
+    var vkrn_lookup_indices: if (ft.enable_vertical) std.ArrayListUnmanaged(u16) else void = if (comptime ft.enable_vertical) .empty else {};
     var mark_lookup_indices = std.ArrayListUnmanaged(u16).empty;
     var mkmk_lookup_indices = std.ArrayListUnmanaged(u16).empty;
     var curs_lookup_indices = std.ArrayListUnmanaged(u16).empty;
     defer kern_lookup_indices.deinit(allocator);
+    defer {
+        if (comptime ft.enable_vertical) vkrn_lookup_indices.deinit(allocator);
+    }
     defer mark_lookup_indices.deinit(allocator);
     defer mkmk_lookup_indices.deinit(allocator);
     defer curs_lookup_indices.deinit(allocator);
@@ -154,6 +186,11 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
             } else if (std.mem.eql(u8, tag, "curs")) {
                 target_list = &curs_lookup_indices;
             }
+            if (comptime ft.enable_vertical) {
+                if (target_list == null and std.mem.eql(u8, tag, "vkrn")) {
+                    target_list = &vkrn_lookup_indices;
+                }
+            }
 
             if (target_list) |list| {
                 // Feature table: featureParams u16 + lookupCount u16 + lookupListIndices[]
@@ -172,47 +209,20 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
         }
     }
 
-    // Build kern lookups from collected indices
-    var kern_lookups = std.ArrayListUnmanaged(KernLookup).empty;
+    const kern_lookups = try buildKernLookups(allocator, data, lookup_list_offset, kern_lookup_indices.items);
     errdefer {
-        for (kern_lookups.items) |lookup| {
-            lookup.deinit(allocator);
-        }
-        kern_lookups.deinit(allocator);
+        for (kern_lookups) |lookup| lookup.deinit(allocator);
+        allocator.free(kern_lookups);
     }
 
-    for (kern_lookup_indices.items) |lookup_idx| {
-        const info = otlayout.getLookupInfo(data, lookup_list_offset, lookup_idx) orelse continue;
-
-        var subtables = std.ArrayListUnmanaged(PairPosSubtable).empty;
-        errdefer subtables.deinit(allocator);
-
-        var si: usize = 0;
-        while (si < info.subtable_count) : (si += 1) {
-            var sub_abs = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
-            var effective_type = info.lookup_type;
-
-            // Handle Extension lookup (Type 9)
-            if (effective_type == 9) {
-                const ext = otlayout.parseExtensionSubtable(data, sub_abs) orelse continue;
-                effective_type = ext.effective_type;
-                sub_abs = ext.effective_offset;
-            }
-
-            if (effective_type != 2) continue; // PairAdjustment only
-
-            if (sub_abs + 2 > data.len) break;
-            const pos_format = parser.readU16(data, sub_abs) catch break;
-            if (pos_format != 1 and pos_format != 2) continue;
-            try subtables.append(allocator, .{
-                .offset = sub_abs,
-                .format = pos_format,
-            });
+    const vkrn_lookups: if (ft.enable_vertical) []const KernLookup else void = if (comptime ft.enable_vertical)
+        try buildKernLookups(allocator, data, lookup_list_offset, vkrn_lookup_indices.items)
+    else {};
+    errdefer {
+        if (comptime ft.enable_vertical) {
+            for (vkrn_lookups) |lookup| lookup.deinit(allocator);
+            allocator.free(vkrn_lookups);
         }
-
-        const owned = try subtables.toOwnedSlice(allocator);
-        errdefer allocator.free(owned);
-        try kern_lookups.append(allocator, .{ .subtables = owned });
     }
 
     const mark_base_lookups = try collectLookupRefs(allocator, data, lookup_list_offset, mark_lookup_indices.items, 4);
@@ -229,7 +239,8 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
 
     return .{
         .data = data,
-        .kern_lookups = try kern_lookups.toOwnedSlice(allocator),
+        .kern_lookups = kern_lookups,
+        .vkrn_lookups = if (comptime ft.enable_vertical) vkrn_lookups else {},
         .mark_base_lookups = mark_base_lookups,
         .mark_lig_lookups = mark_lig_lookups,
         .mark_mark_lookups = mark_mark_lookups,
@@ -240,6 +251,60 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
 
 const max_lookups_per_feature = 256;
 const max_subtables_per_lookup = 64;
+
+fn buildKernLookups(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    lookup_list_offset: u16,
+    lookup_indices: []const u16,
+) ![]const KernLookup {
+    var lookups = std.ArrayListUnmanaged(KernLookup).empty;
+    errdefer {
+        for (lookups.items) |lookup| lookup.deinit(allocator);
+        lookups.deinit(allocator);
+    }
+
+    const capped_indices = lookup_indices[0..@min(lookup_indices.len, max_lookups_per_feature)];
+    for (capped_indices) |lookup_idx| {
+        const info = otlayout.getLookupInfo(data, lookup_list_offset, lookup_idx) orelse continue;
+        const capped_subtable_count = @min(info.subtable_count, max_subtables_per_lookup);
+
+        var subtables = std.ArrayListUnmanaged(PairPosSubtable).empty;
+        errdefer subtables.deinit(allocator);
+
+        var si: usize = 0;
+        while (si < capped_subtable_count) : (si += 1) {
+            var sub_abs = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
+            var effective_type = info.lookup_type;
+
+            if (effective_type == 9) {
+                const ext = otlayout.parseExtensionSubtable(data, sub_abs) orelse continue;
+                effective_type = ext.effective_type;
+                sub_abs = ext.effective_offset;
+            }
+
+            if (effective_type != 2) continue;
+
+            if (sub_abs + 2 > data.len) break;
+            const pos_format = parser.readU16(data, sub_abs) catch break;
+            if (pos_format != 1 and pos_format != 2) continue;
+            try subtables.append(allocator, .{
+                .offset = sub_abs,
+                .format = pos_format,
+            });
+        }
+
+        if (subtables.items.len > 0) {
+            const owned = try subtables.toOwnedSlice(allocator);
+            errdefer allocator.free(owned);
+            try lookups.append(allocator, .{ .subtables = owned });
+        } else {
+            subtables.deinit(allocator);
+        }
+    }
+
+    return lookups.toOwnedSlice(allocator);
+}
 
 fn collectLookupRefs(
     allocator: std.mem.Allocator,
@@ -304,7 +369,7 @@ fn queryAcrossLookups(lookups: []const GposLookupRef, data: []const u8, glyph1: 
     return null;
 }
 
-fn getKerningFormat1(data: []const u8, subtable_offset: usize, left: u16, right: u16) i16 {
+fn pairValueFormat1(data: []const u8, subtable_offset: usize, left: u16, right: u16) ?otlayout.ValueRecord {
     // PairPos Format 1:
     // +0: posFormat u16 (1)
     // +2: coverageOffset u16 (subtable-relative)
@@ -313,31 +378,31 @@ fn getKerningFormat1(data: []const u8, subtable_offset: usize, left: u16, right:
     // +8: pairSetCount u16
     // +10: pairSetOffsets[pairSetCount] u16 (subtable-relative)
 
-    const coverage_offset = parser.readU16(data, subtable_offset + 2) catch return 0;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, coverage_offset)) catch return 0;
-    const coverage_index = coverage.getCoverageIndex(left) orelse return 0;
+    const coverage_offset = parser.readU16(data, subtable_offset + 2) catch return null;
+    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, coverage_offset)) catch return null;
+    const coverage_index = coverage.getCoverageIndex(left) orelse return null;
 
-    const value_format1 = parser.readU16(data, subtable_offset + 4) catch return 0;
-    const value_format2 = parser.readU16(data, subtable_offset + 6) catch return 0;
-    const pair_set_count = parser.readU16(data, subtable_offset + 8) catch return 0;
+    const value_format1 = parser.readU16(data, subtable_offset + 4) catch return null;
+    const value_format2 = parser.readU16(data, subtable_offset + 6) catch return null;
+    const pair_set_count = parser.readU16(data, subtable_offset + 8) catch return null;
 
-    if (coverage_index >= pair_set_count) return 0;
+    if (coverage_index >= pair_set_count) return null;
 
     const ps_offset_pos = subtable_offset + 10 + @as(usize, coverage_index) * 2;
-    const ps_offset = parser.readU16(data, ps_offset_pos) catch return 0;
+    const ps_offset = parser.readU16(data, ps_offset_pos) catch return null;
     const ps_base = subtable_offset + @as(usize, ps_offset);
 
     // PairSet:
     // +0: pairValueCount u16
     // +2: pairValueRecords[]
     //   each: secondGlyph u16 + valueRecord1 + valueRecord2
-    const pair_value_count = parser.readU16(data, ps_base) catch return 0;
+    const pair_value_count = parser.readU16(data, ps_base) catch return null;
 
     const vr1_size = otlayout.valueRecordSize(value_format1);
     const vr2_size = otlayout.valueRecordSize(value_format2);
     const record_size = 2 + vr1_size + vr2_size;
 
-    if (record_size == 2) return 0; // no value data
+    if (record_size == 2) return null; // no value data
 
     // Binary search on secondGlyph
     var lo: usize = 0;
@@ -345,11 +410,10 @@ fn getKerningFormat1(data: []const u8, subtable_offset: usize, left: u16, right:
     while (lo < hi) {
         const mid = lo + (hi - lo) / 2;
         const rec_pos = ps_base + 2 + mid * record_size;
-        const second_glyph = parser.readU16(data, rec_pos) catch return 0;
+        const second_glyph = parser.readU16(data, rec_pos) catch return null;
         if (second_glyph == right) {
-            if (value_format1 == 0) return 0;
-            const vr = otlayout.readValueRecord(data, rec_pos + 2, value_format1) catch return 0;
-            return vr.x_advance;
+            if (value_format1 == 0) return null;
+            return otlayout.readValueRecord(data, rec_pos + 2, value_format1) catch return null;
         } else if (second_glyph < right) {
             lo = mid + 1;
         } else {
@@ -357,10 +421,10 @@ fn getKerningFormat1(data: []const u8, subtable_offset: usize, left: u16, right:
         }
     }
 
-    return 0;
+    return null;
 }
 
-fn getKerningFormat2(data: []const u8, subtable_offset: usize, left: u16, right: u16) i16 {
+fn pairValueFormat2(data: []const u8, subtable_offset: usize, left: u16, right: u16) ?otlayout.ValueRecord {
     // PairPos Format 2:
     // +0:  posFormat u16 (2)
     // +2:  coverageOffset u16 (subtable-relative)
@@ -372,39 +436,38 @@ fn getKerningFormat2(data: []const u8, subtable_offset: usize, left: u16, right:
     // +14: class2Count u16
     // +16: class1Records[class1Count * class2Count] (valueRecord1 + valueRecord2 each)
 
-    const coverage_offset = parser.readU16(data, subtable_offset + 2) catch return 0;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, coverage_offset)) catch return 0;
-    if (coverage.getCoverageIndex(left) == null) return 0;
+    const coverage_offset = parser.readU16(data, subtable_offset + 2) catch return null;
+    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, coverage_offset)) catch return null;
+    if (coverage.getCoverageIndex(left) == null) return null;
 
-    const value_format1 = parser.readU16(data, subtable_offset + 4) catch return 0;
-    const value_format2 = parser.readU16(data, subtable_offset + 6) catch return 0;
-    const class_def1_offset = parser.readU16(data, subtable_offset + 8) catch return 0;
-    const class_def2_offset = parser.readU16(data, subtable_offset + 10) catch return 0;
-    const class1_count = parser.readU16(data, subtable_offset + 12) catch return 0;
-    const class2_count = parser.readU16(data, subtable_offset + 14) catch return 0;
+    const value_format1 = parser.readU16(data, subtable_offset + 4) catch return null;
+    const value_format2 = parser.readU16(data, subtable_offset + 6) catch return null;
+    const class_def1_offset = parser.readU16(data, subtable_offset + 8) catch return null;
+    const class_def2_offset = parser.readU16(data, subtable_offset + 10) catch return null;
+    const class1_count = parser.readU16(data, subtable_offset + 12) catch return null;
+    const class2_count = parser.readU16(data, subtable_offset + 14) catch return null;
 
-    const class_def1 = otlayout.parseClassDef(data, subtable_offset + @as(usize, class_def1_offset)) catch return 0;
-    const class_def2 = otlayout.parseClassDef(data, subtable_offset + @as(usize, class_def2_offset)) catch return 0;
+    const class_def1 = otlayout.parseClassDef(data, subtable_offset + @as(usize, class_def1_offset)) catch return null;
+    const class_def2 = otlayout.parseClassDef(data, subtable_offset + @as(usize, class_def2_offset)) catch return null;
 
     const class1 = class_def1.getClass(left);
     const class2 = class_def2.getClass(right);
 
-    if (class1 >= class1_count or class2 >= class2_count) return 0;
+    if (class1 >= class1_count or class2 >= class2_count) return null;
 
     const vr1_size = otlayout.valueRecordSize(value_format1);
     const vr2_size = otlayout.valueRecordSize(value_format2);
     const record_size = vr1_size + vr2_size;
 
-    if (record_size == 0) return 0;
+    if (record_size == 0) return null;
 
     const header_size: usize = 16;
     const record_idx = @as(usize, class1) * @as(usize, class2_count) + @as(usize, class2);
     const rec_offset = subtable_offset + header_size + record_idx * record_size;
-    if (rec_offset + record_size > data.len) return 0;
+    if (rec_offset + record_size > data.len) return null;
 
-    if (value_format1 == 0) return 0;
-    const vr = otlayout.readValueRecord(data, rec_offset, value_format1) catch return 0;
-    return vr.x_advance;
+    if (value_format1 == 0) return null;
+    return otlayout.readValueRecord(data, rec_offset, value_format1) catch return null;
 }
 
 fn queryMarkBase(data: []const u8, subtable_offset: usize, base_glyph: u16, mark_glyph: u16) ?AnchorPair {
@@ -621,6 +684,19 @@ test "GPOS getKerning with Font API" {
 
     const kern_val = font.getKerning(glyph_A, glyph_V);
     try std.testing.expect(kern_val != 0);
+}
+
+test "getVerticalKerning returns 0 without vkrn" {
+    if (comptime !ft.enable_opentype_layout or !ft.enable_vertical) return error.SkipZigTest;
+    const font_data = @embedFile("../../fixture/DejaVuSans.ttf");
+    const font_mod = @import("../font.zig");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_A = try font.getGlyphId('A');
+    const glyph_B = try font.getGlyphId('B');
+
+    try std.testing.expectEqual(@as(i16, 0), font.getVerticalKerning(glyph_A, glyph_B));
 }
 
 test "parse GPOS table collects mark lookups from DejaVuSans" {
