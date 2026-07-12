@@ -911,7 +911,9 @@ pub const Font = struct {
             }
 
             const loc = try loca_table.getGlyphLocation(glyph_id);
-            const glyph_data = glyf_table.data[loc.offset .. @as(usize, loc.offset) + @as(usize, loc.length)];
+            const glyph_end = std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length)) catch return error.InvalidGlyphData;
+            if (glyph_end > glyf_table.data.len) return error.InvalidGlyphData;
+            const glyph_data = glyf_table.data[loc.offset..glyph_end];
             const contours = try all_contours.toOwnedSlice(allocator);
             return .{
                 .contours = contours,

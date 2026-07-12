@@ -32,16 +32,20 @@ pub fn getGlyphInfo(allocator: std.mem.Allocator, font: cappan_core.font.Font, g
         if (font.loca) |loca| {
             if (loca.getGlyphLocation(glyph_id)) |loc| {
                 if (loc.length > 0) {
-                    has_outline = true;
-                    const glyph_data = glyf.data[loc.offset .. loc.offset + loc.length];
-                    if (glyph_data.len >= 10) {
-                        const number_of_contours = std.mem.readInt(i16, glyph_data[0..2], .big);
-                        is_compound = number_of_contours < 0;
-                        raw_x_min = std.mem.readInt(i16, glyph_data[2..4], .big);
-                        raw_y_min = std.mem.readInt(i16, glyph_data[4..6], .big);
-                        raw_x_max = std.mem.readInt(i16, glyph_data[6..8], .big);
-                        raw_y_max = std.mem.readInt(i16, glyph_data[8..10], .big);
-                    }
+                    if (std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length))) |glyph_end| {
+                        if (glyph_end <= glyf.data.len) {
+                            has_outline = true;
+                            const glyph_data = glyf.data[loc.offset..glyph_end];
+                            if (glyph_data.len >= 10) {
+                                const number_of_contours = std.mem.readInt(i16, glyph_data[0..2], .big);
+                                is_compound = number_of_contours < 0;
+                                raw_x_min = std.mem.readInt(i16, glyph_data[2..4], .big);
+                                raw_y_min = std.mem.readInt(i16, glyph_data[4..6], .big);
+                                raw_x_max = std.mem.readInt(i16, glyph_data[6..8], .big);
+                                raw_y_max = std.mem.readInt(i16, glyph_data[8..10], .big);
+                            }
+                        }
+                    } else |_| {}
                 }
             } else |_| {}
         }

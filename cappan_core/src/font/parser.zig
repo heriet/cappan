@@ -15,27 +15,27 @@ pub const OffsetTable = struct {
 
 // Big-endian read helpers
 pub fn readU16(data: []const u8, offset: usize) !u16 {
-    if (offset + 2 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 2) return error.UnexpectedEof;
     return std.mem.readInt(u16, data[offset..][0..2], .big);
 }
 
 pub fn readI16(data: []const u8, offset: usize) !i16 {
-    if (offset + 2 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 2) return error.UnexpectedEof;
     return std.mem.readInt(i16, data[offset..][0..2], .big);
 }
 
 pub fn readU32(data: []const u8, offset: usize) !u32 {
-    if (offset + 4 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 4) return error.UnexpectedEof;
     return std.mem.readInt(u32, data[offset..][0..4], .big);
 }
 
 pub fn readI32(data: []const u8, offset: usize) !i32 {
-    if (offset + 4 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 4) return error.UnexpectedEof;
     return std.mem.readInt(i32, data[offset..][0..4], .big);
 }
 
 pub fn readU8(data: []const u8, offset: usize) !u8 {
-    if (offset >= data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 1) return error.UnexpectedEof;
     return data[offset];
 }
 
@@ -52,7 +52,7 @@ pub fn readF2Dot14(data: []const u8, offset: usize) !f32 {
 }
 
 pub fn readU24(data: []const u8, offset: usize) !u24 {
-    if (offset + 3 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 3) return error.UnexpectedEof;
     return @as(u24, data[offset]) << 16 | @as(u24, data[offset + 1]) << 8 | @as(u24, data[offset + 2]);
 }
 
@@ -181,4 +181,20 @@ test "parse offset table from DejaVuSans" {
 test "isTtcFile returns false for regular TTF" {
     const font_data = @embedFile("../fixture/DejaVuSans.ttf");
     try std.testing.expect(!isTtcFile(font_data));
+}
+
+test "read helpers allow exact end boundary" {
+    const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+
+    try std.testing.expectEqual(@as(u8, 0x04), try readU8(&data, 3));
+    try std.testing.expectEqual(@as(u16, 0x0304), try readU16(&data, 2));
+    try std.testing.expectEqual(@as(i16, 0x0304), try readI16(&data, 2));
+    try std.testing.expectEqual(@as(u24, 0x020304), try readU24(&data, 1));
+    try std.testing.expectEqual(@as(u32, 0x01020304), try readU32(&data, 0));
+    try std.testing.expectEqual(@as(i32, 0x01020304), try readI32(&data, 0));
+
+    try std.testing.expectError(error.UnexpectedEof, readU8(&data, 4));
+    try std.testing.expectError(error.UnexpectedEof, readU16(&data, 3));
+    try std.testing.expectError(error.UnexpectedEof, readU24(&data, 2));
+    try std.testing.expectError(error.UnexpectedEof, readU32(&data, 1));
 }

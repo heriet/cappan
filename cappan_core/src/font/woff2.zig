@@ -173,7 +173,7 @@ pub fn woff2ToSfnt(allocator: std.mem.Allocator, woff2_data: []const u8) ![]u8 {
     defer allocator.free(entries);
 
     const compressed_offset: usize = 48 + dir_result.bytes_read;
-    const compressed_end = compressed_offset + @as(usize, header.total_compressed_size);
+    const compressed_end = std.math.add(usize, compressed_offset, @as(usize, header.total_compressed_size)) catch return error.UnexpectedEof;
     if (compressed_end > woff2_data.len) return error.UnexpectedEof;
     const compressed = woff2_data[compressed_offset..compressed_end];
 

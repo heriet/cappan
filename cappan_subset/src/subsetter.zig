@@ -58,6 +58,7 @@ fn collectGlyphs(
     for (codepoints) |cp| {
         const glyph_id = font.getGlyphId(@intCast(cp)) catch continue;
         if (glyph_id == 0) continue;
+        if (glyph_id >= font.maxp.num_glyphs) continue;
         try set.append(allocator, glyph_id);
         try collectCompoundComponents(allocator, &set, glyph_id, glyf_data, loca);
     }
@@ -88,7 +89,9 @@ fn collectCompoundComponents(
 
     const glyph_offset: usize = @intCast(loc.offset);
     const glyph_len: usize = @intCast(loc.length);
-    const glyph_bytes = glyf_data[glyph_offset .. glyph_offset + glyph_len];
+    const glyph_end = std.math.add(usize, glyph_offset, glyph_len) catch return;
+    if (glyph_end > glyf_data.len) return;
+    const glyph_bytes = glyf_data[glyph_offset..glyph_end];
     const num_contours = cappan_core.font.parser.readI16(glyph_bytes, 0) catch return;
     if (num_contours >= 0) return;
 
@@ -101,7 +104,9 @@ fn collectCompoundComponents(
         const component_id = cappan_core.font.parser.readU16(glyph_bytes, offset) catch break;
         offset += 2;
 
-        try set.append(allocator, component_id);
+        if (component_id < loca.num_glyphs) {
+            try set.append(allocator, component_id);
+        }
 
         if (flags & table_glyf.ARG_1_AND_2_ARE_WORDS != 0) {
             offset += 4;
@@ -126,7 +131,7 @@ fn buildGlyphMapping(
     const mapping = try allocator.alloc(u16, old_num_glyphs);
     @memset(mapping, 0);
     for (used_glyphs, 0..) |old_id, new_id| {
-        mapping[old_id] = @intCast(new_id);
+        if (old_id < mapping.len) mapping[old_id] = @intCast(new_id);
     }
     return mapping;
 }
@@ -227,11 +232,16 @@ fn assembleSfnt(
     @memset(out, 0);
 
     var pos: usize = 0;
-    writer.writeU32BE(out, pos, 0x00010000); pos += 4;
-    writer.writeU16BE(out, pos, num_tables); pos += 2;
-    writer.writeU16BE(out, pos, search_range); pos += 2;
-    writer.writeU16BE(out, pos, entry_selector); pos += 2;
-    writer.writeU16BE(out, pos, range_shift); pos += 2;
+    writer.writeU32BE(out, pos, 0x00010000);
+    pos += 4;
+    writer.writeU16BE(out, pos, num_tables);
+    pos += 2;
+    writer.writeU16BE(out, pos, search_range);
+    pos += 2;
+    writer.writeU16BE(out, pos, entry_selector);
+    pos += 2;
+    writer.writeU16BE(out, pos, range_shift);
+    pos += 2;
 
     var data_offset: u32 = @intCast(header_size);
     var head_checksum_offset: usize = 0;
@@ -239,13 +249,16 @@ fn assembleSfnt(
     for (entries.items) |e| {
         const checksum = writer.calcChecksum(e.data);
         out[pos] = e.tag[0];
-        out[pos+1] = e.tag[1];
-        out[pos+2] = e.tag[2];
-        out[pos+3] = e.tag[3];
+        out[pos + 1] = e.tag[1];
+        out[pos + 2] = e.tag[2];
+        out[pos + 3] = e.tag[3];
         pos += 4;
-        writer.writeU32BE(out, pos, checksum); pos += 4;
-        writer.writeU32BE(out, pos, data_offset); pos += 4;
-        writer.writeU32BE(out, pos, @intCast(e.data.len)); pos += 4;
+        writer.writeU32BE(out, pos, checksum);
+        pos += 4;
+        writer.writeU32BE(out, pos, data_offset);
+        pos += 4;
+        writer.writeU32BE(out, pos, @intCast(e.data.len));
+        pos += 4;
 
         if (std.mem.eql(u8, &e.tag, "head")) {
             head_checksum_offset = @intCast(data_offset + 8);

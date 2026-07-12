@@ -31,8 +31,10 @@ pub const FvarTable = struct {
 
     pub fn getAxis(self: FvarTable, index: u16) !AxisRecord {
         if (index >= self.axis_count) return error.InvalidAxisIndex;
-        const offset: usize = @as(usize, self.axes_offset) + @as(usize, index) * @as(usize, self.axis_size);
-        if (offset + @as(usize, self.axis_size) > self.data.len) return error.UnexpectedEof;
+        const axis_delta = std.math.mul(usize, @as(usize, index), @as(usize, self.axis_size)) catch return error.UnexpectedEof;
+        const offset = std.math.add(usize, @as(usize, self.axes_offset), axis_delta) catch return error.UnexpectedEof;
+        const axis_end = std.math.add(usize, offset, @as(usize, self.axis_size)) catch return error.UnexpectedEof;
+        if (axis_end > self.data.len or self.axis_size < 20) return error.UnexpectedEof;
         const tag = self.data[offset..][0..4].*;
         const min_raw = try parser.readI32(self.data, offset + 4);
         const default_raw = try parser.readI32(self.data, offset + 8);
@@ -83,10 +85,14 @@ pub const FvarTable = struct {
 
     pub fn getInstance(self: FvarTable, allocator: std.mem.Allocator, index: u16) !NamedInstance {
         if (index >= self.instance_count) return error.InvalidInstanceIndex;
-        const instances_offset = @as(usize, self.axes_offset) + @as(usize, self.axis_count) * @as(usize, self.axis_size);
-        const inst_offset = instances_offset + @as(usize, index) * @as(usize, self.instance_size);
+        const axes_size = std.math.mul(usize, @as(usize, self.axis_count), @as(usize, self.axis_size)) catch return error.UnexpectedEof;
+        const instances_offset = std.math.add(usize, @as(usize, self.axes_offset), axes_size) catch return error.UnexpectedEof;
+        const inst_delta = std.math.mul(usize, @as(usize, index), @as(usize, self.instance_size)) catch return error.UnexpectedEof;
+        const inst_offset = std.math.add(usize, instances_offset, inst_delta) catch return error.UnexpectedEof;
 
-        const coords_end = inst_offset + 4 + @as(usize, self.axis_count) * 4;
+        const coords_size = std.math.mul(usize, @as(usize, self.axis_count), 4) catch return error.UnexpectedEof;
+        const coords_start = std.math.add(usize, inst_offset, 4) catch return error.UnexpectedEof;
+        const coords_end = std.math.add(usize, coords_start, coords_size) catch return error.UnexpectedEof;
         if (coords_end > self.data.len) return error.UnexpectedEof;
 
         const subfamily_name_id = try parser.readU16(self.data, inst_offset);
@@ -99,7 +105,9 @@ pub const FvarTable = struct {
             coords[i] = @as(f32, @floatFromInt(raw)) / 65536.0;
         }
 
-        const has_ps_name = self.instance_size >= @as(u16, self.axis_count) * 4 + 6 and coords_end + 2 <= self.data.len;
+        const min_ps_instance_size = std.math.add(usize, coords_size, 6) catch return error.UnexpectedEof;
+        const ps_name_end = std.math.add(usize, coords_end, 2) catch return error.UnexpectedEof;
+        const has_ps_name = @as(usize, self.instance_size) >= min_ps_instance_size and ps_name_end <= self.data.len;
         const post_script_name_id: ?u16 = if (has_ps_name)
             try parser.readU16(self.data, coords_end)
         else
@@ -128,6 +136,7 @@ pub fn parse(data: []const u8) !FvarTable {
     const axis_size = try parser.readU16(data, 10);
     const instance_count = try parser.readU16(data, 12);
     const instance_size = try parser.readU16(data, 14);
+    if (axis_count > 0 and axis_size < 20) return error.UnexpectedEof;
     return .{
         .data = data,
         .axis_count = axis_count,

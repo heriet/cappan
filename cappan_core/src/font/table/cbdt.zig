@@ -27,7 +27,7 @@ pub const CbdtTable = struct {
         switch (location.image_format) {
             17 => {
                 // SmallGlyphMetrics (5 bytes) + uint32 dataLen + PNG data
-                if (data_start + 9 > self.data.len) return null;
+                if (data_start > self.data.len or self.data.len - data_start < 9) return null;
                 const height = parser.readU8(self.data, data_start) catch return null;
                 const width = parser.readU8(self.data, data_start + 1) catch return null;
                 const bearing_x = parser.readI8(self.data, data_start + 2) catch return null;
@@ -35,7 +35,7 @@ pub const CbdtTable = struct {
                 const advance = parser.readU8(self.data, data_start + 4) catch return null;
                 const data_len = parser.readU32(self.data, data_start + 5) catch return null;
                 const png_start = data_start + 9;
-                const png_end = png_start + @as(usize, data_len);
+                const png_end = std.math.add(usize, png_start, @as(usize, data_len)) catch return null;
                 if (png_end > self.data.len) return null;
                 return GlyphBitmap{
                     .metrics = BitmapMetrics{
@@ -50,7 +50,7 @@ pub const CbdtTable = struct {
             },
             18 => {
                 // BigGlyphMetrics (8 bytes) + uint32 dataLen + PNG data
-                if (data_start + 12 > self.data.len) return null;
+                if (data_start > self.data.len or self.data.len - data_start < 12) return null;
                 const height = parser.readU8(self.data, data_start) catch return null;
                 const width = parser.readU8(self.data, data_start + 1) catch return null;
                 const hori_bearing_x = parser.readI8(self.data, data_start + 2) catch return null;
@@ -59,7 +59,7 @@ pub const CbdtTable = struct {
                 // vertBearingX, vertBearingY, vertAdvance at +5,+6,+7
                 const data_len = parser.readU32(self.data, data_start + 8) catch return null;
                 const png_start = data_start + 12;
-                const png_end = png_start + @as(usize, data_len);
+                const png_end = std.math.add(usize, png_start, @as(usize, data_len)) catch return null;
                 if (png_end > self.data.len) return null;
                 return GlyphBitmap{
                     .metrics = BitmapMetrics{
@@ -74,10 +74,10 @@ pub const CbdtTable = struct {
             },
             19 => {
                 // No per-glyph metrics (metrics come from CBLC) — just uint32 dataLen + PNG data
-                if (data_start + 4 > self.data.len) return null;
+                if (data_start > self.data.len or self.data.len - data_start < 4) return null;
                 const data_len = parser.readU32(self.data, data_start) catch return null;
                 const png_start = data_start + 4;
-                const png_end = png_start + @as(usize, data_len);
+                const png_end = std.math.add(usize, png_start, @as(usize, data_len)) catch return null;
                 if (png_end > self.data.len) return null;
                 return GlyphBitmap{
                     .metrics = BitmapMetrics{
