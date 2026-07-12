@@ -47,6 +47,93 @@ pub const TextLayout = struct {
     pub fn deinit(self: *TextLayout) void {
         self.allocator.free(self.positions);
     }
+
+    pub fn baseBaselineY(self: TextLayout, pad: f32) f32 {
+        return if (self.vertical) pad else pad + self.ascender_px;
+    }
+};
+
+const GlyphResolution = struct {
+    glyph_id: u16,
+    font_index: u8,
+};
+
+fn resolveGlyph(fonts: []const font_mod.Font, codepoint: u21) GlyphResolution {
+    for (fonts, 0..) |f, i| {
+        const id = f.getGlyphId(@as(u32, codepoint)) catch 0;
+        if (id != 0) {
+            return .{ .glyph_id = id, .font_index = @intCast(i) };
+        }
+    }
+    return .{ .glyph_id = 0, .font_index = 0 };
+}
+
+const SpanLineMetrics = struct {
+    max_ascender_px: f32,
+    min_descender_px: f32,
+    max_line_gap_px: f32,
+};
+
+fn computeSpanLineMetrics(fonts: []const font_mod.Font, spans: []const StyledSpan) SpanLineMetrics {
+    var metrics: SpanLineMetrics = .{
+        .max_ascender_px = 0,
+        .min_descender_px = 0,
+        .max_line_gap_px = 0,
+    };
+    for (spans) |span| {
+        const fi = @min(@as(usize, span.font_index), fonts.len - 1);
+        const scale = span.pixel_size / @as(f32, @floatFromInt(fonts[fi].getUnitsPerEm()));
+        const asc = @as(f32, @floatFromInt(fonts[fi].getAscender())) * scale;
+        const desc = @as(f32, @floatFromInt(fonts[fi].getDescender())) * scale;
+        const gap = @as(f32, @floatFromInt(fonts[fi].getLineGap())) * scale;
+        if (asc > metrics.max_ascender_px) metrics.max_ascender_px = asc;
+        if (desc < metrics.min_descender_px) metrics.min_descender_px = desc;
+        if (gap > metrics.max_line_gap_px) metrics.max_line_gap_px = gap;
+    }
+    return metrics;
+}
+
+const VerticalLayoutState = struct {
+    positions: std.ArrayList(GlyphPosition) = .empty,
+    columns: std.ArrayList(u32) = .empty,
+    advances: std.ArrayList(f32) = .empty,
+    widths: std.ArrayList(f32) = .empty,
+    current_column: u32 = 0,
+    pen_y: f32 = 0,
+    max_column_height: f32 = 0,
+    prev_glyph_id: ?u16 = null,
+    prev_font_index: ?u8 = null,
+    substituters: if (ft.enable_vertical and ft.enable_opentype_layout) []?font_mod.VerticalSubstituter else void,
+
+    fn init(allocator: std.mem.Allocator, fonts_len: usize) !VerticalLayoutState {
+        if (comptime ft.enable_vertical and ft.enable_opentype_layout) {
+            const substituters = try allocator.alloc(?font_mod.VerticalSubstituter, fonts_len);
+            @memset(substituters, null);
+            return .{ .substituters = substituters };
+        }
+        return .{ .substituters = {} };
+    }
+
+    fn deinit(self: *VerticalLayoutState, allocator: std.mem.Allocator) void {
+        self.columns.deinit(allocator);
+        self.advances.deinit(allocator);
+        self.widths.deinit(allocator);
+        if (comptime ft.enable_vertical and ft.enable_opentype_layout) {
+            for (self.substituters) |substituter| {
+                if (substituter) |s| s.deinit();
+            }
+            allocator.free(self.substituters);
+        }
+    }
+
+    fn substituteVerticalGlyph(self: *VerticalLayoutState, allocator: std.mem.Allocator, font: *const font_mod.Font, font_index: u8, glyph_id: u16) u16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
+        const idx = @as(usize, font_index);
+        if (self.substituters[idx] == null) {
+            self.substituters[idx] = font_mod.VerticalSubstituter.init(allocator, font);
+        }
+        return self.substituters[idx].?.substitute(glyph_id);
+    }
 };
 
 fn processCodepointInner(
@@ -71,16 +158,9 @@ fn processCodepointInner(
         return;
     }
 
-    var glyph_id: u16 = 0;
-    var font_index: u8 = 0;
-    for (fonts, 0..) |f, i| {
-        const id = f.getGlyphId(@as(u32, codepoint)) catch 0;
-        if (id != 0) {
-            glyph_id = id;
-            font_index = @intCast(i);
-            break;
-        }
-    }
+    const resolved = resolveGlyph(fonts, codepoint);
+    const glyph_id = resolved.glyph_id;
+    const font_index = resolved.font_index;
 
     if (prev_glyph_id.*) |prev_id| {
         if (prev_font_index.*) |prev_fi| {
@@ -185,47 +265,31 @@ fn processVerticalCodepoint(
     codepoint: u21,
     pixel_size: f32,
     max_width: ?f32,
-    ascender_px: f32,
     descender_px: f32,
-    positions: *std.ArrayList(GlyphPosition),
-    columns: *std.ArrayList(u32),
-    advances: *std.ArrayList(f32),
-    current_column: *u32,
-    pen_y: *f32,
-    max_column_height: *f32,
-    prev_glyph_id: *?u16,
-    prev_font_index: *?u8,
+    state: *VerticalLayoutState,
 ) !void {
-    _ = ascender_px;
     if (codepoint == '\n') {
-        if (pen_y.* > max_column_height.*) max_column_height.* = pen_y.*;
-        current_column.* += 1;
-        pen_y.* = 0;
-        prev_glyph_id.* = null;
-        prev_font_index.* = null;
+        if (state.pen_y > state.max_column_height) state.max_column_height = state.pen_y;
+        state.current_column += 1;
+        state.pen_y = 0;
+        state.prev_glyph_id = null;
+        state.prev_font_index = null;
         return;
     }
 
-    var glyph_id: u16 = 0;
-    var font_index: u8 = 0;
-    for (fonts, 0..) |f, i| {
-        const id = f.getGlyphId(@as(u32, codepoint)) catch 0;
-        if (id != 0) {
-            glyph_id = id;
-            font_index = @intCast(i);
-            break;
-        }
-    }
-
-    glyph_id = fonts[font_index].substituteVerticalGlyph(glyph_id);
+    const resolved = resolveGlyph(fonts, codepoint);
+    var glyph_id = resolved.glyph_id;
+    const font_index = resolved.font_index;
+    glyph_id = state.substituteVerticalGlyph(allocator, &fonts[font_index], font_index, glyph_id);
 
     const font_scale = pixel_size / @as(f32, @floatFromInt(fonts[font_index].getUnitsPerEm()));
     const vm = fonts[font_index].getVMetrics(glyph_id) catch null;
-    const fallback_advance_units = @as(i32, fonts[font_index].getAscender()) - @as(i32, fonts[font_index].getDescender());
     const advance_h_units: f32 = if (vm) |m|
         @floatFromInt(m.advance_height)
-    else
-        @floatFromInt(fallback_advance_units);
+    else blk: {
+        const fallback_advance_units = @as(i32, fonts[font_index].getAscender()) - @as(i32, fonts[font_index].getDescender());
+        break :blk @floatFromInt(fallback_advance_units);
+    };
     const advance_h_px = advance_h_units * font_scale;
 
     const h_metrics = fonts[font_index].getHMetrics(glyph_id) catch null;
@@ -235,21 +299,21 @@ fn processVerticalCodepoint(
         pixel_size;
 
     if (max_width) |max_h| {
-        if (pen_y.* > 0 and pen_y.* + advance_h_px > max_h) {
-            if (pen_y.* > max_column_height.*) max_column_height.* = pen_y.*;
-            current_column.* += 1;
-            pen_y.* = 0;
-            prev_glyph_id.* = null;
-            prev_font_index.* = null;
+        if (state.pen_y > 0 and state.pen_y + advance_h_px > max_h) {
+            if (state.pen_y > state.max_column_height) state.max_column_height = state.pen_y;
+            state.current_column += 1;
+            state.pen_y = 0;
+            state.prev_glyph_id = null;
+            state.prev_font_index = null;
         }
     }
 
-    if (prev_glyph_id.*) |pid| {
-        if (prev_font_index.*) |pfi| {
+    if (state.prev_glyph_id) |pid| {
+        if (state.prev_font_index) |pfi| {
             if (pfi == font_index) {
                 const kv = fonts[font_index].getVerticalKerning(pid, glyph_id);
                 // GPOS yAdvance is positive upward in font coordinates; pen_y is positive downward.
-                pen_y.* -= @as(f32, @floatFromInt(kv)) * font_scale;
+                state.pen_y -= @as(f32, @floatFromInt(kv)) * font_scale;
             }
         }
     }
@@ -259,22 +323,23 @@ fn processVerticalCodepoint(
     else
         @as(f32, @floatFromInt(fonts[font_index].getAscender())) * font_scale;
 
-    try columns.append(allocator, current_column.*);
-    try advances.append(allocator, advance_h_px);
-    try positions.append(allocator, .{
+    try state.columns.append(allocator, state.current_column);
+    try state.advances.append(allocator, advance_h_px);
+    try state.widths.append(allocator, advance_w_px);
+    try state.positions.append(allocator, .{
         .glyph_id = glyph_id,
         .font_index = font_index,
         .codepoint = codepoint,
-        .x_offset = advance_w_px,
-        .y_offset = pen_y.* + vert_origin_px,
+        .x_offset = 0,
+        .y_offset = state.pen_y + vert_origin_px,
         .pixel_size = pixel_size,
     });
 
-    pen_y.* += advance_h_px;
-    const column_extent = pen_y.* + @max(0.0, -descender_px);
-    if (column_extent > max_column_height.*) max_column_height.* = column_extent;
-    prev_glyph_id.* = glyph_id;
-    prev_font_index.* = font_index;
+    state.pen_y += advance_h_px;
+    const column_extent = state.pen_y + @max(0.0, -descender_px);
+    if (column_extent > state.max_column_height) state.max_column_height = column_extent;
+    state.prev_glyph_id = glyph_id;
+    state.prev_font_index = font_index;
 }
 
 fn layoutTextVertical(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: LayoutOptions) !TextLayout {
@@ -285,48 +350,52 @@ fn layoutTextVertical(allocator: std.mem.Allocator, fonts: []const font_mod.Font
     const line_height = ascender_px - descender_px + line_gap_px;
     const column_width = line_height;
 
-    var positions: std.ArrayList(GlyphPosition) = .empty;
-    errdefer positions.deinit(allocator);
-    var columns: std.ArrayList(u32) = .empty;
-    defer columns.deinit(allocator);
-    var advances: std.ArrayList(f32) = .empty;
-    defer advances.deinit(allocator);
-
-    var current_column: u32 = 0;
-    var pen_y: f32 = 0;
-    var max_column_height: f32 = 0;
-    var prev_glyph_id: ?u16 = null;
-    var prev_font_index: ?u8 = null;
+    var state = try VerticalLayoutState.init(allocator, fonts.len);
+    errdefer state.positions.deinit(allocator);
+    defer state.deinit(allocator);
 
     if (std.unicode.Utf8View.init(text)) |view| {
         var iter = view.iterator();
         while (iter.nextCodepoint()) |codepoint| {
-            try processVerticalCodepoint(allocator, fonts, codepoint, options.pixel_size, options.max_width, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+            try processVerticalCodepoint(allocator, fonts, codepoint, options.pixel_size, options.max_width, descender_px, &state);
         }
     } else |_| {
         for (text) |byte| {
-            try processVerticalCodepoint(allocator, fonts, @as(u21, byte), options.pixel_size, options.max_width, ascender_px, descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+            try processVerticalCodepoint(allocator, fonts, @as(u21, byte), options.pixel_size, options.max_width, descender_px, &state);
         }
     }
 
-    if (pen_y > max_column_height) max_column_height = pen_y;
-    const num_columns = if (positions.items.len == 0) @as(u32, 0) else current_column + 1;
+    return finishVerticalLayout(allocator, &state, column_width, options.max_width, options.text_align, ascender_px, descender_px, line_height);
+}
+
+fn finishVerticalLayout(
+    allocator: std.mem.Allocator,
+    state: *VerticalLayoutState,
+    column_width: f32,
+    max_width: ?f32,
+    text_align: TextAlign,
+    ascender_px: f32,
+    descender_px: f32,
+    line_height: f32,
+) !TextLayout {
+    if (state.pen_y > state.max_column_height) state.max_column_height = state.pen_y;
+    const num_columns = if (state.positions.items.len == 0) @as(u32, 0) else state.current_column + 1;
     const total_width = @as(f32, @floatFromInt(num_columns)) * column_width;
-    var total_height = max_column_height;
-    if (options.max_width) |max_h| {
+    var total_height = state.max_column_height;
+    if (max_width) |max_h| {
         if (max_h > total_height) total_height = max_h;
     }
 
-    for (positions.items, columns.items) |*pos, column| {
+    for (state.positions.items, state.columns.items, state.widths.items) |*pos, column, width| {
         const column_center_x = total_width - (@as(f32, @floatFromInt(column)) + 0.5) * column_width;
-        pos.x_offset = column_center_x - pos.x_offset / 2.0;
+        pos.x_offset = column_center_x - width / 2.0;
     }
 
-    if (options.text_align != .left and total_height > 0) {
-        try applyVerticalAlignment(allocator, positions.items, columns.items, advances.items, options.text_align, total_height, ascender_px, num_columns);
+    if (text_align != .left and total_height > 0) {
+        try applyVerticalAlignment(allocator, state.positions.items, state.columns.items, state.advances.items, text_align, total_height, ascender_px, num_columns);
     }
 
-    const result = try positions.toOwnedSlice(allocator);
+    const result = try state.positions.toOwnedSlice(allocator);
     return .{
         .positions = result,
         .total_width = total_width,
@@ -366,20 +435,10 @@ pub fn layoutStyledText(
         }
     }
 
-    // Compute line metrics as max ascender, min descender, max line_gap across all spans.
-    var max_ascender_px: f32 = 0;
-    var min_descender_px: f32 = 0;
-    var max_line_gap_px: f32 = 0;
-    for (spans) |span| {
-        const fi = @min(@as(usize, span.font_index), fonts.len - 1);
-        const scale = span.pixel_size / @as(f32, @floatFromInt(fonts[fi].getUnitsPerEm()));
-        const asc = @as(f32, @floatFromInt(fonts[fi].getAscender())) * scale;
-        const desc = @as(f32, @floatFromInt(fonts[fi].getDescender())) * scale;
-        const gap = @as(f32, @floatFromInt(fonts[fi].getLineGap())) * scale;
-        if (asc > max_ascender_px) max_ascender_px = asc;
-        if (desc < min_descender_px) min_descender_px = desc;
-        if (gap > max_line_gap_px) max_line_gap_px = gap;
-    }
+    const span_metrics = computeSpanLineMetrics(fonts, spans);
+    const max_ascender_px = span_metrics.max_ascender_px;
+    const min_descender_px = span_metrics.min_descender_px;
+    const max_line_gap_px = span_metrics.max_line_gap_px;
     const line_height = max_ascender_px - min_descender_px + max_line_gap_px;
 
     var positions: std.ArrayList(GlyphPosition) = .empty;
@@ -557,77 +616,31 @@ fn layoutStyledTextVertical(
     spans: []const StyledSpan,
     options: StyledLayoutOptions,
 ) !TextLayout {
-    var max_ascender_px: f32 = 0;
-    var min_descender_px: f32 = 0;
-    var max_line_gap_px: f32 = 0;
-    for (spans) |span| {
-        const fi = @min(@as(usize, span.font_index), fonts.len - 1);
-        const scale = span.pixel_size / @as(f32, @floatFromInt(fonts[fi].getUnitsPerEm()));
-        const asc = @as(f32, @floatFromInt(fonts[fi].getAscender())) * scale;
-        const desc = @as(f32, @floatFromInt(fonts[fi].getDescender())) * scale;
-        const gap = @as(f32, @floatFromInt(fonts[fi].getLineGap())) * scale;
-        if (asc > max_ascender_px) max_ascender_px = asc;
-        if (desc < min_descender_px) min_descender_px = desc;
-        if (gap > max_line_gap_px) max_line_gap_px = gap;
-    }
+    const span_metrics = computeSpanLineMetrics(fonts, spans);
+    const max_ascender_px = span_metrics.max_ascender_px;
+    const min_descender_px = span_metrics.min_descender_px;
+    const max_line_gap_px = span_metrics.max_line_gap_px;
     const line_height = max_ascender_px - min_descender_px + max_line_gap_px;
     const column_width = line_height;
 
-    var positions: std.ArrayList(GlyphPosition) = .empty;
-    errdefer positions.deinit(allocator);
-    var columns: std.ArrayList(u32) = .empty;
-    defer columns.deinit(allocator);
-    var advances: std.ArrayList(f32) = .empty;
-    defer advances.deinit(allocator);
-
-    var current_column: u32 = 0;
-    var pen_y: f32 = 0;
-    var max_column_height: f32 = 0;
-    var prev_glyph_id: ?u16 = null;
-    var prev_font_index: ?u8 = null;
+    var state = try VerticalLayoutState.init(allocator, fonts.len);
+    errdefer state.positions.deinit(allocator);
+    defer state.deinit(allocator);
 
     for (spans) |span| {
         if (std.unicode.Utf8View.init(span.text)) |view| {
             var iter = view.iterator();
             while (iter.nextCodepoint()) |codepoint| {
-                try processVerticalCodepoint(allocator, fonts, codepoint, span.pixel_size, options.max_width, max_ascender_px, min_descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+                try processVerticalCodepoint(allocator, fonts, codepoint, span.pixel_size, options.max_width, min_descender_px, &state);
             }
         } else |_| {
             for (span.text) |byte| {
-                try processVerticalCodepoint(allocator, fonts, @as(u21, byte), span.pixel_size, options.max_width, max_ascender_px, min_descender_px, &positions, &columns, &advances, &current_column, &pen_y, &max_column_height, &prev_glyph_id, &prev_font_index);
+                try processVerticalCodepoint(allocator, fonts, @as(u21, byte), span.pixel_size, options.max_width, min_descender_px, &state);
             }
         }
     }
 
-    if (pen_y > max_column_height) max_column_height = pen_y;
-    const num_columns = if (positions.items.len == 0) @as(u32, 0) else current_column + 1;
-    const total_width = @as(f32, @floatFromInt(num_columns)) * column_width;
-    var total_height = max_column_height;
-    if (options.max_width) |max_h| {
-        if (max_h > total_height) total_height = max_h;
-    }
-
-    for (positions.items, columns.items) |*pos, column| {
-        const column_center_x = total_width - (@as(f32, @floatFromInt(column)) + 0.5) * column_width;
-        pos.x_offset = column_center_x - pos.x_offset / 2.0;
-    }
-
-    if (options.text_align != .left and total_height > 0) {
-        try applyVerticalAlignment(allocator, positions.items, columns.items, advances.items, options.text_align, total_height, max_ascender_px, num_columns);
-    }
-
-    const result = try positions.toOwnedSlice(allocator);
-    return .{
-        .positions = result,
-        .total_width = total_width,
-        .total_height = total_height,
-        .ascender_px = max_ascender_px,
-        .descender_px = min_descender_px,
-        .line_height = line_height,
-        .num_lines = num_columns,
-        .vertical = true,
-        .allocator = allocator,
-    };
+    return finishVerticalLayout(allocator, &state, column_width, options.max_width, options.text_align, max_ascender_px, min_descender_px, line_height);
 }
 
 fn applyVerticalAlignment(

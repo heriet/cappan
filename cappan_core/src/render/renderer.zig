@@ -125,7 +125,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
     var bitmap = try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, options.bg_color);
     errdefer bitmap.deinit();
 
-    const base_baseline_y = if (layout.vertical) pad else pad + layout.ascender_px;
+    const base_baseline_y = layout.baseBaselineY(pad);
     if (options.lcd_rendering) {
         var lcd_cache: std.AutoHashMapUnmanaged(u32, CachedLcdRaster) = .empty;
         defer {
@@ -366,7 +366,7 @@ fn renderTextPaintStack(
     var bitmap = try rgba_bitmap_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, options.bg_color);
     errdefer bitmap.deinit();
 
-    const base_baseline_y = if (layout.vertical) pad else pad + layout.ascender_px;
+    const base_baseline_y = layout.baseBaselineY(pad);
     var paint_cache: std.AutoHashMapUnmanaged(PaintCacheKey, CachedRaster) = .empty;
     defer {
         var it = paint_cache.valueIterator();
@@ -1069,7 +1069,7 @@ pub const RowRenderer = struct {
             .glyph_cache = glyph_cache,
             .layout = layout,
             .scale = scale,
-            .base_baseline_y = if (layout.vertical) pad else pad + layout.ascender_px,
+            .base_baseline_y = layout.baseBaselineY(pad),
             .pad = pad,
             .fg_color = options.fg_color,
             .bg_color = options.bg_color,

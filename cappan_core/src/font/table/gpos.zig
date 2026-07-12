@@ -3,6 +3,8 @@ const parser = @import("../parser.zig");
 const otlayout = @import("otlayout.zig");
 const ft = @import("../../features.zig").features;
 
+pub const KernAxis = enum { horizontal, vertical };
+
 pub const GposTable = struct {
     data: []const u8,
     kern_lookups: []const KernLookup,
@@ -27,20 +29,26 @@ pub const GposTable = struct {
     }
 
     pub fn getKerning(self: GposTable, left: u16, right: u16) i16 {
-        for (self.kern_lookups) |lookup| {
-            const value = lookup.getKerning(self.data, left, right);
+        return self.getKerningAxis(.horizontal, left, right);
+    }
+
+    pub fn getVerticalKerning(self: GposTable, left: u16, right: u16) i16 {
+        return self.getKerningAxis(.vertical, left, right);
+    }
+
+    fn getKerningAxis(self: GposTable, axis: KernAxis, left: u16, right: u16) i16 {
+        for (self.lookupsForAxis(axis)) |lookup| {
+            const value = lookup.getKerningAxis(axis, self.data, left, right);
             if (value != 0) return value;
         }
         return 0;
     }
 
-    pub fn getVerticalKerning(self: GposTable, left: u16, right: u16) i16 {
-        if (comptime !ft.enable_vertical) return 0;
-        for (self.vkrn_lookups) |lookup| {
-            const value = lookup.getVerticalKerning(self.data, left, right);
-            if (value != 0) return value;
-        }
-        return 0;
+    fn lookupsForAxis(self: GposTable, axis: KernAxis) []const KernLookup {
+        return switch (axis) {
+            .horizontal => self.kern_lookups,
+            .vertical => if (comptime ft.enable_vertical) self.vkrn_lookups else &.{},
+        };
     }
 
     pub fn getMarkBaseAnchors(self: GposTable, base_glyph: u16, mark_glyph: u16) ?AnchorPair {
@@ -77,17 +85,9 @@ pub const KernLookup = struct {
         allocator.free(self.subtables);
     }
 
-    pub fn getKerning(self: KernLookup, data: []const u8, left: u16, right: u16) i16 {
+    pub fn getKerningAxis(self: KernLookup, axis: KernAxis, data: []const u8, left: u16, right: u16) i16 {
         for (self.subtables) |sub| {
-            const value = sub.getKerning(data, left, right);
-            if (value != 0) return value;
-        }
-        return 0;
-    }
-
-    pub fn getVerticalKerning(self: KernLookup, data: []const u8, left: u16, right: u16) i16 {
-        for (self.subtables) |sub| {
-            const value = sub.getVerticalKerning(data, left, right);
+            const value = sub.getKerningAxis(axis, data, left, right);
             if (value != 0) return value;
         }
         return 0;
@@ -98,19 +98,16 @@ pub const PairPosSubtable = struct {
     offset: usize,
     format: u16,
 
-    pub fn getKerning(self: PairPosSubtable, data: []const u8, left: u16, right: u16) i16 {
-        return switch (self.format) {
-            1 => getKerningFormat1(data, self.offset, left, right),
-            2 => getKerningFormat2(data, self.offset, left, right),
-            else => 0,
+    pub fn getKerningAxis(self: PairPosSubtable, axis: KernAxis, data: []const u8, left: u16, right: u16) i16 {
+        const value_record = switch (self.format) {
+            1 => pairValueFormat1(data, self.offset, left, right),
+            2 => pairValueFormat2(data, self.offset, left, right),
+            else => null,
         };
-    }
-
-    pub fn getVerticalKerning(self: PairPosSubtable, data: []const u8, left: u16, right: u16) i16 {
-        return switch (self.format) {
-            1 => (pairValueFormat1(data, self.offset, left, right) orelse return 0).y_advance,
-            2 => (pairValueFormat2(data, self.offset, left, right) orelse return 0).y_advance,
-            else => 0,
+        const vr = value_record orelse return 0;
+        return switch (axis) {
+            .horizontal => vr.x_advance,
+            .vertical => vr.y_advance,
         };
     }
 };
@@ -372,11 +369,6 @@ fn queryAcrossLookups(lookups: []const GposLookupRef, data: []const u8, glyph1: 
     return null;
 }
 
-fn getKerningFormat1(data: []const u8, subtable_offset: usize, left: u16, right: u16) i16 {
-    const vr = pairValueFormat1(data, subtable_offset, left, right) orelse return 0;
-    return vr.x_advance;
-}
-
 fn pairValueFormat1(data: []const u8, subtable_offset: usize, left: u16, right: u16) ?otlayout.ValueRecord {
     // PairPos Format 1:
     // +0: posFormat u16 (1)
@@ -430,11 +422,6 @@ fn pairValueFormat1(data: []const u8, subtable_offset: usize, left: u16, right: 
     }
 
     return null;
-}
-
-fn getKerningFormat2(data: []const u8, subtable_offset: usize, left: u16, right: u16) i16 {
-    const vr = pairValueFormat2(data, subtable_offset, left, right) orelse return 0;
-    return vr.x_advance;
 }
 
 fn pairValueFormat2(data: []const u8, subtable_offset: usize, left: u16, right: u16) ?otlayout.ValueRecord {

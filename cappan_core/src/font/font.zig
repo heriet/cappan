@@ -39,6 +39,54 @@ const ft = @import("../features.zig").features;
 
 pub const RasterResult = rasterizer_mod.RasterResult;
 
+pub const VerticalSubstituter = struct {
+    allocator: std.mem.Allocator,
+    gsub: if (ft.enable_opentype_layout) ?gsub_mod.GsubTable else void,
+    lookup_indices: []const u16,
+
+    pub fn init(allocator: std.mem.Allocator, font: *const Font) VerticalSubstituter {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) {
+            return .{ .allocator = allocator, .gsub = {}, .lookup_indices = &.{} };
+        }
+
+        const gsub = font.gsub orelse {
+            return .{ .allocator = allocator, .gsub = null, .lookup_indices = &.{} };
+        };
+
+        const scripts = [_][4]u8{ "kana".*, "hani".*, "hang".*, "DFLT".*, "latn".* };
+        const features = [_][4]u8{ "vrt2".*, "vert".* };
+        for (scripts) |script| {
+            for (features) |feature| {
+                const indices = gsub.resolveLookupIndices(allocator, script, null, &.{feature}) catch continue;
+                if (indices.len != 0) {
+                    return .{ .allocator = allocator, .gsub = gsub, .lookup_indices = indices };
+                }
+                allocator.free(indices);
+            }
+        }
+
+        return .{ .allocator = allocator, .gsub = gsub, .lookup_indices = &.{} };
+    }
+
+    pub fn substitute(self: VerticalSubstituter, glyph_id: u16) u16 {
+        if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
+        if (self.lookup_indices.len == 0) return glyph_id;
+        const gsub = self.gsub orelse return glyph_id;
+
+        var input = [_]u16{glyph_id};
+        const result = gsub.applyLookupIndices(self.allocator, self.lookup_indices, &input) catch return glyph_id;
+        defer self.allocator.free(result);
+        if (result.len == 1 and result[0] != glyph_id) return result[0];
+        return glyph_id;
+    }
+
+    pub fn deinit(self: VerticalSubstituter) void {
+        if (comptime ft.enable_vertical and ft.enable_opentype_layout) {
+            if (self.lookup_indices.len != 0) self.allocator.free(self.lookup_indices);
+        }
+    }
+};
+
 pub const Font = struct {
     allocator: std.mem.Allocator,
     data: []const u8,
@@ -649,24 +697,9 @@ pub const Font = struct {
     pub fn substituteVerticalGlyph(self: Font, glyph_id: u16) u16 {
         if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return glyph_id;
         if (self.gsub == null) return glyph_id;
-        return self.substituteVerticalGlyphImpl(glyph_id);
-    }
-
-    fn substituteVerticalGlyphImpl(self: Font, glyph_id: u16) u16 {
-        var input = [_]u16{glyph_id};
-        const scripts = [_][4]u8{ "kana".*, "hani".*, "hang".*, "DFLT".*, "latn".* };
-        const features = [_][4]u8{ "vrt2".*, "vert".* };
-
-        for (scripts) |script| {
-            for (features) |feature| {
-                const result = self.applyGsubFeatures(self.allocator, script, null, &.{feature}, &input) catch continue;
-                defer self.allocator.free(result);
-                if (result.len == 1 and result[0] != glyph_id) {
-                    return result[0];
-                }
-            }
-        }
-        return glyph_id;
+        const substituter = VerticalSubstituter.init(self.allocator, &self);
+        defer substituter.deinit();
+        return substituter.substitute(glyph_id);
     }
 
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {
