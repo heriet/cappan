@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-vertical
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-vertical test-arabic
 
 setup: fetch-asset generate-subset
 
@@ -84,6 +84,27 @@ test-vertical:
 		--vertical \
 		--output /tmp/test_vertical.png
 	@echo "test-vertical: PASS (no crash)"
+
+# The printf octal escapes encode "العربية" (UTF-8). POSIX sh printf does not
+# support \x hex escapes, so octal is required here.
+test-arabic:
+	@if [ ! -f .font/NotoSansArabic-Regular.ttf ]; then \
+		echo "NotoSansArabic-Regular.ttf not found, running fetch-asset.sh..."; \
+		$(DOCKER_RUN) bash script/fetch-asset.sh; \
+	fi
+	$(DOCKER_RUN) zig build
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/NotoSansArabic-Regular.ttf \
+		--text "$$(printf '\330\247\331\204\330\271\330\261\330\250\331\212\330\251')" \
+		--size 32 \
+		--output /tmp/test_arabic_h.png
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/NotoSansArabic-Regular.ttf \
+		--text "$$(printf '\330\247\331\204\330\271\330\261\330\250\331\212\330\251')" \
+		--size 32 \
+		--vertical \
+		--output /tmp/test_arabic_v.png
+	@echo "test-arabic: PASS (no crash)"
 
 serve-docs:
 	python3 -m http.server $(DOCS_PORT) -d docs
