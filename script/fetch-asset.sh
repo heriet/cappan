@@ -11,6 +11,7 @@ DEJAVU_WOFF2_SHA256="977c1f35fe0be181a68683c3b4db20f05b898a0b12d048d4d6345034866
 SOURCE_SANS_SHA256="08df266400933d3178d081a45f94a08814c3e55b4b7dd2e0ff69cb1329f13ab6"
 NOTO_SANS_CJK_SHA256="68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5"
 NOTO_SANS_JP_SHA256="dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073"
+NOTO_SANS_ARABIC_SHA256="bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0"
 BROTLI_DICT_SHA256="20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70"
 TEST_COLR_V1_SHA256="e87738d4e9f7f319e34045340c0a17bba948ed638345aba47d4a0d7d6d09f163"
 TEST_GLYPHS_COLR_1_SHA256="8aa611b1ca97044ac6f13dc982fde29256612f0a5acc6ef47ca541a7a5b99b28"
@@ -123,6 +124,26 @@ if ! file_ok "$FONT_DIR/NotoSansJP-Regular.otf" "$NOTO_SANS_JP_SHA256"; then
   echo "  OK: NotoSansJP-Regular.otf"
 else
   echo "  OK: NotoSansJP-Regular.otf (cached)"
+fi
+
+# --- NotoSansArabic-Regular.ttf ---
+if ! file_ok "$FONT_DIR/NotoSansArabic-Regular.ttf" "$NOTO_SANS_ARABIC_SHA256"; then
+  echo "Downloading Noto Sans Arabic 2.013..."
+  tmpdir=$(mktemp -d)
+  curl -fsSL "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip" \
+    -o "$tmpdir/noto-arabic.zip"
+  unzip -q -j "$tmpdir/noto-arabic.zip" \
+    "NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf" "OFL.txt" -d "$tmpdir"
+  mv "$tmpdir/NotoSansArabic-Regular.ttf" "$FONT_DIR/NotoSansArabic-Regular.ttf"
+  mv "$tmpdir/OFL.txt" "$FONT_DIR/LICENSE-NotoSansArabic.txt"
+  rm -rf "$tmpdir"
+  if ! verify_sha256 "$FONT_DIR/NotoSansArabic-Regular.ttf" "$NOTO_SANS_ARABIC_SHA256"; then
+    echo "ERROR: NotoSansArabic-Regular.ttf checksum mismatch" >&2
+    exit 1
+  fi
+  echo "  OK: NotoSansArabic-Regular.ttf"
+else
+  echo "  OK: NotoSansArabic-Regular.ttf (cached)"
 fi
 
 # --- brotli_dictionary.bin ---

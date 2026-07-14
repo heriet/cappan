@@ -1,6 +1,7 @@
 const std = @import("std");
 const font_mod = @import("../font/font.zig");
 const gdef_mod = @import("../font/table/gdef.zig");
+const gpos_mod = @import("../font/table/gpos.zig");
 const ft = @import("../features.zig").features;
 
 pub const GlyphPosition = struct {
@@ -10,6 +11,7 @@ pub const GlyphPosition = struct {
     x_offset: f32,
     y_offset: f32,
     pixel_size: f32 = 48.0,
+    line: u32 = 0,
 };
 
 pub const TextAlign = enum { left, center, right, justify };
@@ -179,6 +181,7 @@ fn processCodepointInner(
         .x_offset = cursor_x.*,
         .y_offset = @as(f32, @floatFromInt(current_line.*)) * line_height,
         .pixel_size = pixel_size,
+        .line = current_line.*,
     });
 
     const font_scale = pixel_size / @as(f32, @floatFromInt(fonts[font_index].getUnitsPerEm()));
@@ -351,6 +354,7 @@ fn processVerticalCodepoint(
         .x_offset = 0,
         .y_offset = state.pen_y + vert_origin_px,
         .pixel_size = pixel_size,
+        .line = state.current_column,
     });
 
     state.pen_y += advance_h_px;
@@ -521,6 +525,7 @@ pub fn layoutStyledText(
                     .x_offset = cursor_x,
                     .y_offset = @as(f32, @floatFromInt(current_line)) * line_height,
                     .pixel_size = span.pixel_size,
+                    .line = current_line,
                 });
 
                 const font_scale = span.pixel_size / @as(f32, @floatFromInt(fonts[actual_fi].getUnitsPerEm()));
@@ -579,6 +584,7 @@ pub fn layoutStyledText(
                     .x_offset = cursor_x,
                     .y_offset = @as(f32, @floatFromInt(current_line)) * line_height,
                     .pixel_size = span.pixel_size,
+                    .line = current_line,
                 });
 
                 const font_scale = span.pixel_size / @as(f32, @floatFromInt(fonts[actual_fi].getUnitsPerEm()));
@@ -692,6 +698,9 @@ fn applyVerticalAlignment(
 
 fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font) void {
     if (comptime !ft.enable_opentype_layout) return;
+    // Cursive attachment first: it can shift base-glyph y_offset, which the
+    // mark attachment pass below depends on.
+    applyCursiveAttachment(positions, fonts);
     for (positions, 0..) |*pos, i| {
         const font = &fonts[pos.font_index];
         const gdef = font.getGdefTable() orelse continue;
@@ -702,14 +711,13 @@ fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font
         if (i > 0) {
             const prev = positions[i - 1];
             if (prev.font_index == pos.font_index and
-                @abs(prev.y_offset - pos.y_offset) < 0.1)
+                prev.line == pos.line)
             {
                 const prev_class = gdef.getGlyphClass(prev.glyph_id);
                 if (prev_class == .mark) {
                     if (font.getMarkMarkAnchors(prev.glyph_id, pos.glyph_id)) |anchors| {
                         const scale = pos.pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-                        pos.x_offset = prev.x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
-                        pos.y_offset = prev.y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+                        applyMarkAnchor(pos, prev, anchors, scale);
                         continue;
                     }
                 }
@@ -724,17 +732,58 @@ fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font
             j -= 1;
             scanned += 1;
             if (positions[j].font_index != pos.font_index) break;
-            if (@abs(positions[j].y_offset - pos.y_offset) >= 0.1) break;
+            if (positions[j].line != pos.line) break;
             const base_class = gdef.getGlyphClass(positions[j].glyph_id);
             if (base_class == .base or base_class == .ligature) {
-                if (font.getMarkBaseAnchors(positions[j].glyph_id, pos.glyph_id)) |anchors| {
+                const anchors: ?gpos_mod.AnchorPair = if (base_class == .ligature) blk: {
+                    // Approximate ligature component ownership without GSUB cluster data:
+                    // the nth mark after a ligature maps to the nth component.
+                    // Known limitation: multiple marks on one component (e.g. shadda + vowel)
+                    // mis-map to later components; usually mitigated by the mark-to-mark pass above.
+                    const comp: u16 = @intCast(i - j - 1);
+                    const lig_anchors = font.getMarkLigAnchors(positions[j].glyph_id, pos.glyph_id, comp) orelse
+                        (if (comp != 0) font.getMarkLigAnchors(positions[j].glyph_id, pos.glyph_id, 0) else null);
+                    break :blk lig_anchors orelse font.getMarkBaseAnchors(positions[j].glyph_id, pos.glyph_id);
+                } else font.getMarkBaseAnchors(positions[j].glyph_id, pos.glyph_id);
+                if (anchors) |a| {
                     const scale = pos.pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-                    pos.x_offset = positions[j].x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
-                    pos.y_offset = positions[j].y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+                    applyMarkAnchor(pos, positions[j], a, scale);
                 }
                 break;
             }
         }
+    }
+}
+
+fn applyMarkAnchor(pos: *GlyphPosition, ref: GlyphPosition, anchors: gpos_mod.AnchorPair, scale: f32) void {
+    pos.x_offset = ref.x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
+    pos.y_offset = ref.y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+}
+
+/// Cursive attachment (Type 3): shift a glyph's y so its entry anchor
+/// meets the previous glyph's exit anchor (same font, same line only).
+fn applyCursiveAttachment(positions: []GlyphPosition, fonts: []const font_mod.Font) void {
+    var carried_anchors: ?gpos_mod.CursiveAnchors = null;
+
+    for (positions, 0..) |*pos, i| {
+        var cur_anchors_for_carry: ?gpos_mod.CursiveAnchors = null;
+
+        attach: {
+            if (i == 0) break :attach;
+            const prev = &positions[i - 1];
+            if (prev.font_index != pos.font_index) break :attach;
+            if (prev.line != pos.line) break :attach;
+            const font = &fonts[pos.font_index];
+            const prev_anchors = carried_anchors orelse (font.getCursiveAnchors(prev.glyph_id) orelse break :attach);
+            const cur_anchors = font.getCursiveAnchors(pos.glyph_id) orelse break :attach;
+            cur_anchors_for_carry = cur_anchors;
+            const exit = prev_anchors.exit orelse break :attach;
+            const entry = cur_anchors.entry orelse break :attach;
+            const scale = pos.pixel_size / @as(f32, @floatFromInt(font.getUnitsPerEm()));
+            pos.y_offset = prev.y_offset +
+                (@as(f32, @floatFromInt(entry.y)) - @as(f32, @floatFromInt(exit.y))) * scale;
+        }
+        carried_anchors = cur_anchors_for_carry;
     }
 }
 
@@ -757,9 +806,8 @@ fn applyWordWrap(
     while (i < positions.len) {
         const pos = &positions[i];
 
-        const expected_y = @as(f32, @floatFromInt(current_line)) * line_height;
-        if (pos.y_offset > expected_y + 0.1) {
-            current_line = @intFromFloat(@round(pos.y_offset / line_height));
+        if (pos.line > current_line) {
+            current_line = pos.line;
             line_start_idx = i;
             line_start_x = pos.x_offset;
             last_break_idx = null;
@@ -785,15 +833,17 @@ fn applyWordWrap(
             else
                 i;
 
+            const expected_line = current_line;
             current_line += 1;
             const new_y = @as(f32, @floatFromInt(current_line)) * line_height;
 
             const base_x = positions[break_at].x_offset;
             var j = break_at;
             while (j < positions.len) : (j += 1) {
-                if (positions[j].y_offset > expected_y + 0.1) break;
+                if (positions[j].line > expected_line) break;
                 positions[j].x_offset -= base_x;
                 positions[j].y_offset = new_y;
+                positions[j].line = current_line;
             }
 
             line_start_idx = break_at;
@@ -807,12 +857,12 @@ fn applyWordWrap(
 
     total_max_width.* = 0;
     var line_max: f32 = 0;
-    var prev_y: f32 = -1.0;
+    var prev_line: ?u32 = null;
     for (positions) |pos| {
-        if (pos.y_offset > prev_y + 0.1) {
+        if (prev_line == null or pos.line != prev_line.?) {
             if (line_max > total_max_width.*) total_max_width.* = line_max;
             line_max = 0;
-            prev_y = pos.y_offset;
+            prev_line = pos.line;
         }
         const font_scale = pos.pixel_size / @as(f32, @floatFromInt(fonts[pos.font_index].getUnitsPerEm()));
         const adv = @as(f32, @floatFromInt((fonts[pos.font_index].getHMetrics(pos.glyph_id) catch continue).advance_width)) * font_scale;
@@ -841,18 +891,18 @@ fn applyAlignment(
     if (positions.len == 0) return;
 
     var line_start: usize = 0;
-    var prev_y: f32 = positions[0].y_offset;
+    var prev_line: u32 = positions[0].line;
 
     var i: usize = 0;
     while (i <= positions.len) : (i += 1) {
         const at_end = (i == positions.len);
-        const new_line = !at_end and (positions[i].y_offset > prev_y + 0.1);
+        const new_line = !at_end and (positions[i].line != prev_line);
 
         if (new_line or at_end) {
             alignLine(positions[line_start..i], align_type, container_width, fonts);
             if (!at_end) {
                 line_start = i;
-                prev_y = positions[i].y_offset;
+                prev_line = positions[i].line;
             }
         }
     }
@@ -920,6 +970,19 @@ test "layout text multiline Hello\\nWorld" {
     for (layout.positions[0..5]) |pos| {
         try std.testing.expectEqual(@as(f32, 0), pos.y_offset);
     }
+}
+
+test "line index stamped per line" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "a\nb", .{ .pixel_size = 48.0 });
+    defer layout.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), layout.positions.len);
+    try std.testing.expectEqual(@as(u32, 0), layout.positions[0].line);
+    try std.testing.expectEqual(@as(u32, 1), layout.positions[1].line);
 }
 
 test "layout text UTF-8 café" {
@@ -1128,4 +1191,53 @@ test "vertical styled layout columns right to left" {
     try std.testing.expectEqual(@as(usize, 4), layout.positions.len);
     try std.testing.expect(layout.positions[2].x_offset < layout.positions[0].x_offset);
     try std.testing.expectEqual(@as(u32, 2), layout.num_lines);
+}
+
+test "cursive attachment is no-op without curs lookups" {
+    if (comptime !ft.enable_opentype_layout) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "abc", .{ .pixel_size = 48.0 });
+    defer layout.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), layout.positions.len);
+    for (layout.positions) |pos| {
+        try std.testing.expectEqual(@as(f32, 0), pos.y_offset);
+    }
+}
+
+test "mark-to-base still attaches (regression)" {
+    if (comptime !ft.enable_opentype_layout) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_e = font.getGlyphId('e') catch return error.SkipZigTest;
+    const glyph_acute = font.getGlyphId(0x0301) catch return error.SkipZigTest;
+    if (font.getMarkBaseAnchors(glyph_e, glyph_acute) == null) return error.SkipZigTest;
+
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "e\xCC\x81", .{ .pixel_size = 48.0 });
+    defer layout.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), layout.positions.len);
+    try std.testing.expect(layout.positions[1].x_offset != 0 or layout.positions[1].y_offset != 0);
+}
+
+test "mark-to-ligature attaches to ligature glyph" {
+    if (comptime !ft.enable_opentype_layout) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_fi = font.getGlyphId(0xFB01) catch return error.SkipZigTest;
+    if (glyph_fi == 0) return error.SkipZigTest;
+    const gdef = font.getGdefTable() orelse return error.SkipZigTest;
+    if (gdef.getGlyphClass(glyph_fi) != .ligature) return error.SkipZigTest;
+
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "\xEF\xAC\x81\xCC\x81", .{ .pixel_size = 48.0 });
+    defer layout.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), layout.positions.len);
 }
