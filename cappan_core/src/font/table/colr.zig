@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("../parser.zig");
+const ivs = @import("item_variation_store.zig");
 const ft = @import("../../features.zig").features;
 
 pub const ColorLayer = struct {
@@ -231,6 +232,8 @@ pub const ColrTable = struct {
     base_glyph_list_offset: u32,
     layer_list_offset: u32,
     clip_list_offset: u32,
+    var_index_map_offset: u32,
+    item_variation_store_offset: u32,
 
     pub fn findBaseGlyph(self: ColrTable, glyph_id: u16) ?BaseGlyphRecord {
         var lo: u32 = 0;
@@ -309,8 +312,52 @@ pub const ColrTable = struct {
         return std.math.add(u32, base, rel) catch return null;
     }
 
+    // A truncated varIndexBase is treated as 'no variation' so that fonts that
+    // rendered before variation support keep rendering (deltas simply stay 0).
+    fn readVarIndexBase(self: ColrTable, offset: usize) u32 {
+        return parser.readU32(self.data, offset) catch 0xFFFFFFFF;
+    }
+
+    fn varDeltaInt(self: ColrTable, var_index_base: u32, sub: u32, coords: []const f32) i32 {
+        if (comptime !ft.enable_variable) return 0;
+        if (coords.len == 0) return 0;
+        if (self.item_variation_store_offset == 0) return 0;
+        if (var_index_base == 0xFFFFFFFF) return 0;
+        const var_index = std.math.add(u32, var_index_base, sub) catch return 0;
+        return ivs.getDeltaForVarIndex(
+            self.data,
+            self.var_index_map_offset,
+            self.item_variation_store_offset,
+            var_index,
+            coords,
+        ) catch return 0;
+    }
+
+    fn varDeltaRaw(self: ColrTable, var_index_base: u32, sub: u32, coords: []const f32) f32 {
+        return @floatFromInt(self.varDeltaInt(var_index_base, sub, coords));
+    }
+
+    fn addI16(self: ColrTable, raw: i16, var_index_base: u32, sub: u32, coords: []const f32) i16 {
+        // i64: raw + delta can exceed i32 when the delta is at the i32 extremes.
+        const adjusted = @as(i64, raw) + self.varDeltaInt(var_index_base, sub, coords);
+        return @intCast(std.math.clamp(adjusted, std.math.minInt(i16), std.math.maxInt(i16)));
+    }
+
+    fn addU16(self: ColrTable, raw: u16, var_index_base: u32, sub: u32, coords: []const f32) u16 {
+        const adjusted = @as(i64, raw) + self.varDeltaInt(var_index_base, sub, coords);
+        return @intCast(std.math.clamp(adjusted, 0, std.math.maxInt(u16)));
+    }
+
+    fn addF2Dot14(self: ColrTable, raw: f32, var_index_base: u32, sub: u32, coords: []const f32) f32 {
+        return raw + self.varDeltaRaw(var_index_base, sub, coords) / 16384.0;
+    }
+
+    fn addFixed(self: ColrTable, raw: f32, var_index_base: u32, sub: u32, coords: []const f32) f32 {
+        return raw + self.varDeltaRaw(var_index_base, sub, coords) / 65536.0;
+    }
+
     /// Parse a Paint record at the given absolute offset.
-    pub fn readPaint(self: ColrTable, abs_offset: u32) ?Paint {
+    pub fn readPaint(self: ColrTable, abs_offset: u32, coords: []const f32) ?Paint {
         if (comptime !ft.enable_colr_v1) return null;
         const off: usize = @intCast(abs_offset);
         if (off > std.math.maxInt(usize) - 24) return null;
@@ -328,7 +375,11 @@ pub const ColrTable = struct {
             // PaintSolid, PaintVarSolid
             2, 3 => {
                 const pal_idx = parser.readU16(self.data, off + 1) catch return null;
-                const alpha = parser.readF2Dot14(self.data, off + 3) catch return null;
+                var alpha = parser.readF2Dot14(self.data, off + 3) catch return null;
+                if (fmt == 3) {
+                    const vb = self.readVarIndexBase(off + 5);
+                    alpha = self.addF2Dot14(alpha, vb, 0, coords);
+                }
                 return Paint{ .solid = .{
                     .palette_index = pal_idx,
                     .alpha = alpha,
@@ -337,12 +388,21 @@ pub const ColrTable = struct {
             // PaintLinearGradient, PaintVarLinearGradient
             4, 5 => {
                 const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const x0 = parser.readI16(self.data, off + 4) catch return null;
-                const y0 = parser.readI16(self.data, off + 6) catch return null;
-                const x1 = parser.readI16(self.data, off + 8) catch return null;
-                const y1 = parser.readI16(self.data, off + 10) catch return null;
-                const x2 = parser.readI16(self.data, off + 12) catch return null;
-                const y2 = parser.readI16(self.data, off + 14) catch return null;
+                var x0 = parser.readI16(self.data, off + 4) catch return null;
+                var y0 = parser.readI16(self.data, off + 6) catch return null;
+                var x1 = parser.readI16(self.data, off + 8) catch return null;
+                var y1 = parser.readI16(self.data, off + 10) catch return null;
+                var x2 = parser.readI16(self.data, off + 12) catch return null;
+                var y2 = parser.readI16(self.data, off + 14) catch return null;
+                if (fmt == 5) {
+                    const vb = self.readVarIndexBase(off + 16);
+                    x0 = self.addI16(x0, vb, 0, coords);
+                    y0 = self.addI16(y0, vb, 1, coords);
+                    x1 = self.addI16(x1, vb, 2, coords);
+                    y1 = self.addI16(y1, vb, 3, coords);
+                    x2 = self.addI16(x2, vb, 4, coords);
+                    y2 = self.addI16(y2, vb, 5, coords);
+                }
                 return Paint{ .linear_gradient = .{
                     .color_line_offset = cl_abs,
                     .x0 = x0,
@@ -357,12 +417,21 @@ pub const ColrTable = struct {
             // PaintRadialGradient, PaintVarRadialGradient
             6, 7 => {
                 const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const x0 = parser.readI16(self.data, off + 4) catch return null;
-                const y0 = parser.readI16(self.data, off + 6) catch return null;
-                const r0 = parser.readU16(self.data, off + 8) catch return null;
-                const x1 = parser.readI16(self.data, off + 10) catch return null;
-                const y1 = parser.readI16(self.data, off + 12) catch return null;
-                const r1 = parser.readU16(self.data, off + 14) catch return null;
+                var x0 = parser.readI16(self.data, off + 4) catch return null;
+                var y0 = parser.readI16(self.data, off + 6) catch return null;
+                var r0 = parser.readU16(self.data, off + 8) catch return null;
+                var x1 = parser.readI16(self.data, off + 10) catch return null;
+                var y1 = parser.readI16(self.data, off + 12) catch return null;
+                var r1 = parser.readU16(self.data, off + 14) catch return null;
+                if (fmt == 7) {
+                    const vb = self.readVarIndexBase(off + 16);
+                    x0 = self.addI16(x0, vb, 0, coords);
+                    y0 = self.addI16(y0, vb, 1, coords);
+                    r0 = self.addU16(r0, vb, 2, coords);
+                    x1 = self.addI16(x1, vb, 3, coords);
+                    y1 = self.addI16(y1, vb, 4, coords);
+                    r1 = self.addU16(r1, vb, 5, coords);
+                }
                 return Paint{ .radial_gradient = .{
                     .color_line_offset = cl_abs,
                     .x0 = x0,
@@ -377,10 +446,17 @@ pub const ColrTable = struct {
             // PaintSweepGradient, PaintVarSweepGradient
             8, 9 => {
                 const cl_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const cx = parser.readI16(self.data, off + 4) catch return null;
-                const cy = parser.readI16(self.data, off + 6) catch return null;
-                const start_ang = parser.readF2Dot14(self.data, off + 8) catch return null;
-                const end_ang = parser.readF2Dot14(self.data, off + 10) catch return null;
+                var cx = parser.readI16(self.data, off + 4) catch return null;
+                var cy = parser.readI16(self.data, off + 6) catch return null;
+                var start_ang = parser.readF2Dot14(self.data, off + 8) catch return null;
+                var end_ang = parser.readF2Dot14(self.data, off + 10) catch return null;
+                if (fmt == 9) {
+                    const vb = self.readVarIndexBase(off + 12);
+                    cx = self.addI16(cx, vb, 0, coords);
+                    cy = self.addI16(cy, vb, 1, coords);
+                    start_ang = self.addF2Dot14(start_ang, vb, 2, coords);
+                    end_ang = self.addF2Dot14(end_ang, vb, 3, coords);
+                }
                 return Paint{ .sweep_gradient = .{
                     .color_line_offset = cl_abs,
                     .center_x = cx,
@@ -408,12 +484,21 @@ pub const ColrTable = struct {
             12, 13 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
                 const xform_off: usize = @intCast(self.readRelOffset(abs_offset, off + 4) orelse return null);
-                const xx = parser.readFixed(self.data, xform_off) catch return null;
-                const yx = parser.readFixed(self.data, xform_off + 4) catch return null;
-                const xy = parser.readFixed(self.data, xform_off + 8) catch return null;
-                const yy = parser.readFixed(self.data, xform_off + 12) catch return null;
-                const dx = parser.readFixed(self.data, xform_off + 16) catch return null;
-                const dy = parser.readFixed(self.data, xform_off + 20) catch return null;
+                var xx = parser.readFixed(self.data, xform_off) catch return null;
+                var yx = parser.readFixed(self.data, xform_off + 4) catch return null;
+                var xy = parser.readFixed(self.data, xform_off + 8) catch return null;
+                var yy = parser.readFixed(self.data, xform_off + 12) catch return null;
+                var dx = parser.readFixed(self.data, xform_off + 16) catch return null;
+                var dy = parser.readFixed(self.data, xform_off + 20) catch return null;
+                if (fmt == 13) {
+                    const vb = self.readVarIndexBase(xform_off + 24);
+                    xx = self.addFixed(xx, vb, 0, coords);
+                    yx = self.addFixed(yx, vb, 1, coords);
+                    xy = self.addFixed(xy, vb, 2, coords);
+                    yy = self.addFixed(yy, vb, 3, coords);
+                    dx = self.addFixed(dx, vb, 4, coords);
+                    dy = self.addFixed(dy, vb, 5, coords);
+                }
                 return Paint{ .transform = .{
                     .paint_offset = paint_abs,
                     .xx = xx,
@@ -427,8 +512,13 @@ pub const ColrTable = struct {
             // PaintTranslate, PaintVarTranslate
             14, 15 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const dx = parser.readI16(self.data, off + 4) catch return null;
-                const dy = parser.readI16(self.data, off + 6) catch return null;
+                var dx = parser.readI16(self.data, off + 4) catch return null;
+                var dy = parser.readI16(self.data, off + 6) catch return null;
+                if (fmt == 15) {
+                    const vb = self.readVarIndexBase(off + 8);
+                    dx = self.addI16(dx, vb, 0, coords);
+                    dy = self.addI16(dy, vb, 1, coords);
+                }
                 return Paint{ .translate = .{
                     .paint_offset = paint_abs,
                     .dx = dx,
@@ -438,8 +528,13 @@ pub const ColrTable = struct {
             // PaintScale, PaintVarScale
             16, 17 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const sx = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const sy = parser.readF2Dot14(self.data, off + 6) catch return null;
+                var sx = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var sy = parser.readF2Dot14(self.data, off + 6) catch return null;
+                if (fmt == 17) {
+                    const vb = self.readVarIndexBase(off + 8);
+                    sx = self.addF2Dot14(sx, vb, 0, coords);
+                    sy = self.addF2Dot14(sy, vb, 1, coords);
+                }
                 return Paint{ .scale = .{
                     .paint_offset = paint_abs,
                     .scale_x = sx,
@@ -449,10 +544,17 @@ pub const ColrTable = struct {
             // PaintScaleAroundCenter, PaintVarScaleAroundCenter
             18, 19 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const sx = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const sy = parser.readF2Dot14(self.data, off + 6) catch return null;
-                const cx = parser.readI16(self.data, off + 8) catch return null;
-                const cy = parser.readI16(self.data, off + 10) catch return null;
+                var sx = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var sy = parser.readF2Dot14(self.data, off + 6) catch return null;
+                var cx = parser.readI16(self.data, off + 8) catch return null;
+                var cy = parser.readI16(self.data, off + 10) catch return null;
+                if (fmt == 19) {
+                    const vb = self.readVarIndexBase(off + 12);
+                    sx = self.addF2Dot14(sx, vb, 0, coords);
+                    sy = self.addF2Dot14(sy, vb, 1, coords);
+                    cx = self.addI16(cx, vb, 2, coords);
+                    cy = self.addI16(cy, vb, 3, coords);
+                }
                 return Paint{ .scale_around_center = .{
                     .paint_offset = paint_abs,
                     .scale_x = sx,
@@ -464,7 +566,11 @@ pub const ColrTable = struct {
             // PaintScaleUniform, PaintVarScaleUniform
             20, 21 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const s = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var s = parser.readF2Dot14(self.data, off + 4) catch return null;
+                if (fmt == 21) {
+                    const vb = self.readVarIndexBase(off + 6);
+                    s = self.addF2Dot14(s, vb, 0, coords);
+                }
                 return Paint{ .scale_uniform = .{
                     .paint_offset = paint_abs,
                     .scale = s,
@@ -473,9 +579,15 @@ pub const ColrTable = struct {
             // PaintScaleUniformAroundCenter, PaintVarScaleUniformAroundCenter
             22, 23 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const s = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const cx = parser.readI16(self.data, off + 6) catch return null;
-                const cy = parser.readI16(self.data, off + 8) catch return null;
+                var s = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var cx = parser.readI16(self.data, off + 6) catch return null;
+                var cy = parser.readI16(self.data, off + 8) catch return null;
+                if (fmt == 23) {
+                    const vb = self.readVarIndexBase(off + 10);
+                    s = self.addF2Dot14(s, vb, 0, coords);
+                    cx = self.addI16(cx, vb, 1, coords);
+                    cy = self.addI16(cy, vb, 2, coords);
+                }
                 return Paint{ .scale_uniform_around_center = .{
                     .paint_offset = paint_abs,
                     .scale = s,
@@ -486,7 +598,11 @@ pub const ColrTable = struct {
             // PaintRotate, PaintVarRotate
             24, 25 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const angle = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var angle = parser.readF2Dot14(self.data, off + 4) catch return null;
+                if (fmt == 25) {
+                    const vb = self.readVarIndexBase(off + 6);
+                    angle = self.addF2Dot14(angle, vb, 0, coords);
+                }
                 return Paint{ .rotate = .{
                     .paint_offset = paint_abs,
                     .angle = angle,
@@ -495,9 +611,15 @@ pub const ColrTable = struct {
             // PaintRotateAroundCenter, PaintVarRotateAroundCenter
             26, 27 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const angle = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const cx = parser.readI16(self.data, off + 6) catch return null;
-                const cy = parser.readI16(self.data, off + 8) catch return null;
+                var angle = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var cx = parser.readI16(self.data, off + 6) catch return null;
+                var cy = parser.readI16(self.data, off + 8) catch return null;
+                if (fmt == 27) {
+                    const vb = self.readVarIndexBase(off + 10);
+                    angle = self.addF2Dot14(angle, vb, 0, coords);
+                    cx = self.addI16(cx, vb, 1, coords);
+                    cy = self.addI16(cy, vb, 2, coords);
+                }
                 return Paint{ .rotate_around_center = .{
                     .paint_offset = paint_abs,
                     .angle = angle,
@@ -508,8 +630,13 @@ pub const ColrTable = struct {
             // PaintSkew, PaintVarSkew
             28, 29 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const xs = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const ys = parser.readF2Dot14(self.data, off + 6) catch return null;
+                var xs = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var ys = parser.readF2Dot14(self.data, off + 6) catch return null;
+                if (fmt == 29) {
+                    const vb = self.readVarIndexBase(off + 8);
+                    xs = self.addF2Dot14(xs, vb, 0, coords);
+                    ys = self.addF2Dot14(ys, vb, 1, coords);
+                }
                 return Paint{ .skew = .{
                     .paint_offset = paint_abs,
                     .x_skew_angle = xs,
@@ -519,10 +646,17 @@ pub const ColrTable = struct {
             // PaintSkewAroundCenter, PaintVarSkewAroundCenter
             30, 31 => {
                 const paint_abs = self.readRelOffset(abs_offset, off + 1) orelse return null;
-                const xs = parser.readF2Dot14(self.data, off + 4) catch return null;
-                const ys = parser.readF2Dot14(self.data, off + 6) catch return null;
-                const cx = parser.readI16(self.data, off + 8) catch return null;
-                const cy = parser.readI16(self.data, off + 10) catch return null;
+                var xs = parser.readF2Dot14(self.data, off + 4) catch return null;
+                var ys = parser.readF2Dot14(self.data, off + 6) catch return null;
+                var cx = parser.readI16(self.data, off + 8) catch return null;
+                var cy = parser.readI16(self.data, off + 10) catch return null;
+                if (fmt == 31) {
+                    const vb = self.readVarIndexBase(off + 12);
+                    xs = self.addF2Dot14(xs, vb, 0, coords);
+                    ys = self.addF2Dot14(ys, vb, 1, coords);
+                    cx = self.addI16(cx, vb, 2, coords);
+                    cy = self.addI16(cy, vb, 3, coords);
+                }
                 return Paint{ .skew_around_center = .{
                     .paint_offset = paint_abs,
                     .x_skew_angle = xs,
@@ -547,7 +681,7 @@ pub const ColrTable = struct {
     }
 
     /// Parse a ColorLine at the given absolute offset.
-    pub fn readColorLine(self: ColrTable, allocator: std.mem.Allocator, abs_offset: u32, is_var: bool) !ColorLine {
+    pub fn readColorLine(self: ColrTable, allocator: std.mem.Allocator, abs_offset: u32, is_var: bool, coords: []const f32) !ColorLine {
         if (comptime !ft.enable_colr_v1) {
             return ColorLine{
                 .extend = .pad,
@@ -565,10 +699,17 @@ pub const ColrTable = struct {
         for (0..num_stops) |i| {
             const base_off = std.math.add(usize, off, 3) catch return error.InvalidColorLine;
             const stop_off = std.math.add(usize, base_off, i * stride) catch return error.InvalidColorLine;
+            var stop_offset = try parser.readF2Dot14(self.data, stop_off);
+            var alpha = try parser.readF2Dot14(self.data, stop_off + 4);
+            if (is_var) {
+                const vb = self.readVarIndexBase(stop_off + 6);
+                stop_offset = self.addF2Dot14(stop_offset, vb, 0, coords);
+                alpha = self.addF2Dot14(alpha, vb, 1, coords);
+            }
             stops[i] = .{
-                .stop_offset = try parser.readF2Dot14(self.data, stop_off),
+                .stop_offset = stop_offset,
                 .palette_index = try parser.readU16(self.data, stop_off + 2),
-                .alpha = try parser.readF2Dot14(self.data, stop_off + 4),
+                .alpha = alpha,
             };
         }
         return ColorLine{
@@ -632,12 +773,20 @@ pub fn parse(data: []const u8) !ColrTable {
     var base_glyph_list_offset: u32 = 0;
     var layer_list_offset: u32 = 0;
     var clip_list_offset: u32 = 0;
+    var var_index_map_offset: u32 = 0;
+    var item_variation_store_offset: u32 = 0;
 
     if (comptime ft.enable_colr_v1) {
         if (version == 1 and data.len >= 26) {
             base_glyph_list_offset = parser.readU32(data, 14) catch 0;
             layer_list_offset = parser.readU32(data, 18) catch 0;
             clip_list_offset = parser.readU32(data, 22) catch 0;
+        }
+        if (comptime ft.enable_variable) {
+            if (version == 1 and data.len >= 34) {
+                var_index_map_offset = parser.readU32(data, 26) catch 0;
+                item_variation_store_offset = parser.readU32(data, 30) catch 0;
+            }
         }
     }
 
@@ -651,7 +800,46 @@ pub fn parse(data: []const u8) !ColrTable {
         .base_glyph_list_offset = base_glyph_list_offset,
         .layer_list_offset = layer_list_offset,
         .clip_list_offset = clip_list_offset,
+        .var_index_map_offset = var_index_map_offset,
+        .item_variation_store_offset = item_variation_store_offset,
     };
+}
+
+fn writeU16(buf: []u8, off: usize, value: u16) void {
+    buf[off] = @intCast(value >> 8);
+    buf[off + 1] = @intCast(value & 0xFF);
+}
+
+fn writeI16(buf: []u8, off: usize, value: i16) void {
+    writeU16(buf, off, @as(u16, @bitCast(value)));
+}
+
+fn writeU32(buf: []u8, off: usize, value: u32) void {
+    buf[off] = @intCast((value >> 24) & 0xFF);
+    buf[off + 1] = @intCast((value >> 16) & 0xFF);
+    buf[off + 2] = @intCast((value >> 8) & 0xFF);
+    buf[off + 3] = @intCast(value & 0xFF);
+}
+
+fn writeTestItemVariationStore(buf: []u8, store_off: usize, delta: i16) void {
+    writeU16(buf, store_off, 1);
+    writeU32(buf, store_off + 2, 28);
+    writeU16(buf, store_off + 6, 1);
+    writeU32(buf, store_off + 8, 16);
+
+    const data_off = store_off + 16;
+    writeU16(buf, data_off, 1);
+    writeU16(buf, data_off + 2, 1);
+    writeU16(buf, data_off + 4, 1);
+    writeU16(buf, data_off + 6, 0);
+    writeI16(buf, data_off + 8, delta);
+
+    const region_off = store_off + 28;
+    writeU16(buf, region_off, 1);
+    writeU16(buf, region_off + 2, 1);
+    writeU16(buf, region_off + 4, 0);
+    writeU16(buf, region_off + 6, 0x4000);
+    writeU16(buf, region_off + 8, 0x4000);
 }
 
 test "colr parse does not crash on missing table" {
@@ -713,7 +901,60 @@ test "colr v1 readPaint solid" {
     @memcpy(full_buf[26..31], &paint_buf);
 
     const table = try parse(&full_buf);
-    const paint = table.readPaint(26).?;
+    const paint = table.readPaint(26, &.{}).?;
+    try std.testing.expectEqual(@as(u16, 5), paint.solid.palette_index);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), paint.solid.alpha, 0.001);
+}
+
+test "colr v1 PaintVarSolid applies alpha delta" {
+    if (comptime !ft.enable_colr_v1 or !ft.enable_variable) return error.SkipZigTest;
+
+    var buf = [_]u8{0} ** 86;
+    writeU16(&buf, 0, 1);
+    writeU32(&buf, 30, 48);
+
+    buf[34] = 3;
+    writeU16(&buf, 35, 5);
+    writeU16(&buf, 37, 0x4000);
+    writeU32(&buf, 39, 0);
+    writeTestItemVariationStore(&buf, 48, -8192);
+
+    const table = try parse(&buf);
+    const unchanged = table.readPaint(34, &.{0.0}).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), unchanged.solid.alpha, 0.001);
+
+    const moved = table.readPaint(34, &.{1.0}).?;
+    try std.testing.expectEqual(@as(u16, 5), moved.solid.palette_index);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), moved.solid.alpha, 0.001);
+}
+
+test "colr v1 truncated PaintVarSolid varIndexBase keeps paint" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
+
+    var buf = [_]u8{0} ** 39;
+    writeU16(&buf, 0, 1);
+    buf[34] = 3;
+    writeU16(&buf, 35, 5);
+    writeU16(&buf, 37, 0x4000);
+
+    const table = try parse(&buf);
+    const paint = table.readPaint(34, &.{1.0}) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 5), paint.solid.palette_index);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), paint.solid.alpha, 0.001);
+}
+
+test "colr v1 no variation when store offset zero" {
+    if (comptime !ft.enable_colr_v1) return error.SkipZigTest;
+
+    var buf = [_]u8{0} ** 43;
+    writeU16(&buf, 0, 1);
+    buf[34] = 3;
+    writeU16(&buf, 35, 5);
+    writeU16(&buf, 37, 0x4000);
+    writeU32(&buf, 39, 0);
+
+    const table = try parse(&buf);
+    const paint = table.readPaint(34, &.{1.0}).?;
     try std.testing.expectEqual(@as(u16, 5), paint.solid.palette_index);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), paint.solid.alpha, 0.001);
 }
@@ -745,9 +986,11 @@ test "colr v1 readPaint colr layers" {
         .base_glyph_list_offset = 0,
         .layer_list_offset = 0,
         .clip_list_offset = 0,
+        .var_index_map_offset = 0,
+        .item_variation_store_offset = 0,
     };
     _ = table;
-    const paint = table2.readPaint(26).?;
+    const paint = table2.readPaint(26, &.{}).?;
     try std.testing.expectEqual(@as(u8, 3), paint.colr_layers.num_layers);
     try std.testing.expectEqual(@as(u32, 7), paint.colr_layers.first_layer_index);
 }
@@ -785,9 +1028,11 @@ test "colr v1 readColorLine" {
         .base_glyph_list_offset = 0,
         .layer_list_offset = 0,
         .clip_list_offset = 0,
+        .var_index_map_offset = 0,
+        .item_variation_store_offset = 0,
     };
 
-    var cl = try table.readColorLine(std.testing.allocator, 0, false);
+    var cl = try table.readColorLine(std.testing.allocator, 0, false, &.{});
     defer cl.deinit();
 
     try std.testing.expectEqual(ExtendMode.pad, cl.extend);
@@ -846,6 +1091,8 @@ test "colr v1 findBaseGlyphV1Paint" {
         .base_glyph_list_offset = 26,
         .layer_list_offset = 0,
         .clip_list_offset = 0,
+        .var_index_map_offset = 0,
+        .item_variation_store_offset = 0,
     };
 
     // glyph 10 → base_glyph_list_offset + paintOffset = 26 + 200 = 226
@@ -897,6 +1144,8 @@ test "colr v1 getLayerListPaint" {
         .base_glyph_list_offset = 0,
         .layer_list_offset = 10,
         .clip_list_offset = 0,
+        .var_index_map_offset = 0,
+        .item_variation_store_offset = 0,
     };
 
     // layer 0 → layer_list_offset + paintOffset[0] = 10 + 50 = 60
@@ -958,6 +1207,8 @@ test "colr v1 getClipBox" {
         .base_glyph_list_offset = 0,
         .layer_list_offset = 0,
         .clip_list_offset = 10,
+        .var_index_map_offset = 0,
+        .item_variation_store_offset = 0,
     };
 
     // glyph 10 is in range [5, 15] → ClipBox should be found

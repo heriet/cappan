@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-vertical test-arabic
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-colr-v1-variable test-vertical test-arabic
 
 setup: fetch-asset generate-subset
 
@@ -70,6 +70,28 @@ test-colr-v1:
 		--size 32 \
 		--output /tmp/test_colr_v1_glyphs.png
 	@echo "test-colr-v1: PASS (no crash)"
+
+test-colr-v1-variable:
+	@if [ ! -f .font/test_glyphs-glyf_colr_1_variable.ttf ]; then \
+		echo "variable COLR font not found, running fetch-asset.sh..."; \
+		$(DOCKER_RUN) bash script/fetch-asset.sh; \
+	fi
+	$(DOCKER_RUN) zig build
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/test_glyphs-glyf_colr_1_variable.ttf \
+		--text "$$(printf '\363\260\204\200\363\260\210\200')" \
+		--size 128 \
+		--variation "SWPS=0,ROTA=0,APH1=0,GRX0=0,TLDX=0" \
+		--output /tmp/colr_var_default.png
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/test_glyphs-glyf_colr_1_variable.ttf \
+		--text "$$(printf '\363\260\204\200\363\260\210\200')" \
+		--size 128 \
+		--variation "SWPS=-45,ROTA=90,APH1=-0.7,GRX0=500,TLDX=100" \
+		--output /tmp/colr_var_moved.png
+	@if cmp -s /tmp/colr_var_default.png /tmp/colr_var_moved.png; then \
+		echo "test-colr-v1-variable: FAIL (output did not change)"; exit 1; \
+	else echo "test-colr-v1-variable: PASS (output changed with axis)"; fi
 
 test-vertical:
 	@if [ ! -f .font/NotoSansJP-Regular.otf ]; then \

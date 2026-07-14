@@ -15,6 +15,7 @@ NOTO_SANS_ARABIC_SHA256="bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6
 BROTLI_DICT_SHA256="20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70"
 TEST_COLR_V1_SHA256="e87738d4e9f7f319e34045340c0a17bba948ed638345aba47d4a0d7d6d09f163"
 TEST_GLYPHS_COLR_1_SHA256="8aa611b1ca97044ac6f13dc982fde29256612f0a5acc6ef47ca541a7a5b99b28"
+TEST_GLYPHS_COLR_1_VAR_SHA256="ad575a09d6748aebcb3b90ffd384c64d5c64b5fd9927967e7cd7cc0d70c98d34"
 
 verify_sha256() {
   local file="$1" expected="$2"
@@ -186,6 +187,20 @@ if ! file_ok "$FONT_DIR/test_glyphs-glyf_colr_1.ttf" "$TEST_GLYPHS_COLR_1_SHA256
   echo "  OK: test_glyphs-glyf_colr_1.ttf"
 else
   echo "  OK: test_glyphs-glyf_colr_1.ttf (cached)"
+fi
+
+# --- test_glyphs-glyf_colr_1_variable.ttf (variable COLR v1 test font, Apache 2.0, googlefonts) ---
+if ! file_ok "$FONT_DIR/test_glyphs-glyf_colr_1_variable.ttf" "$TEST_GLYPHS_COLR_1_VAR_SHA256"; then
+  echo "Downloading test_glyphs-glyf_colr_1_variable.ttf (googlefonts color-fonts)..."
+  curl -fsSL "https://raw.githubusercontent.com/googlefonts/color-fonts/main/fonts/test_glyphs-glyf_colr_1_variable.ttf" \
+    -o "$FONT_DIR/test_glyphs-glyf_colr_1_variable.ttf"
+  if ! verify_sha256 "$FONT_DIR/test_glyphs-glyf_colr_1_variable.ttf" "$TEST_GLYPHS_COLR_1_VAR_SHA256"; then
+    echo "ERROR: test_glyphs-glyf_colr_1_variable.ttf checksum mismatch" >&2
+    exit 1
+  fi
+  echo "  OK: test_glyphs-glyf_colr_1_variable.ttf"
+else
+  echo "  OK: test_glyphs-glyf_colr_1_variable.ttf (cached)"
 fi
 
 # --- SourceSans3-Variable.ttf ---

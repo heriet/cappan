@@ -494,6 +494,18 @@ pub const Font = struct {
         return self.stat;
     }
 
+    /// Normalize fvar user coordinates and apply avar mapping. Caller owns the returned slice.
+    /// The returned coordinates are already avar-adjusted; do not pass them to APIs such as
+    /// getHMetricsWithVariation/getVMetricsWithVariation that apply avar internally.
+    pub fn computeNormalizedCoords(self: Font, allocator: std.mem.Allocator, user_coords: []const f32) ![]f32 {
+        if (comptime !ft.enable_variable) return error.VariableDisabled;
+        const fvar = self.fvar orelse return error.NoFvar;
+        const normalized = try fvar.normalizeCoords(allocator, user_coords);
+        errdefer allocator.free(normalized);
+        if (self.avar) |avar| try avar.mapNormalizedCoords(normalized);
+        return normalized;
+    }
+
     pub fn getUnitsPerEm(self: Font) u16 {
         return self.head.units_per_em;
     }
@@ -588,6 +600,14 @@ pub const Font = struct {
         const substituter = VerticalSubstituter.init(self.allocator, &self);
         defer substituter.deinit();
         return substituter.substitute(glyph_id);
+    }
+
+    /// True when the font carries a usable COLR v1 base-glyph list. Gated on
+    /// enable_colr_v1 (not just enable_color) so callers match the paint path.
+    pub fn hasColrV1(self: Font) bool {
+        if (comptime !ft.enable_colr_v1) return false;
+        const colr = self.colr orelse return false;
+        return colr.base_glyph_list_offset != 0;
     }
 
     pub fn getColorLayers(self: Font, glyph_id: u16) ?colr_mod.BaseGlyphRecord {

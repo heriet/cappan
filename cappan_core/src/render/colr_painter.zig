@@ -74,6 +74,7 @@ pub const PaintContext = struct {
     clip_offset_x: f32,
     clip_offset_y: f32,
     eval_budget: *u32,
+    normalized_coords: []const f32,
 };
 
 pub const RenderResult = struct {
@@ -95,6 +96,7 @@ pub fn renderColrV1Glyph(
     scale: f32,
     fg_color: rgba_bitmap_mod.Color,
     raster_options: scanline_mod.RasterOptions,
+    normalized_coords: []const f32,
 ) !?RenderResult {
     if (!(scale > 0.0)) return null;
     const paint_offset = colr.findBaseGlyphV1Paint(glyph_id) orelse return null;
@@ -137,6 +139,7 @@ pub fn renderColrV1Glyph(
         .clip_offset_x = clip_offset_x,
         .clip_offset_y = clip_offset_y,
         .eval_budget = &eval_budget,
+        .normalized_coords = normalized_coords,
     };
 
     const bitmap = (try evaluatePaint(&ctx, paint_offset, Affine2x3.identity, 0)) orelse return null;
@@ -156,7 +159,7 @@ fn evaluatePaint(
     if (depth >= MAX_RECURSION_DEPTH) return null;
     if (ctx.eval_budget.* == 0) return null;
     ctx.eval_budget.* -= 1;
-    const paint = ctx.colr.readPaint(paint_offset) orelse return null;
+    const paint = ctx.colr.readPaint(paint_offset, ctx.normalized_coords) orelse return null;
     return switch (paint) {
         .colr_layers => |p| try evalColrLayers(ctx, p, transform, depth),
         .solid => |p| try evalSolid(ctx, p),
@@ -211,6 +214,8 @@ fn evalGlyph(ctx: *const PaintContext, p: colr_mod.PaintGlyph, transform: Affine
     var child_bmp = (try evaluatePaint(ctx, p.paint_offset, transform, depth + 1)) orelse return null;
     defer child_bmp.deinit();
 
+    // PaintGlyph child outlines intentionally do not apply variations here.
+    // Linking this to gvar remains future work.
     const outline_opt = ctx.font.getGlyphOutline(ctx.allocator, p.glyph_id) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
@@ -352,7 +357,7 @@ fn evalGenericSkew(
 }
 
 fn evalLinearGradient(ctx: *const PaintContext, p: colr_mod.PaintLinearGradient, transform: Affine2x3) !?rgba_bitmap_mod.RgbaBitmap {
-    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var) catch |err| switch (err) {
+    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var, ctx.normalized_coords) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
@@ -384,7 +389,7 @@ fn evalLinearGradient(ctx: *const PaintContext, p: colr_mod.PaintLinearGradient,
 }
 
 fn evalRadialGradient(ctx: *const PaintContext, p: colr_mod.PaintRadialGradient, transform: Affine2x3) anyerror!?rgba_bitmap_mod.RgbaBitmap {
-    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var) catch |err| switch (err) {
+    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var, ctx.normalized_coords) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
@@ -423,7 +428,7 @@ fn evalRadialGradient(ctx: *const PaintContext, p: colr_mod.PaintRadialGradient,
 }
 
 fn evalSweepGradient(ctx: *const PaintContext, p: colr_mod.PaintSweepGradient, transform: Affine2x3) anyerror!?rgba_bitmap_mod.RgbaBitmap {
-    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var) catch |err| switch (err) {
+    var color_line = ctx.colr.readColorLine(ctx.allocator, p.color_line_offset, p.is_var, ctx.normalized_coords) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };

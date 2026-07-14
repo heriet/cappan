@@ -34,6 +34,9 @@ pub const RenderOptions = struct {
     cff_hinting: bool = false,
     auto_hinting: bool = false,
     vertical: bool = false,
+    /// avar-adjusted coordinates returned by Font.computeNormalizedCoords.
+    /// Currently used only for COLR v1 paint variations.
+    normalized_coords: []const f32 = &.{},
 };
 
 fn applyOutlineHinting(
@@ -808,6 +811,7 @@ fn tryRenderColrV1(
         glyph_scale,
         options.fg_color,
         raster_options,
+        options.normalized_coords,
     ) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,

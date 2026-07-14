@@ -69,6 +69,7 @@ const CommonOptions = struct {
     cff_hinting: bool = false,
     auto_hinting: bool = false,
     vertical: bool = false,
+    variation_spec: ?[]const u8 = null,
     raster_options: scanline_mod.RasterOptions = .{},
     paint_ops: std.ArrayListUnmanaged(paint_mod.PaintOperation) = .empty,
 };
@@ -90,6 +91,9 @@ fn parseCommonOption(allocator: std.mem.Allocator, opts: *CommonOptions, arg: []
                 return true;
             };
         }
+        return true;
+    } else if (std.mem.eql(u8, arg, "--variation")) {
+        opts.variation_spec = args.next();
         return true;
     } else if (std.mem.eql(u8, arg, "--fg-color")) {
         if (args.next()) |hex| {
@@ -426,6 +430,99 @@ fn writeImageByExtension(
     std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path, width, height });
 }
 
+const VariationSetting = struct {
+    tag: [4]u8,
+    value: f32,
+    matched: bool = false,
+};
+
+fn parseVariationSettings(allocator: std.mem.Allocator, spec: []const u8) ![]VariationSetting {
+    var settings: std.ArrayListUnmanaged(VariationSetting) = .empty;
+    errdefer settings.deinit(allocator);
+
+    var parts = std.mem.splitScalar(u8, spec, ',');
+    while (parts.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t\r\n");
+        if (part.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, part, '=') orelse {
+            std.debug.print("Warning: ignoring invalid variation token '{s}'\n", .{part});
+            continue;
+        };
+        const tag_raw = std.mem.trim(u8, part[0..eq], " \t\r\n");
+        const value_raw = std.mem.trim(u8, part[eq + 1 ..], " \t\r\n");
+        if (tag_raw.len == 0 or tag_raw.len > 4) {
+            std.debug.print("Warning: ignoring invalid variation axis tag '{s}'\n", .{tag_raw});
+            continue;
+        }
+        var tag: [4]u8 = .{ ' ', ' ', ' ', ' ' };
+        @memcpy(tag[0..tag_raw.len], tag_raw);
+        const value = std.fmt.parseFloat(f32, value_raw) catch {
+            std.debug.print("Warning: ignoring invalid variation value '{s}'\n", .{value_raw});
+            continue;
+        };
+        if (!std.math.isFinite(value)) {
+            std.debug.print("Warning: ignoring non-finite variation value '{s}'\n", .{value_raw});
+            continue;
+        }
+        try settings.append(allocator, .{ .tag = tag, .value = value });
+    }
+
+    return settings.toOwnedSlice(allocator);
+}
+
+/// Warn when --variation was given to a subcommand that does not apply it.
+/// Only `render` consumes it (COLR v1 paints); every other subcommand ignores it.
+fn warnVariationUnsupported(common: CommonOptions, subcommand: []const u8) void {
+    if (common.variation_spec != null) {
+        std.debug.print("Warning: --variation is not supported by {s}; ignoring\n", .{subcommand});
+    }
+}
+
+fn buildVariationCoords(
+    allocator: std.mem.Allocator,
+    font: cappan_core.font.Font,
+    spec: []const u8,
+) !?[]f32 {
+    if (comptime !ft.enable_variable) {
+        std.debug.print("Warning: --variation ignored because variable font support is disabled\n", .{});
+        return null;
+    }
+    if (!font.isVariableFont()) {
+        std.debug.print("Warning: --variation ignored because the primary font has no fvar table\n", .{});
+        return null;
+    }
+    if (!font.hasColrV1()) {
+        std.debug.print("Warning: --variation currently affects COLR v1 paints only; this font has no COLR v1 table\n", .{});
+        return null;
+    }
+
+    const axis_count = font.getAxisCount();
+    const settings = try parseVariationSettings(allocator, spec);
+    defer allocator.free(settings);
+
+    const user_coords = try allocator.alloc(f32, axis_count);
+    defer allocator.free(user_coords);
+
+    for (0..axis_count) |i| {
+        const axis = try font.getAxis(@intCast(i));
+        user_coords[i] = axis.default_value;
+        for (settings) |*setting| {
+            if (std.mem.eql(u8, &setting.tag, &axis.tag)) {
+                user_coords[i] = setting.value;
+                setting.matched = true;
+            }
+        }
+    }
+
+    for (settings) |setting| {
+        if (!setting.matched) {
+            std.debug.print("Warning: unknown variation axis '{s}' ignored\n", .{&setting.tag});
+        }
+    }
+
+    return try font.computeNormalizedCoords(allocator, user_coords);
+}
+
 fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     var common: CommonOptions = .{};
     defer common.paint_ops.deinit(allocator);
@@ -465,6 +562,15 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     defer font_set.deinit(allocator);
     const fonts = font_set.fonts_list.items;
 
+    var normalized_coords: ?[]f32 = null;
+    defer if (normalized_coords) |coords| allocator.free(coords);
+    if (common.variation_spec) |spec| {
+        normalized_coords = buildVariationCoords(allocator, fonts[0], spec) catch |err| blk: {
+            std.debug.print("Warning: could not apply variation '{s}': {}\n", .{ spec, err });
+            break :blk null;
+        };
+    }
+
     if (common.vertical and comptime !ft.enable_vertical) {
         std.debug.print("Error: vertical layout is disabled at compile time\n", .{});
         return;
@@ -478,7 +584,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         std.debug.print("Warning: LCD rendering is not supported with vertical layout, LCD will be disabled\n", .{});
         common.lcd_rendering = false;
     }
-    if (common.lcd_rendering or common.paint_ops.items.len > 0) {
+    if (common.lcd_rendering or common.paint_ops.items.len > 0 or normalized_coords != null) {
         var bitmap = cappan_core.render.renderer.renderText(allocator, fonts, common.text.?, .{
             .pixel_size = common.size,
             .fg_color = common.fg_color,
@@ -494,6 +600,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .cff_hinting = common.cff_hinting,
             .auto_hinting = common.auto_hinting,
             .vertical = common.vertical,
+            .normalized_coords = normalized_coords orelse &.{},
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -516,6 +623,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             .cff_hinting = common.cff_hinting,
             .auto_hinting = common.auto_hinting,
             .vertical = common.vertical,
+            .normalized_coords = normalized_coords orelse &.{},
         }) catch |err| {
             std.debug.print("Error: rendering failed: {}\n", .{err});
             return;
@@ -600,6 +708,8 @@ fn cmdRenderIncremental(allocator: std.mem.Allocator, io: std.Io, args: *std.pro
             }
         }
     }
+
+    warnVariationUnsupported(common, "animate");
 
     if ((common.font_path == null and common.font_name == null) or common.text == null) {
         std.debug.print("Error: --font or --font-name and --text are required\n", .{});
@@ -852,6 +962,8 @@ fn cmdSubset(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         }
     }
 
+    warnVariationUnsupported(common, "subset");
+
     if ((common.font_path == null and common.font_name == null) or common.text == null or output_path == null) {
         std.debug.print("Error: --font or --font-name, --text, and --output are required for subset\n", .{});
         printUsage();
@@ -1048,6 +1160,8 @@ fn cmdInspect(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.
     const do_coverage = show_all or show_coverage;
     const do_features = show_all or show_features;
     const do_glyphs = show_glyphs;
+
+    warnVariationUnsupported(common, "inspect");
 
     if (common.font_path == null and common.font_name == null) {
         std.debug.print("Error: --font or --font-name is required\n", .{});
@@ -1536,6 +1650,8 @@ fn cmdSvg(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iter
         }
     }
 
+    warnVariationUnsupported(common, "svg");
+
     if ((common.font_path == null and common.font_name == null) or common.text == null or output_path == null) {
         std.debug.print("Error: --font or --font-name, --text, and --output are required for svg\n", .{});
         printUsage();
@@ -1638,6 +1754,8 @@ fn cmdMetrics(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.
             compare_path = args.next();
         }
     }
+
+    warnVariationUnsupported(common, "metrics");
 
     if (common.font_path == null and common.font_name == null) {
         std.debug.print("Error: --font or --font-name is required\n", .{});
@@ -1937,6 +2055,7 @@ fn printUsage() void {
         \\  --font-name          System font family or full name
         \\  --text               Text to render
         \\  --size               Font size in pixels (default: 48)
+        \\  --variation          Variable font axes applied to COLR v1 paints, e.g. "wght=700" (glyph outlines are not affected)
         \\  --fg-color           Foreground color in RRGGBB hex (default: 000000)
         \\  --bg-color           Background color in RRGGBB hex (default: FFFFFF)
         \\  --fallback-font      Fallback font file path (can be specified multiple times)
