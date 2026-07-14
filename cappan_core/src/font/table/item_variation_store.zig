@@ -40,6 +40,35 @@ pub fn getMappedSideBearingDelta(data: []const u8, mapping_offset: u32, store_of
     return getItemDelta(data, @as(usize, store_offset), entry.outer, entry.inner, normalized_coords);
 }
 
+/// Resolve a COLR v1 VarIndex and return the matching item variation delta.
+pub fn getDeltaForVarIndex(
+    data: []const u8,
+    var_index_map_offset: u32,
+    store_offset: u32,
+    var_index: u32,
+    normalized_coords: []const f32,
+) !i32 {
+    if (store_offset == 0) return 0;
+    if (var_index == 0xFFFFFFFF) return 0;
+
+    var outer: u16 = 0;
+    var inner: u16 = 0;
+    if (var_index_map_offset != 0) {
+        const mapping = try readDeltaSetIndexMap(data, var_index_map_offset);
+        if (mapping.map_count != 0) {
+            const idx: u32 = if (var_index < mapping.map_count) var_index else mapping.map_count - 1;
+            const entry = try readMapEntry(data, mapping, idx);
+            outer = entry.outer;
+            inner = entry.inner;
+        }
+    } else {
+        outer = @intCast(var_index >> 16);
+        inner = @intCast(var_index & 0xFFFF);
+    }
+
+    return getItemDelta(data, @as(usize, store_offset), outer, inner, normalized_coords);
+}
+
 pub fn readDeltaSetIndexMap(data: []const u8, map_offset: u32) !DeltaSetIndexMap {
     const off = @as(usize, map_offset);
     const format = try parser.readU8(data, off);
@@ -62,10 +91,11 @@ pub fn readDeltaSetIndexMap(data: []const u8, map_offset: u32) !DeltaSetIndexMap
     };
 }
 
-pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u16) !MapEntry {
+pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u32) !MapEntry {
     const entry_size: usize = @as(usize, (mapping.entry_format >> 4) & 3) + 1;
     const inner_bit_count: u5 = @intCast((mapping.entry_format & 0x0F) + 1);
-    const pos = mapping.data_offset + @as(usize, index) * entry_size;
+    const delta = std.math.mul(usize, @as(usize, index), entry_size) catch return error.UnexpectedEof;
+    const pos = std.math.add(usize, mapping.data_offset, delta) catch return error.UnexpectedEof;
     if (pos + entry_size > data.len) return error.UnexpectedEof;
 
     var entry_value: u32 = 0;
@@ -78,6 +108,33 @@ pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u16) !Ma
         .outer = @intCast(entry_value >> inner_bit_count),
         .inner = @intCast(entry_value & inner_mask),
     };
+}
+
+test "getDeltaForVarIndex without map resolves outer/inner" {
+    var data = [_]u8{0} ** 42;
+    const store_offset: u32 = 4;
+    data[5] = 1; // format = 1
+    data[9] = 28; // variationRegionListOffset = 28
+    data[11] = 1; // itemVariationDataCount = 1
+    data[15] = 16; // itemVariationData offset = 16
+
+    // ItemVariationData at store + 16.
+    data[21] = 1; // itemCount = 1
+    data[23] = 1; // wordDeltaCount = 1
+    data[25] = 1; // regionIndexCount = 1
+    data[28] = 0;
+    data[29] = 42; // delta = 42
+
+    // VariationRegionList at store + 28.
+    data[33] = 1; // axisCount = 1
+    data[35] = 1; // regionCount = 1
+    data[38] = 0x40; // peak = 1.0
+    data[39] = 0x00;
+    data[40] = 0x40; // end = 1.0
+    data[41] = 0x00;
+
+    try std.testing.expectEqual(@as(i32, 42), try getDeltaForVarIndex(&data, 0, store_offset, 0, &.{1.0}));
+    try std.testing.expectEqual(@as(i32, 0), try getDeltaForVarIndex(&data, 0, store_offset, 0xFFFFFFFF, &.{1.0}));
 }
 
 pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inner_index: u16, normalized_coords: []const f32) !i32 {
@@ -187,5 +244,10 @@ pub fn getItemDelta(data: []const u8, store_offset: usize, outer_index: u16, inn
         delta += @as(f32, @floatFromInt(delta_value)) * scalar;
     }
 
-    return @as(i32, @intFromFloat(@round(delta)));
+    // Clamp before @intFromFloat: crafted fonts can accumulate deltas beyond i32
+    // range, and an out-of-range conversion is UB in ReleaseFast.
+    const rounded = @round(delta);
+    if (!(rounded > -2147483648.0)) return std.math.minInt(i32);
+    if (rounded >= 2147483647.0) return std.math.maxInt(i32);
+    return @as(i32, @intFromFloat(rounded));
 }
