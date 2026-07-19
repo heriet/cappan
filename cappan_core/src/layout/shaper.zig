@@ -233,7 +233,7 @@ pub fn layoutText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
     const result = try positions.toOwnedSlice(allocator);
 
-    applyGposPositioning(result, fonts);
+    applyGposPositioning(result, fonts, false);
 
     return finishHorizontalLayout(allocator, result, fonts, options.max_width, options.text_align, max_width, num_lines, line_height, ascender_px, descender_px);
 }
@@ -311,7 +311,18 @@ fn processVerticalCodepoint(
         const fallback_advance_units = @as(i32, fonts[font_index].getAscender()) - @as(i32, fonts[font_index].getDescender());
         break :blk @floatFromInt(fallback_advance_units);
     };
-    const advance_h_px = advance_h_units * font_scale;
+    var advance_h_px = advance_h_units * font_scale;
+    // Combining marks must not advance the pen. When vmtx is present we trust it (marks
+    // normally carry 0 advance_height there, mirroring horizontal's trust of hmtx). When vmtx
+    // is absent, the fallback above is ~1em, which would push the following glyph a full em
+    // down; zero it for GDEF mark-class glyphs so the mark stays on its base.
+    if (comptime ft.enable_opentype_layout) {
+        if (vm == null) {
+            if (fonts[font_index].getGdefTable()) |gdef| {
+                if (gdef.getGlyphClass(glyph_id) == .mark) advance_h_px = 0;
+            }
+        }
+    }
 
     const h_metrics = fonts[font_index].getHMetrics(glyph_id) catch null;
     const advance_w_px: f32 = if (h_metrics) |m|
@@ -387,11 +398,12 @@ fn layoutTextVertical(allocator: std.mem.Allocator, fonts: []const font_mod.Font
         }
     }
 
-    return finishVerticalLayout(allocator, &state, column_width, options.max_width, options.text_align, ascender_px, descender_px, line_height);
+    return finishVerticalLayout(allocator, fonts, &state, column_width, options.max_width, options.text_align, ascender_px, descender_px, line_height);
 }
 
 fn finishVerticalLayout(
     allocator: std.mem.Allocator,
+    fonts: []const font_mod.Font,
     state: *VerticalLayoutState,
     column_width: f32,
     max_width: ?f32,
@@ -416,6 +428,14 @@ fn finishVerticalLayout(
     if (text_align != .left and total_height > 0) {
         try applyVerticalAlignment(allocator, state.positions.items, state.columns.items, state.advances.items, text_align, total_height, ascender_px, num_columns);
     }
+
+    // GPOS mark attachment (Mark-to-Base / Mark-to-Mark / Mark-to-Ligature) for vertical.
+    // applyMarkAnchor operates purely on x_offset/y_offset, whose device semantics are identical
+    // in both writing modes. Must run AFTER x_offset is finalized above and after vertical
+    // alignment, because it reads each base's final x_offset/y_offset. GlyphPosition.line here is
+    // the column index, so same-line checks become same-column checks. Cursive is skipped in
+    // vertical (horizontal-only semantics); self-gates on enable_opentype_layout.
+    applyGposPositioning(state.positions.items, fonts, true);
 
     const result = try state.positions.toOwnedSlice(allocator);
     return .{
@@ -605,7 +625,7 @@ pub fn layoutStyledText(
 
     const result = try positions.toOwnedSlice(allocator);
 
-    applyGposPositioning(result, fonts);
+    applyGposPositioning(result, fonts, false);
 
     return finishHorizontalLayout(allocator, result, fonts, options.max_width, options.text_align, max_width, num_lines, line_height, max_ascender_px, min_descender_px);
 }
@@ -640,7 +660,7 @@ fn layoutStyledTextVertical(
         }
     }
 
-    return finishVerticalLayout(allocator, &state, column_width, options.max_width, options.text_align, max_ascender_px, min_descender_px, line_height);
+    return finishVerticalLayout(allocator, fonts, &state, column_width, options.max_width, options.text_align, max_ascender_px, min_descender_px, line_height);
 }
 
 fn applyVerticalAlignment(
@@ -696,11 +716,13 @@ fn applyVerticalAlignment(
     }
 }
 
-fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font) void {
+fn applyGposPositioning(positions: []GlyphPosition, fonts: []const font_mod.Font, vertical: bool) void {
     if (comptime !ft.enable_opentype_layout) return;
     // Cursive attachment first: it can shift base-glyph y_offset, which the
-    // mark attachment pass below depends on.
-    applyCursiveAttachment(positions, fonts);
+    // mark attachment pass below depends on. Skipped in vertical mode: this
+    // codebase's cursive attachment is a horizontal-only, LTR-baseline-chain
+    // semantic and would misapply as an unintended intra-column y cascade.
+    if (!vertical) applyCursiveAttachment(positions, fonts);
     for (positions, 0..) |*pos, i| {
         const font = &fonts[pos.font_index];
         const gdef = font.getGdefTable() orelse continue;
@@ -1240,4 +1262,58 @@ test "mark-to-ligature attaches to ligature glyph" {
     defer layout.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), layout.positions.len);
+}
+
+test "vertical mark-to-base attaches at anchor position" {
+    if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_e = font.getGlyphId('e') catch return error.SkipZigTest;
+    const glyph_acute = font.getGlyphId(0x0301) catch return error.SkipZigTest;
+    const anchors = font.getMarkBaseAnchors(glyph_e, glyph_acute) orelse return error.SkipZigTest;
+
+    // "e" + U+0301 (combining acute), vertical.
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "e\xCC\x81", .{ .pixel_size = 48.0, .vertical = true });
+    defer layout.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), layout.positions.len);
+    try std.testing.expect(layout.vertical);
+    // Same column.
+    try std.testing.expectEqual(layout.positions[0].line, layout.positions[1].line);
+    // The mark must land exactly where the anchor formula puts it, relative to the base's FINAL
+    // offsets. Unattached it would sit a full vmtx-fallback advance (~1.17em ≈ 56px) below the
+    // base, far outside the tolerance — so this simultaneously proves (a) the GPOS pass ran in
+    // vertical mode and (b) the y-sign (font-units up-positive -> device down-positive) is right.
+    const scale = 48.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
+    const expected_x = layout.positions[0].x_offset + @as(f32, @floatFromInt(anchors.base_x - anchors.mark_x)) * scale;
+    const expected_y = layout.positions[0].y_offset - @as(f32, @floatFromInt(anchors.base_y - anchors.mark_y)) * scale;
+    try std.testing.expectApproxEqAbs(expected_x, layout.positions[1].x_offset, 0.01);
+    try std.testing.expectApproxEqAbs(expected_y, layout.positions[1].y_offset, 0.01);
+}
+
+test "vertical mark does not advance following glyph" {
+    if (comptime !ft.enable_vertical or !ft.enable_opentype_layout) return error.SkipZigTest;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_acute = font.getGlyphId(0x0301) catch return error.SkipZigTest;
+    const gdef = font.getGdefTable() orelse return error.SkipZigTest;
+    if (gdef.getGlyphClass(glyph_acute) != .mark) return error.SkipZigTest;
+
+    // "e" + U+0301 + "X": the mark must not push X a full em down.
+    var layout = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "e\xCC\x81X", .{ .pixel_size = 48.0, .vertical = true });
+    defer layout.deinit();
+    try std.testing.expectEqual(@as(usize, 3), layout.positions.len);
+
+    // Baseline-to-baseline gap e->X should be about one glyph advance, not two (mark contributes 0).
+    // Compare against plain "eX" spacing as reference.
+    var ref = try layoutText(std.testing.allocator, &[_]font_mod.Font{font}, "eX", .{ .pixel_size = 48.0, .vertical = true });
+    defer ref.deinit();
+    const gap_marked = layout.positions[2].y_offset - layout.positions[0].y_offset;
+    const gap_ref = ref.positions[1].y_offset - ref.positions[0].y_offset;
+    // With the guard, the marked gap equals the reference gap (mark advance == 0).
+    try std.testing.expect(@abs(gap_marked - gap_ref) < 1.0);
 }
