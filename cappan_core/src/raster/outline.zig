@@ -15,6 +15,19 @@ pub const Segment = struct {
     y1: f32,
 };
 
+pub const EdgeRun = struct {
+    /// Not individually owned: a slice into the sibling DecomposedContour.segments
+    /// buffer. Mutating in place (e.g. reverseRunSegments) is fine and intended --
+    /// it mutates the shared buffer, which is exactly what contour-orientation
+    /// normalization wants.
+    segments: []Segment,
+    dir_start: [2]f32,
+    dir_end: [2]f32,
+    /// MSDF edge-coloring mask (see msdf.zig): which of R/G/B this run's pseudo-distance
+    /// contributes to.
+    channels: u3 = 0b111,
+};
+
 /// Scale glyph outline from font units to pixel coordinates
 /// Y is flipped: font Y-up -> bitmap Y-down
 pub fn scaleOutline(
@@ -75,31 +88,118 @@ pub fn flattenContours(allocator: std.mem.Allocator, contours: []const []ScaledP
 /// - Quadratic bezier (on-curve, off-curve, on-curve)
 /// - Implicit on-curve points between consecutive off-curve points
 /// The contour is treated as closed (last point connects to first)
+///
+/// A thin wrapper over decomposeContourEdges -- the single parser shared with
+/// MSDF's curve-level edge-run decomposition -- that keeps the flattened
+/// segment buffer and discards the run/direction bookkeeping. Since both
+/// consumers walk the exact same points with the exact same bezier
+/// subdivision calls in the exact same order, the segment buffer returned
+/// here is byte-identical to what this function computed before the two
+/// parsers were unified.
 pub fn flattenContour(allocator: std.mem.Allocator, points: []const ScaledPoint) ![]Segment {
-    if (points.len < 2) return try allocator.alloc(Segment, 0);
+    const decomposed = try decomposeContourEdges(allocator, points);
+    allocator.free(decomposed.runs);
+    return decomposed.segments;
+}
+
+/// Owns both the flattened segment buffer and the EdgeRun index into it.
+/// EdgeRun.segments slices are borrowed from `segments`, not individually
+/// owned, so deinit only needs to free the two backing allocations.
+pub const DecomposedContour = struct {
+    segments: []Segment,
+    runs: []EdgeRun,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *DecomposedContour) void {
+        self.allocator.free(self.segments);
+        self.allocator.free(self.runs);
+    }
+};
+
+/// Per-edge (start, len) into the segments list being built, recorded instead of
+/// slicing eagerly: the backing ArrayList can still reallocate as later edges are
+/// appended, which would invalidate a slice taken mid-build. Actual EdgeRun slices
+/// are materialized after toOwnedSlice, once the segment buffer's address is final.
+const RunSpan = struct {
+    start: usize,
+    len: usize,
+    dir_start: [2]f32,
+    dir_end: [2]f32,
+};
+
+fn normalizeDir(dx: f32, dy: f32, fallback: [2]f32) [2]f32 {
+    const len_sq = dx * dx + dy * dy;
+    if (len_sq <= 1e-12) return fallback;
+    const inv_len = 1.0 / @sqrt(len_sq);
+    return .{ dx * inv_len, dy * inv_len };
+}
+
+fn appendLineSpan(allocator: std.mem.Allocator, segments: *std.ArrayList(Segment), spans: *std.ArrayList(RunSpan), p0: ScaledPoint, p1: ScaledPoint) !void {
+    const start = segments.items.len;
+    try segments.append(allocator, .{ .x0 = p0.x, .y0 = p0.y, .x1 = p1.x, .y1 = p1.y });
+    const dir = normalizeDir(p1.x - p0.x, p1.y - p0.y, .{ 1.0, 0.0 });
+    try spans.append(allocator, .{ .start = start, .len = segments.items.len - start, .dir_start = dir, .dir_end = dir });
+}
+
+fn appendQuadSpan(allocator: std.mem.Allocator, segments: *std.ArrayList(Segment), spans: *std.ArrayList(RunSpan), p0: ScaledPoint, ctrl: ScaledPoint, p1: ScaledPoint) !void {
+    const start = segments.items.len;
+    try flattenQuadBezier(allocator, segments, p0.x, p0.y, ctrl.x, ctrl.y, p1.x, p1.y, 0.25);
+    const fallback = normalizeDir(p1.x - p0.x, p1.y - p0.y, .{ 1.0, 0.0 });
+    try spans.append(allocator, .{
+        .start = start,
+        .len = segments.items.len - start,
+        .dir_start = normalizeDir(ctrl.x - p0.x, ctrl.y - p0.y, fallback),
+        .dir_end = normalizeDir(p1.x - ctrl.x, p1.y - ctrl.y, fallback),
+    });
+}
+
+fn appendCubicSpan(allocator: std.mem.Allocator, segments: *std.ArrayList(Segment), spans: *std.ArrayList(RunSpan), p0: ScaledPoint, c1: ScaledPoint, c2: ScaledPoint, p1: ScaledPoint) !void {
+    const start = segments.items.len;
+    try flattenCubicBezier(allocator, segments, p0.x, p0.y, c1.x, c1.y, c2.x, c2.y, p1.x, p1.y, 0.25);
+    const fallback = normalizeDir(p1.x - p0.x, p1.y - p0.y, .{ 1.0, 0.0 });
+    const start_fallback = normalizeDir(c2.x - p0.x, c2.y - p0.y, fallback);
+    const end_fallback = normalizeDir(p1.x - c1.x, p1.y - c1.y, fallback);
+    try spans.append(allocator, .{
+        .start = start,
+        .len = segments.items.len - start,
+        .dir_start = normalizeDir(c1.x - p0.x, c1.y - p0.y, start_fallback),
+        .dir_end = normalizeDir(p1.x - c2.x, p1.y - c2.y, end_fallback),
+    });
+}
+
+/// Decompose a contour into a shared flattened-segment buffer plus curve-level
+/// edge runs slicing into it (used for MSDF edge coloring). This is the single
+/// parser -- implicit-midpoint handling, cubic consumption, the max_iterations
+/// guard, and contour closing -- shared with flattenContour (a thin wrapper
+/// that only keeps the segment buffer). Same points, same bezier subdivision
+/// calls, same order as before unification, so segment output is unchanged.
+pub fn decomposeContourEdges(allocator: std.mem.Allocator, points: []const ScaledPoint) !DecomposedContour {
+    if (points.len < 2) {
+        return .{
+            .segments = try allocator.alloc(Segment, 0),
+            .runs = try allocator.alloc(EdgeRun, 0),
+            .allocator = allocator,
+        };
+    }
 
     var segments: std.ArrayList(Segment) = .empty;
     errdefer segments.deinit(allocator);
+    var spans: std.ArrayList(RunSpan) = .empty;
+    defer spans.deinit(allocator);
 
     const n = points.len;
-
-    // Find the first on-curve point (or create one from implicit rule)
     var start_idx: usize = 0;
     var start_point: ScaledPoint = undefined;
-
-    // Find first on-curve point
     var found_on_curve = false;
-    for (points, 0..) |pt, i| {
+    for (points, 0..) |pt, idx| {
         if (pt.on_curve) {
-            start_idx = i;
+            start_idx = idx;
             start_point = pt;
             found_on_curve = true;
             break;
         }
     }
-
     if (!found_on_curve) {
-        // All off-curve: start with midpoint of first two
         start_point = .{
             .x = (points[0].x + points[1].x) * 0.5,
             .y = (points[0].y + points[1].y) * 0.5,
@@ -110,42 +210,28 @@ pub fn flattenContour(allocator: std.mem.Allocator, points: []const ScaledPoint)
 
     var current = start_point;
     var i: usize = 1;
-    // Safety guard: in a well-formed contour we consume at most n points.
-    // Each iteration consumes at least 1 point (on-curve) or 1-2 points (off-curve),
-    // so n iterations is an upper bound. Allow n+1 as a safety margin.
     const max_iterations = n + 1;
     var iterations: usize = 0;
-
     while (i <= n and iterations < max_iterations) : (iterations += 1) {
         const idx = (start_idx + i) % n;
         const pt = points[idx];
-
         if (pt.on_curve) {
-            // Straight line
-            try segments.append(allocator, .{ .x0 = current.x, .y0 = current.y, .x1 = pt.x, .y1 = pt.y });
+            try appendLineSpan(allocator, &segments, &spans, current, pt);
             current = pt;
             i += 1;
         } else if (pt.is_cubic) {
-            // CFF cubic Bezier: consume control1 (pt), control2, and end point
-            const ctrl2_idx = (start_idx + i + 1) % n;
-            const end_idx = (start_idx + i + 2) % n;
-            const ctrl2 = points[ctrl2_idx];
-            const end_pt = points[end_idx];
-
-            try flattenCubicBezier(allocator, &segments, current.x, current.y, pt.x, pt.y, ctrl2.x, ctrl2.y, end_pt.x, end_pt.y, 0.25);
+            const ctrl2 = points[(start_idx + i + 1) % n];
+            const end_pt = points[(start_idx + i + 2) % n];
+            try appendCubicSpan(allocator, &segments, &spans, current, pt, ctrl2, end_pt);
             current = end_pt;
             i += 3;
         } else {
-            // Off-curve point (quadratic): find the next on-curve point
-            const next_idx = (start_idx + i + 1) % n;
-            const next_pt = points[next_idx];
-
+            const next_pt = points[(start_idx + i + 1) % n];
             var end_pt: ScaledPoint = undefined;
             if (next_pt.on_curve) {
                 end_pt = next_pt;
                 i += 2;
             } else {
-                // Two consecutive off-curve: implicit on-curve at midpoint
                 end_pt = .{
                     .x = (pt.x + next_pt.x) * 0.5,
                     .y = (pt.y + next_pt.y) * 0.5,
@@ -153,26 +239,34 @@ pub fn flattenContour(allocator: std.mem.Allocator, points: []const ScaledPoint)
                 };
                 i += 1;
             }
-
-            // Flatten quadratic bezier: current -> pt (control) -> end_pt
-            try flattenQuadBezier(allocator, &segments, current.x, current.y, pt.x, pt.y, end_pt.x, end_pt.y, 0.25);
+            try appendQuadSpan(allocator, &segments, &spans, current, pt, end_pt);
             current = end_pt;
         }
     }
 
-    // Close the contour: always connect back to start_point unless they are
-    // already the same pixel (zero-length segment would be noise).
     const dx = current.x - start_point.x;
     const dy = current.y - start_point.y;
     if (dx * dx + dy * dy > 0.0) {
-        try segments.append(allocator, .{ .x0 = current.x, .y0 = current.y, .x1 = start_point.x, .y1 = start_point.y });
+        try appendLineSpan(allocator, &segments, &spans, current, start_point);
     }
 
-    return segments.toOwnedSlice(allocator);
+    const owned_segments = try segments.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_segments);
+
+    const runs = try allocator.alloc(EdgeRun, spans.items.len);
+    for (spans.items, 0..) |span, ri| {
+        runs[ri] = .{
+            .segments = owned_segments[span.start .. span.start + span.len],
+            .dir_start = span.dir_start,
+            .dir_end = span.dir_end,
+        };
+    }
+
+    return .{ .segments = owned_segments, .runs = runs, .allocator = allocator };
 }
 
 /// Flatten quadratic bezier using De Casteljau subdivision
-fn flattenQuadBezier(
+pub fn flattenQuadBezier(
     allocator: std.mem.Allocator,
     segments: *std.ArrayList(Segment),
     x0: f32,
@@ -210,7 +304,7 @@ fn flattenQuadBezier(
 }
 
 /// Flatten a cubic Bezier curve (p0 → c1 → c2 → p1) into line segments
-fn flattenCubicBezier(
+pub fn flattenCubicBezier(
     allocator: std.mem.Allocator,
     segments: *std.ArrayList(Segment),
     x0: f32,

@@ -454,16 +454,17 @@ fn writeImageByExtension(
     std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path, width, height });
 }
 
-/// Writes a single-channel grayscale PNG (createFile -> buffered writer -> writePng ->
-/// flush, mirroring writeImageByExtension's skeleton above). Errors are printed to
-/// stderr and `false` is returned so the caller can bail out without duplicating the
+/// Writes a grayscale (Bitmap) or RGBA (RgbaBitmap) PNG -- createFile -> buffered
+/// writer -> writePng/writePngRgba (dispatched on `bitmap`'s comptime type) -> flush,
+/// mirroring writeImageByExtension's skeleton above. Errors are printed to stderr and
+/// `false` is returned so the caller can bail out without duplicating the
 /// error-reporting boilerplate; the caller is still responsible for any "wrote N bytes"
 /// success message, since that varies (render vs. atlas page N).
-fn writeGrayscalePngFile(
+fn writePngFile(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    bitmap: cappan_core.render.bitmap.Bitmap,
+    bitmap: anytype,
 ) bool {
     const cwd = std.Io.Dir.cwd();
     const file = cwd.createFile(io, path, .{}) catch |err| {
@@ -474,7 +475,12 @@ fn writeGrayscalePngFile(
 
     var buf: [4096]u8 = undefined;
     var writer = file.writer(io, &buf);
-    png_mod.writePng(allocator, bitmap, &writer.interface) catch |err| {
+    const write_result = switch (@TypeOf(bitmap)) {
+        cappan_core.render.bitmap.Bitmap => png_mod.writePng(allocator, bitmap, &writer.interface),
+        cappan_core.render.rgba_bitmap.RgbaBitmap => png_mod.writePngRgba(allocator, bitmap, &writer.interface),
+        else => @compileError("writePngFile: unsupported bitmap type " ++ @typeName(@TypeOf(bitmap))),
+    };
+    write_result catch |err| {
         std.debug.print("Error: could not write PNG: {}\n", .{err});
         return false;
     };
@@ -592,6 +598,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     var fallback_font_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer fallback_font_paths.deinit(allocator);
     var sdf = false;
+    var msdf = false;
     var sdf_spread: ?f32 = null;
 
     while (args.next()) |arg| {
@@ -608,6 +615,8 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
             }
         } else if (std.mem.eql(u8, arg, "--sdf")) {
             sdf = true;
+        } else if (std.mem.eql(u8, arg, "--msdf")) {
+            msdf = true;
         } else if (std.mem.eql(u8, arg, "--sdf-spread")) {
             if (args.next()) |s| {
                 const parsed = std.fmt.parseFloat(f32, s) catch {
@@ -629,8 +638,13 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         return;
     }
 
-    if (sdf_spread != null and !sdf) {
-        std.debug.print("Error: --sdf-spread requires --sdf\n", .{});
+    if (sdf and msdf) {
+        std.debug.print("Error: --sdf and --msdf cannot be combined\n", .{});
+        return;
+    }
+
+    if (sdf_spread != null and !sdf and !msdf) {
+        std.debug.print("Error: --sdf-spread requires --sdf or --msdf\n", .{});
         return;
     }
 
@@ -648,7 +662,7 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
     var normalized_coords: ?[]f32 = null;
     defer if (normalized_coords) |coords| allocator.free(coords);
     if (common.variation_spec) |spec| {
-        normalized_coords = buildVariationCoords(allocator, fonts[0], spec, if (sdf) .glyph_outline else .colr_paint) catch |err| blk: {
+        normalized_coords = buildVariationCoords(allocator, fonts[0], spec, if (sdf or msdf) .glyph_outline else .colr_paint) catch |err| blk: {
             std.debug.print("Warning: could not apply variation '{s}': {}\n", .{ spec, err });
             break :blk null;
         };
@@ -659,39 +673,55 @@ fn cmdRender(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.I
         return;
     }
 
-    if (sdf) {
+    if (sdf or msdf) {
         if (comptime !ft.enable_sdf) {
             std.debug.print("Error: SDF support is disabled in this build\n", .{});
             return;
         }
         if (common.lcd_rendering) {
-            std.debug.print("Error: --sdf cannot be combined with --lcd\n", .{});
+            std.debug.print("Error: --sdf/--msdf cannot be combined with --lcd\n", .{});
             return;
         }
         if (common.paint_ops.items.len > 0) {
-            std.debug.print("Error: --sdf cannot be combined with --stroke or --fill\n", .{});
+            std.debug.print("Error: --sdf/--msdf cannot be combined with --stroke or --fill\n", .{});
             return;
         }
         const ext = getFileExtension(output_path.?);
         if (!std.mem.eql(u8, ext, ".png")) {
-            std.debug.print("Error: --sdf output must be a .png file\n", .{});
+            std.debug.print("Error: --sdf/--msdf output must be a .png file\n", .{});
             return;
         }
 
-        var sdf_bitmap = cappan_core.raster.sdf.renderTextSdf(allocator, fonts, common.text.?, .{
+        // Shared by both branches below: MtsdfTextOptions is a type alias for
+        // SdfTextOptions, so renderTextMtsdf and renderTextSdf take identical options.
+        const text_options: cappan_core.raster.sdf.SdfTextOptions = .{
             .pixel_size = common.size,
             .spread = sdf_spread orelse 8.0,
             .max_width = common.max_width,
             .text_align = common.text_align,
             .vertical = common.vertical,
             .normalized_coords = normalized_coords,
-        }) catch |err| {
+        };
+
+        if (msdf) {
+            var msdf_bitmap = cappan_core.raster.msdf.renderTextMtsdf(allocator, fonts, common.text.?, text_options) catch |err| {
+                std.debug.print("Error: MSDF rendering failed: {}\n", .{err});
+                return;
+            };
+            defer msdf_bitmap.deinit();
+
+            if (!writePngFile(allocator, io, output_path.?, msdf_bitmap)) return;
+            std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path.?, msdf_bitmap.width, msdf_bitmap.height });
+            return;
+        }
+
+        var sdf_bitmap = cappan_core.raster.sdf.renderTextSdf(allocator, fonts, common.text.?, text_options) catch |err| {
             std.debug.print("Error: SDF rendering failed: {}\n", .{err});
             return;
         };
         defer sdf_bitmap.deinit();
 
-        if (!writeGrayscalePngFile(allocator, io, output_path.?, sdf_bitmap)) return;
+        if (!writePngFile(allocator, io, output_path.?, sdf_bitmap)) return;
 
         std.debug.print("Rendered to {s} ({d}x{d})\n", .{ output_path.?, sdf_bitmap.width, sdf_bitmap.height });
         return;
@@ -770,6 +800,20 @@ const AtlasGlyphMetric = struct {
     region: cappan_core.raster.atlas.AtlasRegion,
 };
 
+/// The generateGlyphSdf/generateGlyphMtsdf result fields cmdAtlas's glyph loop
+/// actually needs, common to both so it can branch on generation only and then
+/// share the empty-check/insert/warning logic afterward. Owns `pixels` (must be
+/// freed once by the caller); the source SdfResult/MtsdfResult is intentionally
+/// NOT deinit'd inside the branch that produces this, since that would free the
+/// same memory this struct still points at.
+const GeneratedGlyphField = struct {
+    pixels: []const u8,
+    width: u32,
+    height: u32,
+    offset_x: f32,
+    offset_y: f32,
+};
+
 fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.Iterator) !void {
     if (comptime !ft.enable_sdf) {
         std.debug.print("Error: SDF support is disabled in this build\n", .{});
@@ -782,9 +826,12 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
     var metrics_path: ?[]const u8 = null;
     var sdf_spread: f32 = 8.0;
     var page_size: u32 = 1024;
+    var msdf = false;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--sdf-spread")) {
+        if (std.mem.eql(u8, arg, "--msdf")) {
+            msdf = true;
+        } else if (std.mem.eql(u8, arg, "--sdf-spread")) {
             if (args.next()) |s| {
                 const parsed = std.fmt.parseFloat(f32, s) catch {
                     std.debug.print("Error: invalid sdf-spread '{s}'\n", .{s});
@@ -848,7 +895,7 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
     defer allocator.free(codepoints);
     std.mem.sort(u21, codepoints, {}, std.sort.asc(u21));
 
-    var atlas = cappan_core.raster.atlas.GlyphAtlas.init(allocator, .{ .page_width = page_size, .page_height = page_size });
+    var atlas = cappan_core.raster.atlas.GlyphAtlas.init(allocator, .{ .page_width = page_size, .page_height = page_size, .bytes_per_pixel = if (msdf) 4 else 1 });
     defer atlas.deinit();
 
     var glyph_metrics: std.ArrayListUnmanaged(AtlasGlyphMetric) = .empty;
@@ -879,18 +926,6 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
         var outline = outline_opt.?;
         defer outline.deinit();
 
-        var sdf_result = cappan_core.raster.sdf.generateGlyphSdf(allocator, outline, scale, .{ .spread = sdf_spread }) catch |err| {
-            std.debug.print("Warning: could not generate SDF for U+{X:0>4}: {}\n", .{ cp, err });
-            skipped += 1;
-            continue;
-        };
-        defer sdf_result.deinit();
-
-        if (sdf_result.width == 0 or sdf_result.height == 0) {
-            skipped += 1;
-            continue;
-        }
-
         // getHMetrics before atlas.insert: if this fails we skip the glyph entirely
         // (via `continue`) instead of leaving it packed into the page pixels but
         // missing from the metrics JSON. With --variation, HVAR advance deltas are
@@ -905,7 +940,34 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
         };
         const advance_px = @as(f32, @floatFromInt(hmetrics.advance_width)) * scale;
 
-        const region = atlas.insert(0, glyph_id, common.size, sdf_result.pixels, sdf_result.width, sdf_result.height, sdf_result.offset_x, sdf_result.offset_y) catch |err| {
+        // Generation is the only part that differs between MSDF and SDF; the
+        // empty check, atlas.insert, and warning text below are shared. Neither
+        // branch deinits its own result -- ownership of `.pixels` moves into
+        // `generated`, freed once by the defer right after.
+        const label: []const u8 = if (msdf) "MSDF" else "SDF";
+        const generated: GeneratedGlyphField = if (msdf) blk: {
+            const mtsdf_result = cappan_core.raster.msdf.generateGlyphMtsdf(allocator, outline, scale, .{ .spread = sdf_spread }) catch |err| {
+                std.debug.print("Warning: could not generate {s} for U+{X:0>4}: {}\n", .{ label, cp, err });
+                skipped += 1;
+                continue;
+            };
+            break :blk .{ .pixels = mtsdf_result.pixels, .width = mtsdf_result.width, .height = mtsdf_result.height, .offset_x = mtsdf_result.offset_x, .offset_y = mtsdf_result.offset_y };
+        } else blk: {
+            const sdf_result = cappan_core.raster.sdf.generateGlyphSdf(allocator, outline, scale, .{ .spread = sdf_spread }) catch |err| {
+                std.debug.print("Warning: could not generate {s} for U+{X:0>4}: {}\n", .{ label, cp, err });
+                skipped += 1;
+                continue;
+            };
+            break :blk .{ .pixels = sdf_result.pixels, .width = sdf_result.width, .height = sdf_result.height, .offset_x = sdf_result.offset_x, .offset_y = sdf_result.offset_y };
+        };
+        defer allocator.free(generated.pixels);
+
+        if (generated.width == 0 or generated.height == 0) {
+            skipped += 1;
+            continue;
+        }
+
+        const region = atlas.insert(0, glyph_id, common.size, generated.pixels, generated.width, generated.height, generated.offset_x, generated.offset_y) catch |err| {
             std.debug.print("Warning: could not pack glyph for U+{X:0>4}: {}\n", .{ cp, err });
             skipped += 1;
             continue;
@@ -925,9 +987,6 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
 
     var page_index: u16 = 0;
     while (page_index < page_count) : (page_index += 1) {
-        var page_bitmap = (try atlas.exportPageRaw(allocator, page_index)) orelse continue;
-        defer page_bitmap.deinit();
-
         // Page 0 writes directly to --output; later pages own an allocated <stem>_<n> path.
         const page_path: []const u8 = if (page_index == 0)
             output_path.?
@@ -935,7 +994,15 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
             try buildAtlasPagePath(allocator, output_path.?, page_index);
         defer if (page_index != 0) allocator.free(page_path);
 
-        if (!writeGrayscalePngFile(allocator, io, page_path, page_bitmap)) return;
+        if (msdf) {
+            var page_bitmap = (try atlas.exportPageRgba(allocator, page_index)) orelse continue;
+            defer page_bitmap.deinit();
+            if (!writePngFile(allocator, io, page_path, page_bitmap)) return;
+        } else {
+            var page_bitmap = (try atlas.exportPageRaw(allocator, page_index)) orelse continue;
+            defer page_bitmap.deinit();
+            if (!writePngFile(allocator, io, page_path, page_bitmap)) return;
+        }
 
         std.debug.print("Atlas page {d} written to {s} ({d}x{d})\n", .{ page_index, page_path, page_size, page_size });
     }
@@ -955,10 +1022,10 @@ fn cmdAtlas(allocator: std.mem.Allocator, io: std.Io, args: *std.process.Args.It
 
     w.print(
         \\{{
-        \\  "atlas": {{"type": "sdf", "pageWidth": {d}, "pageHeight": {d}, "pageCount": {d}, "size": {d}, "spread": {d}}},
+        \\  "atlas": {{"type": "{s}", "pageWidth": {d}, "pageHeight": {d}, "pageCount": {d}, "size": {d}, "spread": {d}}},
         \\  "font": {{"unitsPerEm": {d}, "ascender": {d}, "descender": {d}, "lineGap": {d}}},
         \\  "glyphs": [
-    , .{ page_size, page_size, page_count, common.size, sdf_spread, font.getUnitsPerEm(), font.getAscender(), font.getDescender(), font.getLineGap() }) catch |err| {
+    , .{ if (msdf) "mtsdf" else "sdf", page_size, page_size, page_count, common.size, sdf_spread, font.getUnitsPerEm(), font.getAscender(), font.getDescender(), font.getLineGap() }) catch |err| {
         std.debug.print("Error: could not write metrics JSON: {}\n", .{err});
         return;
     };
@@ -2370,7 +2437,7 @@ fn printUsage() void {
         \\  inspect    Inspect font metadata, validate tables, show coverage
         \\  svg        Convert text to SVG file with vector paths
         \\  metrics    Show CSS font metrics and compare fonts
-        \\  atlas      Generate an SDF glyph atlas (PNG pages + metrics JSON)
+        \\  atlas      Generate an SDF/MSDF glyph atlas (PNG pages + metrics JSON)
         \\
         \\cappan render --font <path> --text <string> --output <path.png> [options]
         \\cappan animate --font <path> --text <string> --output <path.apng> [options]
@@ -2413,7 +2480,8 @@ fn printUsage() void {
         \\render options:
         \\  --output             Output PNG file path
         \\  --sdf                Render as a single-channel signed distance field (grayscale PNG)
-        \\  --sdf-spread         SDF distance range in pixels (default: 8, requires --sdf)
+        \\  --msdf               Render as a multi-channel SDF (MTSDF: RGB=MSDF, A=true SDF; RGBA PNG)
+        \\  --sdf-spread         SDF distance range in pixels (default: 8, requires --sdf or --msdf)
         \\
         \\animate options (APNG mode — default):
         \\  --output             Output APNG file path
@@ -2446,6 +2514,7 @@ fn printUsage() void {
         \\  --font               Path to a TrueType/OpenType font file (required)
         \\  --text               Text whose codepoints populate the atlas (required)
         \\  --size               Glyph generation size in pixels (default: 64)
+        \\  --msdf               Generate a multi-channel SDF atlas (MTSDF RGBA pages, JSON type "mtsdf")
         \\  --sdf-spread         SDF distance range in pixels (default: 8)
         \\  --page-size          Atlas page width/height in pixels (default: 1024)
         \\  --output             Output PNG path for page 0 (required); page N>0 is written to <stem>_<N>.png
