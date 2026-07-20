@@ -272,14 +272,30 @@ pub const GlyphAtlas = struct {
         return @intCast(self.pages.items.len);
     }
 
-    pub fn exportPage(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16) !?bitmap_mod.Bitmap {
+    fn exportPageImpl(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16, comptime invert: bool) !?bitmap_mod.Bitmap {
         if (@as(usize, page_index) >= self.pages.items.len) return null;
         const page = self.pages.items[@as(usize, page_index)];
         var bitmap = try bitmap_mod.Bitmap.init(allocator, page.width, page.height);
-        for (page.pixels, 0..) |pixel, i| {
-            bitmap.pixels[i] = 255 - pixel;
+        if (comptime invert) {
+            for (page.pixels, 0..) |pixel, i| {
+                bitmap.pixels[i] = 255 - pixel;
+            }
+        } else {
+            @memcpy(bitmap.pixels, page.pixels);
         }
         return bitmap;
+    }
+
+    /// Black-on-white export: inverts pixel values (255-pixel), intended for coverage
+    /// atlases meant to look like ink on paper.
+    pub fn exportPage(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16) !?bitmap_mod.Bitmap {
+        return self.exportPageImpl(allocator, page_index, true);
+    }
+
+    /// Raw export: copies page pixels verbatim, no inversion. Use this for SDF (or any
+    /// other non-coverage) atlases, where 255-pixel would corrupt the encoded values.
+    pub fn exportPageRaw(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16) !?bitmap_mod.Bitmap {
+        return self.exportPageImpl(allocator, page_index, false);
     }
 
     pub fn clear(self: *GlyphAtlas) void {
@@ -445,6 +461,43 @@ test "GlyphAtlas exportPage" {
     try std.testing.expectEqual(@as(u32, 16), bitmap.width);
     try std.testing.expectEqual(@as(u32, 16), bitmap.height);
     try std.testing.expectEqual(@as(u8, 0), bitmap.getPixel(region.x, region.y));
+}
+
+test "GlyphAtlas exportPageRaw returns pixels without inversion" {
+    var atlas = GlyphAtlas.init(std.testing.allocator, .{ .page_width = 16, .page_height = 16, .padding = 1 });
+    defer atlas.deinit();
+
+    const pixels = [_]u8{200} ** 4;
+    const region = try atlas.insert(0, 1, 8.0, &pixels, 2, 2, 0, 0);
+    var bitmap = (try atlas.exportPageRaw(std.testing.allocator, 0)) orelse return error.TestUnexpectedResult;
+    defer bitmap.deinit();
+
+    try std.testing.expectEqual(@as(u32, 16), bitmap.width);
+    try std.testing.expectEqual(@as(u32, 16), bitmap.height);
+    // Unlike exportPage, the inserted value comes through unmodified (no 255-pixel inversion).
+    try std.testing.expectEqual(@as(u8, 200), bitmap.getPixel(region.x, region.y));
+    // Untouched background stays at the page's raw fill value (0), not inverted to 255.
+    try std.testing.expectEqual(@as(u8, 0), bitmap.getPixel(0, 0));
+}
+
+test "GlyphAtlas overflow packs across exactly two pages" {
+    // page_width == page_height == the glyph's own padded size, so each insert fills an
+    // entire page and the second one must spill onto a new page.
+    var atlas = GlyphAtlas.init(std.testing.allocator, .{ .page_width = 10, .page_height = 10, .padding = 0 });
+    defer atlas.deinit();
+
+    const pixels = [_]u8{100} ** 100;
+    const region_a = try atlas.insert(0, 1, 10.0, &pixels, 10, 10, 0, 0);
+    const region_b = try atlas.insert(0, 2, 10.0, &pixels, 10, 10, 0, 0);
+
+    try std.testing.expectEqual(@as(u16, 2), atlas.pageCount());
+    try std.testing.expectEqual(@as(u16, 0), region_a.page);
+    try std.testing.expectEqual(@as(u16, 1), region_b.page);
+
+    var page1_bitmap = (try atlas.exportPageRaw(std.testing.allocator, 1)) orelse return error.TestUnexpectedResult;
+    defer page1_bitmap.deinit();
+    try std.testing.expectEqual(@as(u32, 10), page1_bitmap.width);
+    try std.testing.expectEqual(@as(u8, 100), page1_bitmap.getPixel(region_b.x, region_b.y));
 }
 
 test "skyline merges adjacent nodes" {

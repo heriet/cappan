@@ -12,6 +12,7 @@ const png_decoder_mod = @import("../image/png_decoder.zig");
 const paint_mod = @import("paint.zig");
 const glyph_mod = @import("../font/glyph.zig");
 const auto_hinting_mod = @import("../raster/auto_hinting.zig");
+const glyph_cache_mod = @import("../raster/glyph_cache.zig");
 const ft = @import("../features.zig").features;
 const colr_painter_mod = if (ft.enable_colr_v1) @import("colr_painter.zig") else struct {};
 
@@ -133,7 +134,7 @@ const CachedLcdRaster = struct {
 };
 
 pub fn glyphCacheKey(font_index: u8, glyph_id: u16) u32 {
-    return (@as(u32, font_index) << 16) | @as(u32, glyph_id);
+    return glyph_cache_mod.glyphCacheKeyU32(font_index, glyph_id);
 }
 
 const PaintOpKind = enum(u8) { fill, stroke };
