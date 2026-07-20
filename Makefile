@@ -136,6 +136,12 @@ test-sdf:
 	$(DOCKER_RUN) zig-out/bin/cappan atlas \
 		--font .font/DejaVuSans.ttf --text "ABCDEFabcdef012" --size 64 \
 		--output /tmp/test_sdf_atlas.png --metrics /tmp/test_sdf_atlas.json
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/DejaVuSans.ttf --text "MSDF test" --size 48 \
+		--msdf --output /tmp/test_msdf.png
+	$(DOCKER_RUN) zig-out/bin/cappan atlas \
+		--font .font/DejaVuSans.ttf --text "ABCDEFabcdef012" --size 64 \
+		--msdf --output /tmp/test_msdf_atlas.png --metrics /tmp/test_msdf_atlas.json
 	@echo "test-sdf: PASS (no crash)"
 
 serve-docs:

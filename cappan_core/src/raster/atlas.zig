@@ -2,6 +2,7 @@ const std = @import("std");
 const font_mod = @import("../font/font.zig");
 const rasterizer_mod = @import("rasterizer.zig");
 const bitmap_mod = @import("../render/bitmap.zig");
+const rgba_mod = @import("../render/rgba_bitmap.zig");
 
 pub const AtlasRegion = struct {
     page: u16,
@@ -17,6 +18,7 @@ pub const AtlasOptions = struct {
     page_width: u32 = 1024,
     page_height: u32 = 1024,
     padding: u32 = 1,
+    bytes_per_pixel: u8 = 1,
 };
 
 const SkylineNode = struct {
@@ -30,14 +32,15 @@ const AtlasPage = struct {
     pixels: []u8,
     width: u32,
     height: u32,
+    bytes_per_pixel: u8,
     skyline: std.ArrayListUnmanaged(SkylineNode),
 
-    fn init(allocator: std.mem.Allocator, w: u32, h: u32) !AtlasPage {
-        const pixels = try allocator.alloc(u8, @as(usize, w) * @as(usize, h));
+    fn init(allocator: std.mem.Allocator, w: u32, h: u32, bytes_per_pixel: u8) !AtlasPage {
+        const pixels = try allocator.alloc(u8, @as(usize, w) * @as(usize, h) * @as(usize, bytes_per_pixel));
         @memset(pixels, 0);
         var sky: std.ArrayListUnmanaged(SkylineNode) = .empty;
         try sky.append(allocator, .{ .x = 0, .width = w, .y = 0 });
-        return .{ .allocator = allocator, .pixels = pixels, .width = w, .height = h, .skyline = sky };
+        return .{ .allocator = allocator, .pixels = pixels, .width = w, .height = h, .bytes_per_pixel = bytes_per_pixel, .skyline = sky };
     }
 
     fn deinit(self: *AtlasPage) void {
@@ -137,6 +140,7 @@ pub const GlyphAtlas = struct {
     page_width: u32,
     page_height: u32,
     padding: u32,
+    bytes_per_pixel: u8,
 
     pub fn init(allocator: std.mem.Allocator, options: AtlasOptions) GlyphAtlas {
         return .{
@@ -146,6 +150,7 @@ pub const GlyphAtlas = struct {
             .page_width = options.page_width,
             .page_height = options.page_height,
             .padding = options.padding,
+            .bytes_per_pixel = options.bytes_per_pixel,
         };
     }
 
@@ -164,6 +169,10 @@ pub const GlyphAtlas = struct {
         glyph_id: u16,
         pixel_size: f32,
     ) !?AtlasRegion {
+        // getOrInsert rasterizes grayscale coverage (1 byte/pixel); on a multi-channel
+        // atlas the insert-side length assert would compile out in ReleaseFast and
+        // copyPixels would read past the coverage buffer.
+        if (self.bytes_per_pixel != 1) return error.UnsupportedAtlasPixelFormat;
         if (self.lookup(font_index, glyph_id, pixel_size)) |region| {
             return region;
         }
@@ -214,6 +223,7 @@ pub const GlyphAtlas = struct {
     ) !AtlasRegion {
         const key = cacheKey(font_index, glyph_id, pixel_size);
         if (self.regions.get(key)) |region| return region;
+        std.debug.assert(pixels.len == @as(usize, width) * @as(usize, height) * @as(usize, self.bytes_per_pixel));
 
         for (self.pages.items, 0..) |*page, page_index| {
             if (try page.pack(width, height, self.padding)) |pos| {
@@ -234,7 +244,7 @@ pub const GlyphAtlas = struct {
 
         if (self.pages.items.len >= std.math.maxInt(u16)) return error.TooManyAtlasPages;
 
-        var page = try AtlasPage.init(self.allocator, self.page_width, self.page_height);
+        var page = try AtlasPage.init(self.allocator, self.page_width, self.page_height, self.bytes_per_pixel);
         var page_owned_by_atlas = false;
         defer {
             if (!page_owned_by_atlas) page.deinit();
@@ -275,6 +285,7 @@ pub const GlyphAtlas = struct {
     fn exportPageImpl(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16, comptime invert: bool) !?bitmap_mod.Bitmap {
         if (@as(usize, page_index) >= self.pages.items.len) return null;
         const page = self.pages.items[@as(usize, page_index)];
+        if (page.bytes_per_pixel != 1) return error.UnsupportedAtlasPixelFormat;
         var bitmap = try bitmap_mod.Bitmap.init(allocator, page.width, page.height);
         if (comptime invert) {
             for (page.pixels, 0..) |pixel, i| {
@@ -298,6 +309,18 @@ pub const GlyphAtlas = struct {
         return self.exportPageImpl(allocator, page_index, false);
     }
 
+    pub fn exportPageRgba(self: GlyphAtlas, allocator: std.mem.Allocator, page_index: u16) !?rgba_mod.RgbaBitmap {
+        if (@as(usize, page_index) >= self.pages.items.len) return null;
+        const page = self.pages.items[@as(usize, page_index)];
+        if (page.bytes_per_pixel != 4) return error.UnsupportedAtlasPixelFormat;
+        // Straight alloc + memcpy + struct literal instead of RgbaBitmap.init (which
+        // would fill with .transparent first, only for every byte to be immediately
+        // overwritten by the memcpy below).
+        const pixels = try allocator.alloc(u8, page.pixels.len);
+        @memcpy(pixels, page.pixels);
+        return .{ .width = page.width, .height = page.height, .pixels = pixels, .allocator = allocator };
+    }
+
     pub fn clear(self: *GlyphAtlas) void {
         for (self.pages.items) |*page| {
             page.deinit();
@@ -313,10 +336,12 @@ fn cacheKey(font_index: u8, glyph_id: u16, pixel_size: f32) u64 {
 }
 
 fn copyPixels(page: *AtlasPage, dst_x: u32, dst_y: u32, pixels: []const u8, width: u32, height: u32) void {
+    const bpp = @as(usize, page.bytes_per_pixel);
     for (0..height) |row| {
-        const src_start = row * @as(usize, width);
-        const dst_start = (@as(usize, dst_y) + row) * @as(usize, page.width) + @as(usize, dst_x);
-        @memcpy(page.pixels[dst_start .. dst_start + @as(usize, width)], pixels[src_start .. src_start + @as(usize, width)]);
+        const src_start = row * @as(usize, width) * bpp;
+        const dst_start = ((@as(usize, dst_y) + row) * @as(usize, page.width) + @as(usize, dst_x)) * bpp;
+        const len = @as(usize, width) * bpp;
+        @memcpy(page.pixels[dst_start .. dst_start + len], pixels[src_start .. src_start + len]);
     }
 }
 
@@ -326,7 +351,7 @@ fn regionsOverlap(a: AtlasRegion, b: AtlasRegion) bool {
 }
 
 test "atlas page packs single rectangle" {
-    var page = try AtlasPage.init(std.testing.allocator, 64, 64);
+    var page = try AtlasPage.init(std.testing.allocator, 64, 64, 1);
     defer page.deinit();
 
     const pos = (try page.pack(10, 10, 1)) orelse return error.TestUnexpectedResult;
@@ -349,7 +374,7 @@ test "atlas page packs multiple rectangles without overlap" {
 }
 
 test "atlas page returns null when full" {
-    var page = try AtlasPage.init(std.testing.allocator, 8, 8);
+    var page = try AtlasPage.init(std.testing.allocator, 8, 8, 1);
     defer page.deinit();
 
     try std.testing.expect(try page.pack(8, 8, 1) == null);
@@ -480,6 +505,27 @@ test "GlyphAtlas exportPageRaw returns pixels without inversion" {
     try std.testing.expectEqual(@as(u8, 0), bitmap.getPixel(0, 0));
 }
 
+test "GlyphAtlas bpp=4 insert and exportPageRgba" {
+    var atlas = GlyphAtlas.init(std.testing.allocator, .{ .page_width = 16, .page_height = 16, .padding = 1, .bytes_per_pixel = 4 });
+    defer atlas.deinit();
+
+    const pixels = [_]u8{
+        10,  20,  30,  40,
+        50,  60,  70,  80,
+        90,  100, 110, 120,
+        130, 140, 150, 160,
+    };
+    const region = try atlas.insert(0, 1, 8.0, &pixels, 2, 2, 0, 0);
+    var bitmap = (try atlas.exportPageRgba(std.testing.allocator, 0)) orelse return error.TestUnexpectedResult;
+    defer bitmap.deinit();
+
+    try std.testing.expectEqual(@as(u32, 16), bitmap.width);
+    try std.testing.expectEqual(@as(u32, 16), bitmap.height);
+    const idx = (@as(usize, region.y) * @as(usize, bitmap.width) + @as(usize, region.x)) * 4;
+    try std.testing.expectEqualSlices(u8, pixels[0..4], bitmap.pixels[idx .. idx + 4]);
+    try std.testing.expectEqual(@as(u8, 0), bitmap.pixels[0]);
+}
+
 test "GlyphAtlas overflow packs across exactly two pages" {
     // page_width == page_height == the glyph's own padded size, so each insert fills an
     // entire page and the second one must spill onto a new page.
@@ -501,7 +547,7 @@ test "GlyphAtlas overflow packs across exactly two pages" {
 }
 
 test "skyline merges adjacent nodes" {
-    var page = try AtlasPage.init(std.testing.allocator, 8, 8);
+    var page = try AtlasPage.init(std.testing.allocator, 8, 8, 1);
     defer page.deinit();
 
     _ = (try page.pack(2, 2, 0)) orelse return error.TestUnexpectedResult;

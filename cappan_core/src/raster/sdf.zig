@@ -36,6 +36,95 @@ fn emptySdfResult(allocator: std.mem.Allocator) SdfResult {
     };
 }
 
+/// Single-owner validation for the spread parameter, shared by generateGlyphSdf
+/// and msdf.zig's generateGlyphMtsdf. A non-positive or non-finite spread makes
+/// downstream pad/dimension math go negative, which panics on the u32 cast
+/// (see glyphBitmapGeometry) instead of erroring -- reject it here first.
+pub fn validateSpread(spread: f32) error{InvalidSdfSpread}!void {
+    if (!(spread > 0) or !std.math.isFinite(spread)) {
+        return error.InvalidSdfSpread;
+    }
+}
+
+/// Padding (px) around a glyph's tight bbox so the distance field isn't clipped
+/// at the bitmap edge: `ceil(spread) + 1`. Single owner for both generators
+/// (sdf.zig, msdf.zig) and their tests, which need the identical value to line
+/// up pixel grids against rasterizeGlyph for the inside/outside comparison tests.
+pub fn sdfPad(spread: f32) f32 {
+    return @ceil(spread) + 1.0;
+}
+
+/// Quantizes a signed distance (px, positive = inside) into the SDF/MSDF encoding:
+/// 128 is approximately the contour, 255 is >= spread px inside, 0 is >= spread px
+/// outside. `spread_x2` is `2 * spread`. Shared by sdf.zig's texel loop and
+/// msdf.zig's per-channel quantization (same formula, same rounding).
+pub fn quantizeSignedDistance(signed_dist: f32, spread_x2: f32) u8 {
+    const value = std.math.clamp(0.5 + signed_dist / spread_x2, 0.0, 1.0);
+    return @intFromFloat(@round(value * 255.0));
+}
+
+/// One half-open horizontal-ray-cast winding step against a prepared segment.
+/// Returns the winding contribution (+/- seg.wind_sign, or 0) for a single
+/// segment; callers accumulate `winding += segmentWinding(seg, px, py)`.
+/// `seg` is `anytype` because sdf.zig's and msdf.zig's PreparedSegment types
+/// are structurally identical (same field names) but not the same type.
+pub inline fn segmentWinding(seg: anytype, px: f32, py: f32) i32 {
+    if (py >= seg.min_y and py < seg.max_y) {
+        const x_int = seg.x0 + (py - seg.y0) * seg.slope;
+        if (x_int > px) return seg.wind_sign;
+    }
+    return 0;
+}
+
+pub const GlyphClipRect = struct {
+    dst_x0: i64,
+    dst_y0: i64,
+    gx_start: u32,
+    gx_end: u32,
+    gy_start: u32,
+    gy_end: u32,
+};
+
+/// Clips a `glyph_width` x `glyph_height` glyph bitmap, whose top-left in
+/// destination-bitmap coordinates is `(bmp_x0, bmp_y0)` (not necessarily
+/// integer-aligned), against the `[0, bmp_width) x [0, bmp_height)` destination
+/// bitmap. Computed once per glyph so renderTextSdf's/renderTextMtsdf's blit can
+/// be a branch-free integer inner loop over `[gx_start, gx_end) x [gy_start,
+/// gy_end)`, reading `dst_x0 + gx` / `dst_y0 + gy` as the destination pixel.
+///
+/// `floor(bmp_x0 + gx) == floor(bmp_x0) + gx` for any integer gx (exact
+/// identity), and truncating a non-negative float is the same as floor, so this
+/// produces the same destination pixels a naive per-pixel "float-add, >=0
+/// check, truncate" loop would.
+pub fn clipGlyphRect(
+    bmp_x0: f32,
+    bmp_y0: f32,
+    bmp_width: u32,
+    bmp_height: u32,
+    glyph_width: u32,
+    glyph_height: u32,
+) GlyphClipRect {
+    const dst_x0: i64 = @intFromFloat(@floor(bmp_x0));
+    const dst_y0: i64 = @intFromFloat(@floor(bmp_y0));
+
+    const gx_start: u32 = if (dst_x0 < 0) @intCast(@min(-dst_x0, @as(i64, glyph_width))) else 0;
+    const gx_end_i64 = @as(i64, bmp_width) - dst_x0;
+    const gx_end: u32 = if (gx_end_i64 <= 0) 0 else @intCast(@min(gx_end_i64, @as(i64, glyph_width)));
+
+    const gy_start: u32 = if (dst_y0 < 0) @intCast(@min(-dst_y0, @as(i64, glyph_height))) else 0;
+    const gy_end_i64 = @as(i64, bmp_height) - dst_y0;
+    const gy_end: u32 = if (gy_end_i64 <= 0) 0 else @intCast(@min(gy_end_i64, @as(i64, glyph_height)));
+
+    return .{
+        .dst_x0 = dst_x0,
+        .dst_y0 = dst_y0,
+        .gx_start = gx_start,
+        .gx_end = gx_end,
+        .gy_start = gy_start,
+        .gy_end = gy_end,
+    };
+}
+
 /// A segment with everything the hot texel loop needs precomputed once, so the
 /// per-texel inner loop can bbox-reject far segments before touching the (more
 /// expensive) point-to-segment distance math.
@@ -106,9 +195,7 @@ pub fn generateGlyphSdf(
     // negative below, which makes glyphBitmapGeometry's w_f/h_f go negative -- caught
     // there too, but this gives a clearer, spread-specific error before we even get
     // that far (and before doing any allocation).
-    if (!(options.spread > 0) or !std.math.isFinite(options.spread)) {
-        return error.InvalidSdfSpread;
-    }
+    try validateSpread(options.spread);
 
     const spread = options.spread;
 
@@ -116,7 +203,7 @@ pub fn generateGlyphSdf(
         return emptySdfResult(allocator);
     }
 
-    const pad_f = @ceil(spread) + 1.0;
+    const pad_f = sdfPad(spread);
     const geom = try rasterizer_mod.glyphBitmapGeometry(outline, scale, 0.0, pad_f);
     const width = geom.width;
     const height = geom.height;
@@ -178,19 +265,12 @@ pub fn generateGlyphSdf(
                     if (d_sq < min_dist_sq) min_dist_sq = d_sq;
                 }
 
-                // non-zero winding via horizontal ray cast, half-open on y
-                if (p_y >= seg.min_y and p_y < seg.max_y) {
-                    const x_int = seg.x0 + (p_y - seg.y0) * seg.slope;
-                    if (x_int > p_x) {
-                        winding += seg.wind_sign;
-                    }
-                }
+                winding += segmentWinding(seg, p_x, p_y);
             }
 
             const dist = @sqrt(min_dist_sq);
             const sign: f32 = if (winding != 0) 1.0 else -1.0;
-            const value = std.math.clamp(0.5 + sign * dist / spread_x2, 0.0, 1.0);
-            pixels[py * @as(usize, width) + px] = @intFromFloat(@round(value * 255.0));
+            pixels[py * @as(usize, width) + px] = quantizeSignedDistance(sign * dist, spread_x2);
         }
     }
 
@@ -298,32 +378,17 @@ pub fn renderTextSdf(
         const bmp_x0 = origin_x - sdf_glyph.offset_x;
         const bmp_y0 = origin_y - sdf_glyph.offset_y;
 
-        // Clipped destination rect computed once per glyph (in integer bitmap
-        // coordinates), then blitted with a branch-free integer inner loop.
-        // floor(bmp_x0 + gx) == floor(bmp_x0) + gx for any integer gx (exact
-        // identity), and truncating a non-negative float (the old per-pixel
-        // ">=0 check then @intFromFloat") is the same as floor, so this is the
-        // same set of destination pixels the old float loop produced.
-        const dst_x0: i64 = @intFromFloat(@floor(bmp_x0));
-        const dst_y0: i64 = @intFromFloat(@floor(bmp_y0));
+        const clip = clipGlyphRect(bmp_x0, bmp_y0, bmp_width, bmp_height, sdf_glyph.width, sdf_glyph.height);
 
-        const gx_start: u32 = if (dst_x0 < 0) @intCast(@min(-dst_x0, @as(i64, sdf_glyph.width))) else 0;
-        const gx_end_i64 = @as(i64, bmp_width) - dst_x0;
-        const gx_end: u32 = if (gx_end_i64 <= 0) 0 else @intCast(@min(gx_end_i64, @as(i64, sdf_glyph.width)));
-
-        const gy_start: u32 = if (dst_y0 < 0) @intCast(@min(-dst_y0, @as(i64, sdf_glyph.height))) else 0;
-        const gy_end_i64 = @as(i64, bmp_height) - dst_y0;
-        const gy_end: u32 = if (gy_end_i64 <= 0) 0 else @intCast(@min(gy_end_i64, @as(i64, sdf_glyph.height)));
-
-        var gy = gy_start;
-        while (gy < gy_end) : (gy += 1) {
-            const bmp_yi: u32 = @intCast(dst_y0 + @as(i64, gy));
+        var gy = clip.gy_start;
+        while (gy < clip.gy_end) : (gy += 1) {
+            const bmp_yi: u32 = @intCast(clip.dst_y0 + @as(i64, gy));
             const src_row = gy * @as(usize, sdf_glyph.width);
             const dst_row = @as(usize, bmp_yi) * @as(usize, bmp_width);
 
-            var gx = gx_start;
-            while (gx < gx_end) : (gx += 1) {
-                const bmp_xi: u32 = @intCast(dst_x0 + @as(i64, gx));
+            var gx = clip.gx_start;
+            while (gx < clip.gx_end) : (gx += 1) {
+                const bmp_xi: u32 = @intCast(clip.dst_x0 + @as(i64, gx));
                 const src = sdf_glyph.pixels[src_row + gx];
                 const idx = dst_row + @as(usize, bmp_xi);
                 if (src > bitmap.pixels[idx]) bitmap.pixels[idx] = src;
@@ -400,7 +465,7 @@ test "generateGlyphSdf: matches rasterizeGlyph inside/outside for DejaVuSans 'A'
 
     const scale = 64.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
     const spread: f32 = 8.0;
-    const pad: u32 = @intFromFloat(@ceil(spread) + 1.0); // matches sdf.zig's internal padding rule
+    const pad: u32 = @intFromFloat(sdfPad(spread)); // matches sdf.zig's internal padding rule
 
     var sdf_result = try generateGlyphSdf(allocator, outline, scale, .{ .spread = spread });
     defer sdf_result.deinit();
@@ -492,7 +557,7 @@ test "generateGlyphSdf and renderTextSdf: empty outline does not crash" {
     defer bitmap.deinit();
 }
 
-fn testSquareOutline(contours: *[1]glyph_mod.Contour, points: *[4]glyph_mod.Point, allocator: std.mem.Allocator) glyph_mod.GlyphOutline {
+pub fn testSquareOutline(contours: *[1]glyph_mod.Contour, points: *[4]glyph_mod.Point, allocator: std.mem.Allocator) glyph_mod.GlyphOutline {
     points.* = .{
         .{ .x = 0, .y = 0, .on_curve = true },
         .{ .x = 400, .y = 0, .on_curve = true },
@@ -609,7 +674,7 @@ test "generateGlyphSdf: matches rasterizeGlyph inside/outside for CFF font (Sour
 
     const scale = 64.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
     const spread: f32 = 8.0;
-    const pad: u32 = @intFromFloat(@ceil(spread) + 1.0); // matches sdf.zig's internal padding rule
+    const pad: u32 = @intFromFloat(sdfPad(spread)); // matches sdf.zig's internal padding rule
 
     var sdf_result = try generateGlyphSdf(allocator, outline, scale, .{ .spread = spread });
     defer sdf_result.deinit();

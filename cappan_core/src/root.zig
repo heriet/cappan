@@ -58,6 +58,7 @@ pub const raster = struct {
     pub const cff_hinting = if (ft.enable_hinting) @import("raster/cff_hinting.zig") else struct {};
     pub const auto_hinting = if (ft.enable_hinting) @import("raster/auto_hinting.zig") else struct {};
     pub const sdf = if (ft.enable_sdf) @import("raster/sdf.zig") else struct {};
+    pub const msdf = if (ft.enable_sdf) @import("raster/msdf.zig") else struct {};
 };
 
 pub const layout = struct {
@@ -156,6 +157,7 @@ test {
     }
     if (ft.enable_sdf) {
         _ = @import("raster/sdf.zig");
+        _ = @import("raster/msdf.zig");
     }
     _ = @import("layout/shaper.zig");
     _ = @import("render/bitmap.zig");
