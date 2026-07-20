@@ -12,6 +12,7 @@ pub const features: Features = .{
     .enable_woff = build_options.enable_woff,
     .enable_woff2 = build_options.enable_woff2,
     .enable_vertical = build_options.enable_vertical,
+    .enable_sdf = build_options.enable_sdf,
 };
 
 pub const Features = struct {
@@ -26,6 +27,7 @@ pub const Features = struct {
     enable_woff: bool,
     enable_woff2: bool,
     enable_vertical: bool,
+    enable_sdf: bool,
 
     pub const all_enabled: Features = .{
         .enable_cff = true,
@@ -39,5 +41,6 @@ pub const Features = struct {
         .enable_woff = true,
         .enable_woff2 = true,
         .enable_vertical = true,
+        .enable_sdf = true,
     };
 };

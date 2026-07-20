@@ -57,6 +57,7 @@ pub const raster = struct {
     pub const stem_darkening = if (ft.enable_hinting) @import("raster/stem_darkening.zig") else struct {};
     pub const cff_hinting = if (ft.enable_hinting) @import("raster/cff_hinting.zig") else struct {};
     pub const auto_hinting = if (ft.enable_hinting) @import("raster/auto_hinting.zig") else struct {};
+    pub const sdf = if (ft.enable_sdf) @import("raster/sdf.zig") else struct {};
 };
 
 pub const layout = struct {
@@ -152,6 +153,9 @@ test {
         _ = @import("raster/stem_darkening.zig");
         _ = @import("raster/cff_hinting.zig");
         _ = @import("raster/auto_hinting.zig");
+    }
+    if (ft.enable_sdf) {
+        _ = @import("raster/sdf.zig");
     }
     _ = @import("layout/shaper.zig");
     _ = @import("render/bitmap.zig");

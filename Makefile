@@ -2,7 +2,7 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
-.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-colr-v1-variable test-vertical test-arabic
+.PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-colr-v1-variable test-vertical test-arabic test-sdf
 
 setup: fetch-asset generate-subset
 
@@ -127,6 +127,16 @@ test-arabic:
 		--vertical \
 		--output /tmp/test_arabic_v.png
 	@echo "test-arabic: PASS (no crash)"
+
+test-sdf:
+	$(DOCKER_RUN) zig build
+	$(DOCKER_RUN) zig-out/bin/cappan render \
+		--font .font/DejaVuSans.ttf --text "SDF test" --size 48 \
+		--sdf --output /tmp/test_sdf.png
+	$(DOCKER_RUN) zig-out/bin/cappan atlas \
+		--font .font/DejaVuSans.ttf --text "ABCDEFabcdef012" --size 64 \
+		--output /tmp/test_sdf_atlas.png --metrics /tmp/test_sdf_atlas.json
+	@echo "test-sdf: PASS (no crash)"
 
 serve-docs:
 	python3 -m http.server $(DOCS_PORT) -d docs

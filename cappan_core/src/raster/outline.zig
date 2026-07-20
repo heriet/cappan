@@ -55,6 +55,21 @@ pub fn freeScaledContours(allocator: std.mem.Allocator, contours: [][]ScaledPoin
     allocator.free(contours);
 }
 
+/// Flatten every contour and concatenate the resulting segments into one owned list.
+/// Shared by rasterizer.zig's prepareGlyphRasterization and sdf.zig's generateGlyphSdf.
+pub fn flattenContours(allocator: std.mem.Allocator, contours: []const []ScaledPoint) !std.ArrayList(Segment) {
+    var all_segments: std.ArrayList(Segment) = .empty;
+    errdefer all_segments.deinit(allocator);
+
+    for (contours) |contour_points| {
+        const segs = try flattenContour(allocator, contour_points);
+        defer allocator.free(segs);
+        try all_segments.appendSlice(allocator, segs);
+    }
+
+    return all_segments;
+}
+
 /// Flatten a single contour into line segments, handling:
 /// - On-curve to on-curve: straight line
 /// - Quadratic bezier (on-curve, off-curve, on-curve)

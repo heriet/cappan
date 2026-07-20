@@ -19,6 +19,49 @@ pub const RasterResult = struct {
     }
 };
 
+pub const GlyphBitmapGeometry = struct {
+    width: u32,
+    height: u32,
+    offset_x: f32,
+    offset_y: f32,
+};
+
+/// Computes a glyph's bitmap dimensions and blit offset from its font-unit bbox.
+/// `half_embolden` is 0.0 for callers that don't expand the bbox for stroke width
+/// (e.g. sdf.zig, which never hints/embolds); `pad_f` is the padding in pixels on
+/// every side. Shared by rasterizer.zig's prepareGlyphRasterization and
+/// sdf.zig's generateGlyphSdf so the bbox/offset math has a single owner.
+pub fn glyphBitmapGeometry(
+    glyph_outline: glyph_mod.GlyphOutline,
+    scale: f32,
+    half_embolden: f32,
+    pad_f: f32,
+) error{InvalidGlyphDimensions}!GlyphBitmapGeometry {
+    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden;
+    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale - half_embolden;
+    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale + half_embolden;
+    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale + half_embolden;
+
+    const glyph_width = @max(0.0, x_max_px - x_min_px);
+    const glyph_height = @max(0.0, y_max_px - y_min_px);
+
+    const max_dim: f32 = 16384.0;
+    const w_f = @ceil(glyph_width + pad_f * 2);
+    const h_f = @ceil(glyph_height + pad_f * 2);
+    // w_f/h_f < 0 is reachable with a negative pad_f (e.g. a caller passing a negative
+    // spread/padding value): @intFromFloat on a negative float into a u32 is a panic,
+    // not a normal error, so this must be rejected before the cast below.
+    const width: u32 = if (w_f > max_dim or w_f < 0 or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
+    const height: u32 = if (h_f > max_dim or h_f < 0 or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
+
+    return .{
+        .width = width,
+        .height = height,
+        .offset_x = -x_min_px + pad_f,
+        .offset_y = y_max_px + pad_f,
+    };
+}
+
 const PreparedGlyphRasterization = struct {
     width: u32,
     height: u32,
@@ -47,23 +90,13 @@ fn prepareGlyphRasterization(
 ) !PreparedGlyphRasterization {
     const embolden = @max(0.0, raster_options.embolden_strength);
     const half_embolden = embolden * 0.5;
-    const x_min_px = @as(f32, @floatFromInt(glyph_outline.x_min)) * scale - half_embolden;
-    const y_min_px = @as(f32, @floatFromInt(glyph_outline.y_min)) * scale - half_embolden;
-    const x_max_px = @as(f32, @floatFromInt(glyph_outline.x_max)) * scale + half_embolden;
-    const y_max_px = @as(f32, @floatFromInt(glyph_outline.y_max)) * scale + half_embolden;
-
-    const glyph_width = @max(0.0, x_max_px - x_min_px);
-    const glyph_height = @max(0.0, y_max_px - y_min_px);
-
     const pad_f = @as(f32, @floatFromInt(padding));
-    const max_dim: f32 = 16384.0;
-    const w_f = @ceil(glyph_width + pad_f * 2);
-    const h_f = @ceil(glyph_height + pad_f * 2);
-    const width: u32 = if (w_f > max_dim or w_f != w_f) return error.InvalidGlyphDimensions else @intFromFloat(w_f);
-    const height: u32 = if (h_f > max_dim or h_f != h_f) return error.InvalidGlyphDimensions else @intFromFloat(h_f);
 
-    const offset_x = -x_min_px + pad_f;
-    const offset_y = y_max_px + pad_f;
+    const geom = try glyphBitmapGeometry(glyph_outline, scale, half_embolden, pad_f);
+    const width = geom.width;
+    const height = geom.height;
+    const offset_x = geom.offset_x;
+    const offset_y = geom.offset_y;
 
     if (width == 0 or height == 0) {
         return .{
@@ -98,14 +131,7 @@ fn prepareGlyphRasterization(
         }
     }
 
-    var all_segments: std.ArrayList(outline_mod.Segment) = .empty;
-    errdefer all_segments.deinit(allocator);
-
-    for (scaled) |contour_points| {
-        const segs = try outline_mod.flattenContour(allocator, contour_points);
-        defer allocator.free(segs);
-        try all_segments.appendSlice(allocator, segs);
-    }
+    const all_segments = try outline_mod.flattenContours(allocator, scaled);
 
     return .{
         .width = width,

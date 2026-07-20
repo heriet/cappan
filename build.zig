@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     const enable_woff = b.option(bool, "enable_woff", "Enable WOFF1 container") orelse true;
     const enable_woff2 = b.option(bool, "enable_woff2", "Enable WOFF2 container") orelse true;
     const enable_vertical = b.option(bool, "enable_vertical", "Enable vertical metrics") orelse true;
+    const enable_sdf = b.option(bool, "enable_sdf", "Enable SDF glyph rendering") orelse true;
 
     const feature_options = b.addOptions();
     feature_options.addOption(bool, "enable_cff", enable_cff);
@@ -30,6 +31,7 @@ pub fn build(b: *std.Build) void {
     feature_options.addOption(bool, "enable_woff", enable_woff);
     feature_options.addOption(bool, "enable_woff2", enable_woff2);
     feature_options.addOption(bool, "enable_vertical", enable_vertical);
+    feature_options.addOption(bool, "enable_sdf", enable_sdf);
 
     const lib_mod = b.addModule("cappan_core", .{
         .root_source_file = b.path("cappan_core/src/root.zig"),
