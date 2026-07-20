@@ -81,6 +81,11 @@ pub const CachedRaster = struct {
 /// inserts the result (or an empty placeholder, if the font has no outline for this glyph)
 /// before returning it. Shared by renderText's plain-outline path, its COLRv0 palette-layer
 /// path (which historically does not apply hinting), and RowRenderer.init.
+///
+/// `scratch`, if given, is reused across the whole call site's glyph loop (one
+/// `RasterScratch` per renderText/RowRenderer.init call, not per glyph) via
+/// rasterizeGlyphWithScratch; output is byte-identical to the `null` (fresh
+/// allocation each time) case either way.
 fn getOrRasterizeGlyph(
     glyph_cache: *std.AutoHashMapUnmanaged(u32, CachedRaster),
     allocator: std.mem.Allocator,
@@ -90,6 +95,7 @@ fn getOrRasterizeGlyph(
     raster_options: scanline_mod.RasterOptions,
     options: RenderOptions,
     apply_hinting: bool,
+    scratch: ?*rasterizer_mod.RasterScratch,
 ) !CachedRaster {
     const cache_key = glyphCacheKey(font_index, glyph_id);
     if (glyph_cache.get(cache_key)) |cached| return cached;
@@ -111,7 +117,7 @@ fn getOrRasterizeGlyph(
     }
 
     const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
-    const result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, options.padding, raster_options);
+    const result = try rasterizer_mod.rasterizeGlyphWithScratch(allocator, outline, glyph_scale, options.padding, raster_options, scratch);
     const entry = CachedRaster{
         .pixels = result.pixels,
         .width = result.width,
@@ -119,6 +125,7 @@ fn getOrRasterizeGlyph(
         .offset_x = result.offset_x,
         .offset_y = result.offset_y,
     };
+    errdefer allocator.free(entry.pixels);
     try glyph_cache.put(allocator, cache_key, entry);
     return entry;
 }
@@ -292,6 +299,9 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             glyph_cache.deinit(allocator);
         }
 
+        var raster_scratch: rasterizer_mod.RasterScratch = .{};
+        defer raster_scratch.deinit(allocator);
+
         for (layout.positions) |pos| {
             const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
 
@@ -335,13 +345,13 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                             rgba_bitmap_mod.Color{ .r = pc.r, .g = pc.g, .b = pc.b, .a = pc.a }
                         else
                             options.fg_color;
-                        const layer_entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, layer.glyph_id, raster_options, options, false);
+                        const layer_entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, layer.glyph_id, raster_options, options, false, &raster_scratch);
                         if (layer_entry.width == 0 or layer_entry.height == 0) continue;
                         blendRaster(&bitmap, layer_entry, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
                     }
                 }
             } else {
-                const entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true);
+                const entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true, &raster_scratch);
                 if (entry.width == 0 or entry.height == 0) continue;
                 blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
             }
@@ -598,7 +608,7 @@ pub fn rasterizeStrokeGlyph(
         try all_segments.appendSlice(allocator, stroke_segments);
     }
 
-    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height, raster_options);
+    const pixels = try scanline_mod.rasterize(allocator, all_segments.items, width, height, raster_options, null);
 
     return .{
         .pixels = pixels,
@@ -1011,6 +1021,10 @@ pub const RowRenderer = struct {
     bg_color: rgba_bitmap_mod.Color,
     gamma_correction: bool,
     fractional_positioning: bool,
+    // Only used during init() (every glyph is pre-rasterized there; renderRow just
+    // reads glyph_cache afterward), but kept as a field per RasterScratch's normal
+    // lifetime convention -- freed in deinit() rather than at the end of init().
+    scratch: rasterizer_mod.RasterScratch,
 
     pub fn init(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !RowRenderer {
         const raster_options = resolveRasterOptions(options);
@@ -1041,12 +1055,15 @@ pub const RowRenderer = struct {
             glyph_cache.deinit(allocator);
         }
 
+        var scratch: rasterizer_mod.RasterScratch = .{};
+        errdefer scratch.deinit(allocator);
+
         for (layout.positions) |pos| {
             const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
             if (glyph_cache.get(cache_key) != null) continue;
 
             const glyph_font = fonts[pos.font_index];
-            _ = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true);
+            _ = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true, &scratch);
         }
 
         const row_buffer = try allocator.alloc(u8, @as(usize, width) * 4);
@@ -1066,6 +1083,7 @@ pub const RowRenderer = struct {
             .bg_color = options.bg_color,
             .gamma_correction = options.gamma_correction,
             .fractional_positioning = options.fractional_positioning,
+            .scratch = scratch,
         };
     }
 
@@ -1076,6 +1094,7 @@ pub const RowRenderer = struct {
             self.allocator.free(entry.pixels);
         }
         self.glyph_cache.deinit(self.allocator);
+        self.scratch.deinit(self.allocator);
         self.layout.deinit();
     }
 

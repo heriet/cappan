@@ -1,7 +1,11 @@
 const std = @import("std");
 const outline_mod = @import("outline.zig");
 
-const Cell = struct {
+// pub: rasterizer.zig's RasterScratch holds a scratch `std.ArrayList(Cell)` (reused
+// across rasterize() calls instead of allocated fresh every time), threaded through
+// via scanline.zig's RasterizeScratch (the single dispatch point for both raster
+// methods).
+pub const Cell = struct {
     cover: f32 = 0,
     area: f32 = 0,
 };
@@ -11,6 +15,7 @@ pub fn rasterize(
     segments: []const outline_mod.Segment,
     width: u32,
     height: u32,
+    cells_scratch: ?*std.ArrayList(Cell),
 ) ![]u8 {
     const w: usize = @intCast(width);
     const h: usize = @intCast(height);
@@ -21,8 +26,11 @@ pub fn rasterize(
 
     if (w == 0 or h == 0) return pixels;
 
-    const cells = try allocator.alloc(Cell, w * h);
-    defer allocator.free(cells);
+    var local_cells: std.ArrayList(Cell) = .empty;
+    defer local_cells.deinit(allocator);
+    const cells_list: *std.ArrayList(Cell) = cells_scratch orelse &local_cells;
+    try cells_list.resize(allocator, w * h);
+    const cells = cells_list.items;
     @memset(cells, .{});
 
     for (segments) |seg| {
@@ -223,7 +231,7 @@ test "analytical rasterize a simple triangle" {
         .{ .x0 = 2, .y0 = 14, .x1 = 8, .y1 = 2 },
     };
 
-    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16);
+    const pixels = try rasterize(std.testing.allocator, &segments, 16, 16, null);
     defer std.testing.allocator.free(pixels);
 
     try std.testing.expect(pixels[8 * 16 + 8] > 0);
@@ -238,7 +246,7 @@ test "analytical rectangle coverage" {
         .{ .x0 = 7.5, .y0 = 1, .x1 = 2.5, .y1 = 1 },
     };
 
-    const pixels = try rasterize(std.testing.allocator, &segments, 10, 5);
+    const pixels = try rasterize(std.testing.allocator, &segments, 10, 5, null);
     defer std.testing.allocator.free(pixels);
 
     try std.testing.expectEqual(@as(u8, 0), pixels[2 * 10 + 0]);

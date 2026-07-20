@@ -2,6 +2,7 @@ const std = @import("std");
 const glyph_mod = @import("../font/glyph.zig");
 const outline_mod = @import("outline.zig");
 const scanline_mod = @import("scanline.zig");
+const analytical_mod = @import("analytical.zig");
 const stem_darkening_mod = @import("stem_darkening.zig");
 const cff_hinting_mod = @import("cff_hinting.zig");
 const ft = @import("../features.zig").features;
@@ -16,6 +17,33 @@ pub const RasterResult = struct {
 
     pub fn deinit(self: *RasterResult) void {
         self.allocator.free(self.pixels);
+    }
+};
+
+/// Per-call temporary buffers, reusable across many rasterizeGlyphWithScratch
+/// calls (glyph outline flattening + scanline AET/coverage state + analytical
+/// cell grid) instead of allocating them fresh every call. Pass the same
+/// `*RasterScratch` to consecutive calls (e.g. one per glyph in a run of text)
+/// to amortize allocation; `RasterResult.pixels` is always a fresh allocation
+/// regardless (the caller owns and frees it independently of the scratch's
+/// lifetime).
+pub const RasterScratch = struct {
+    segments: std.ArrayList(outline_mod.Segment) = .empty,
+    edges: std.ArrayList(scanline_mod.Edge) = .empty,
+    intersections: std.ArrayList(scanline_mod.Intersection) = .empty,
+    active: std.ArrayList(scanline_mod.Edge) = .empty,
+    delta: std.ArrayList(i16) = .empty,
+    coverage: std.ArrayList(u16) = .empty,
+    cells: std.ArrayList(analytical_mod.Cell) = .empty,
+
+    pub fn deinit(self: *RasterScratch, allocator: std.mem.Allocator) void {
+        self.segments.deinit(allocator);
+        self.edges.deinit(allocator);
+        self.intersections.deinit(allocator);
+        self.active.deinit(allocator);
+        self.delta.deinit(allocator);
+        self.coverage.deinit(allocator);
+        self.cells.deinit(allocator);
     }
 };
 
@@ -69,13 +97,19 @@ const PreparedGlyphRasterization = struct {
     offset_y: f32,
     scaled: ?[][]outline_mod.ScaledPoint,
     segments: std.ArrayList(outline_mod.Segment),
+    // False when `segments` aliases a scratch buffer (owned by the caller's
+    // RasterScratch, freed on the scratch's own lifetime) rather than a
+    // freshly-allocated list this struct must free itself.
+    owns_segments: bool,
     allocator: std.mem.Allocator,
 
     fn deinit(self: *PreparedGlyphRasterization) void {
         if (self.scaled) |scaled| {
             outline_mod.freeScaledContours(self.allocator, scaled);
         }
-        self.segments.deinit(self.allocator);
+        if (self.owns_segments) {
+            self.segments.deinit(self.allocator);
+        }
     }
 };
 
@@ -87,6 +121,7 @@ fn prepareGlyphRasterization(
     raster_options: scanline_mod.RasterOptions,
     scale_offset_x: f32,
     comptime lcd_transform: bool,
+    scratch: ?*RasterScratch,
 ) !PreparedGlyphRasterization {
     const embolden = @max(0.0, raster_options.embolden_strength);
     const half_embolden = embolden * 0.5;
@@ -106,6 +141,7 @@ fn prepareGlyphRasterization(
             .offset_y = offset_y,
             .scaled = null,
             .segments = .empty,
+            .owns_segments = true,
             .allocator = allocator,
         };
     }
@@ -131,7 +167,23 @@ fn prepareGlyphRasterization(
         }
     }
 
-    const all_segments = try outline_mod.flattenContours(allocator, scaled);
+    // Flattening logic itself (per-contour flattenContour + concatenate) is
+    // identical either way; only where the result lives differs. See
+    // outline_mod.flattenContours, which the non-scratch path calls directly.
+    var all_segments: std.ArrayList(outline_mod.Segment) = undefined;
+    var owns_segments = true;
+    if (scratch) |s| {
+        s.segments.clearRetainingCapacity();
+        for (scaled) |contour_points| {
+            const segs = try outline_mod.flattenContour(allocator, contour_points);
+            defer allocator.free(segs);
+            try s.segments.appendSlice(allocator, segs);
+        }
+        all_segments = s.segments;
+        owns_segments = false;
+    } else {
+        all_segments = try outline_mod.flattenContours(allocator, scaled);
+    }
 
     return .{
         .width = width,
@@ -140,6 +192,7 @@ fn prepareGlyphRasterization(
         .offset_y = offset_y,
         .scaled = scaled,
         .segments = all_segments,
+        .owns_segments = owns_segments,
         .allocator = allocator,
     };
 }
@@ -152,7 +205,24 @@ pub fn rasterizeGlyph(
     padding: u32,
     raster_options: scanline_mod.RasterOptions,
 ) !RasterResult {
-    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, false);
+    return rasterizeGlyphWithScratch(allocator, glyph_outline, scale, padding, raster_options, null);
+}
+
+/// Same as rasterizeGlyph, but reuses `scratch`'s temporary buffers (outline
+/// flattening, scanline AET/coverage state, analytical cell grid) instead of
+/// allocating them fresh -- pass the same `*RasterScratch` across a run of
+/// glyphs to amortize allocation. `scratch = null` is exactly rasterizeGlyph's
+/// existing behavior (this is what rasterizeGlyph calls, so their output is
+/// byte-identical for the same inputs).
+pub fn rasterizeGlyphWithScratch(
+    allocator: std.mem.Allocator,
+    glyph_outline: glyph_mod.GlyphOutline,
+    scale: f32,
+    padding: u32,
+    raster_options: scanline_mod.RasterOptions,
+    scratch: ?*RasterScratch,
+) !RasterResult {
+    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, false, scratch);
     defer prepared.deinit();
 
     if (prepared.width == 0 or prepared.height == 0) {
@@ -168,7 +238,7 @@ pub fn rasterizeGlyph(
     }
 
     // Rasterize
-    const pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, prepared.width, prepared.height, raster_options);
+    const pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, prepared.width, prepared.height, raster_options, scanlineScratchOf(scratch));
 
     return .{
         .pixels = pixels,
@@ -177,6 +247,20 @@ pub fn rasterizeGlyph(
         .offset_x = prepared.offset_x,
         .offset_y = prepared.offset_y,
         .allocator = allocator,
+    };
+}
+
+/// Builds the pointer-bundle scanline.zig's rasterize() expects from a
+/// RasterScratch's owned ArrayLists (or null, unchanged, if there's no scratch).
+fn scanlineScratchOf(scratch: ?*RasterScratch) ?scanline_mod.RasterizeScratch {
+    const s = scratch orelse return null;
+    return .{
+        .edges = &s.edges,
+        .active = &s.active,
+        .intersections = &s.intersections,
+        .delta = &s.delta,
+        .coverage = &s.coverage,
+        .cells = &s.cells,
     };
 }
 
@@ -235,7 +319,8 @@ pub fn rasterizeGlyphLcd(
     padding: u32,
     raster_options: scanline_mod.RasterOptions,
 ) !LcdRasterResult {
-    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, true);
+    // LCD path is out of scope for scratch reuse (untouched): always null.
+    var prepared = try prepareGlyphRasterization(allocator, glyph_outline, scale, padding, raster_options, 0.0, true, null);
     defer prepared.deinit();
 
     if (prepared.width == 0 or prepared.height == 0) {
@@ -259,7 +344,7 @@ pub fn rasterizeGlyphLcd(
 
     const wide_width = prepared.width * 3;
 
-    const wide_pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, wide_width, prepared.height, raster_options);
+    const wide_pixels = try scanline_mod.rasterize(allocator, prepared.segments.items, wide_width, prepared.height, raster_options, null);
     defer allocator.free(wide_pixels);
 
     const pixel_count = @as(usize, prepared.width) * @as(usize, prepared.height);

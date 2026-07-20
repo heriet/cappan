@@ -193,7 +193,7 @@ pub const GlyphRevealContext = struct {
                 if (self.animation) |anim| {
                     const partial = try contour_trace_mod.getPartialSegments(self.allocator, anim, p);
                     defer self.allocator.free(partial);
-                    const raster_pixels = try scanline_mod.rasterize(self.allocator, partial, width, height, self.raster_options);
+                    const raster_pixels = try scanline_mod.rasterize(self.allocator, partial, width, height, self.raster_options, null);
                     defer self.allocator.free(raster_pixels);
                     @memcpy(output[0..pixel_count], raster_pixels);
                 } else {
