@@ -19,6 +19,12 @@ pub const AntiAliasLevel = enum(u6) {
     pub fn toSampleCount(self: AntiAliasLevel) usize {
         return @intFromEnum(self);
     }
+
+    /// log2 of the sample count (4/8/16/32 -> 2/3/4/5); see quantizeToU8's
+    /// doc for why this makes quantization an exact right shift.
+    pub fn log2SampleCount(self: AntiAliasLevel) u5 {
+        return @intCast(@ctz(@intFromEnum(self)));
+    }
 };
 
 pub const SamplePattern = enum {
@@ -88,7 +94,7 @@ fn buildEdgesInto(list: *std.ArrayList(Edge), allocator: std.mem.Allocator, segm
         // pub API: a NaN intersection x would make the span-walk's equal-x
         // grouping loop (`intersections[idx].x == group_x`) never advance --
         // NaN != NaN is always true, so `idx` never reaches `.items.len` and
-        // rasterizeRowCoverage hangs forever. An infinite endpoint produces
+        // accumulateRowDelta hangs forever. An infinite endpoint produces
         // dx_per_dy = inf/inf = NaN below, hitting the same hang, and separately
         // a non-finite x downstream would violate @intFromFloat's safety
         // contract in spanStartPixel/spanEndPixel (undefined behavior, not just
@@ -155,6 +161,15 @@ fn compareEdgesByYTop(_: void, a: Edge, b: Edge) bool {
     return a.y_top < b.y_top;
 }
 
+/// The y of sub-scanline `s` (of `n` total) within row `y` -- the single
+/// formula every per-subsample computation and row-level bound
+/// (SupersampleContext.rowActivity's head/last, s=0 and s=n-1 respectively)
+/// must agree on, so there is exactly one place that can get the sub-pixel-
+/// center +0.5 offset wrong.
+fn subScanlineY(y: usize, s: usize, n: usize) f32 {
+    return @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, @floatFromInt(n));
+}
+
 /// Active Edge Table cursor over a y_top-sorted edge list (`sorted`). `advance`
 /// moves the active set to whatever it should be for sub-scanline `sub_y`:
 /// edges with `y_top <= sub_y` get activated (via the monotonic `next` cursor,
@@ -165,20 +180,22 @@ fn compareEdgesByYTop(_: void, a: Edge, b: Edge) bool {
 /// sub_y < y_bottom" -- an edge is active after `advance(sub_y)` iff that
 /// predicate holds for `sub_y`. The AET only changes *which edges get
 /// considered* at each sub-scanline (a search-space filter); it does not
-/// change how any edge's x-intersection is computed (see rasterizeRowCoverage).
+/// change how any edge's x-intersection is computed (see accumulateRowDelta).
 const SupersampleContext = struct {
     sorted: []Edge,
     next: usize = 0,
     active: *std.ArrayList(Edge),
     last_sub_y: f32 = -std.math.floatMax(f32),
 
+    const RowActivity = enum { empty, static, changing };
+
     fn advance(self: *SupersampleContext, allocator: std.mem.Allocator, sub_y: f32) !void {
         if (sub_y < self.last_sub_y) {
-            // Backward seek: only reachable from adaptive's high-resolution pass
-            // re-walking a row the low-resolution pass already advanced past.
-            // Rebuilding from the front costs at most O(E) for the row being
-            // re-walked, the same bound the pre-AET per-subscanline full rescan
-            // always paid every subscanline, so this is never worse.
+            // Backward seek: see rowActivity's doc for when/why this happens
+            // and why it's always safe. Rebuilding from the front costs at
+            // most O(E) for the row being re-walked, the same bound the
+            // pre-AET per-subscanline full rescan always paid every
+            // subscanline, so this is never worse.
             self.next = 0;
             self.active.clearRetainingCapacity();
         }
@@ -197,15 +214,55 @@ const SupersampleContext = struct {
             }
         }
     }
+
+    /// Classifies what can happen to the active set across all of row `y`'s
+    /// `n` sub-scanlines, from this context's current state through the
+    /// row's last sub-scanline -- the single check callers use to decide how
+    /// cheaply the row can be processed (S4/S6):
+    ///
+    ///   .empty    - nothing is active and nothing upcoming starts within the
+    ///               row: winding is provably 0 for every sub_y and every px,
+    ///               so the row needs no work at all.
+    ///   .static   - the active set is nonempty but provably *unchanged* for
+    ///               the whole row (no activation, no deactivation): one
+    ///               advance() at the row's head is equivalent to one at
+    ///               every sub_y in the row, so the rest can reuse it as-is.
+    ///   .changing - anything else; every sub-scanline needs its own
+    ///               advance() call, exactly like the pre-S6 code.
+    ///
+    /// A pending backward seek (this row's own head sub_y is *before*
+    /// `last_sub_y`) unconditionally reports .changing, regardless of what
+    /// the active/next checks below would otherwise say. This is the one
+    /// case that needs care, and the only place its reasoning lives: it only
+    /// happens from the adaptive high pass re-walking a row the low pass
+    /// already advanced past (see advance()'s backward-seek branch), and
+    /// when it does, `active`/`next` reflect wherever the low pass's *own*
+    /// traversal stopped -- not a valid predictor for "what's active/
+    /// upcoming near this (earlier) row's head". An edge fully activated-
+    /// and-deactivated by the low pass within this same row would be
+    /// invisible to both checks below, even though a correct backward-seek
+    /// rebuild finds it active again at head. Reporting .changing here
+    /// forces the always-correct per-subsample path instead of risking a
+    /// wrong .empty/.static verdict from stale state.
+    fn rowActivity(self: *const SupersampleContext, y: usize, n: usize) RowActivity {
+        const head = subScanlineY(y, 0, n);
+        const last = subScanlineY(y, n - 1, n);
+
+        if (head < self.last_sub_y) return .changing;
+
+        const will_activate = self.next < self.sorted.len and self.sorted[self.next].y_top <= last;
+        var will_deactivate = false;
+        for (self.active.items) |edge| {
+            if (edge.y_bottom <= last) {
+                will_deactivate = true;
+                break;
+            }
+        }
+        if (will_activate or will_deactivate) return .changing;
+        return if (self.active.items.len == 0) .empty else .static;
+    }
 };
 
-/// Smallest px such that `xs < @floatFromInt(px) + x_offset` -- the exact
-/// predicate the original per-pixel walk uses (`intersection.x < px_left`),
-/// evaluated at a span's opening x. Starts from a floor-based candidate purely
-/// as a fast path and then corrects against the *exact* predicate (typically 0,
-/// occasionally 1 iteration either way, from f32 rounding in `xs - x_offset`
-/// vs. `px + x_offset`); the final value is always confirmed by the same
-/// comparison the original algorithm made, so this cannot disagree with it.
 // @intFromFloat into i64 is checked-illegal-behavior for a float outside
 // [-2^63, 2^63); clamping to +/-2^31 first (far beyond any real bitmap
 // dimension -- rasterizer.zig's glyphBitmapGeometry already rejects glyph
@@ -216,6 +273,15 @@ const SupersampleContext = struct {
 // buildEdgesInto) reaching the cast.
 const span_pixel_bound: f32 = 2147483648.0; // 2^31
 
+// Correction loops are capped: for bitmap-bounded coordinates (well below f32's
+// 2^24 integer-precision limit) the floor candidate is off by at most 1, so the
+// cap never binds. For pathological huge-but-finite coordinates the increments
+// can stall below f32 precision (@floatFromInt(px) stops changing), which would
+// otherwise loop unboundedly; a capped result lands far outside any real bitmap
+// and fillSpanDelta's clamp turns it into "no coverage" -- exactly what the original
+// per-pixel walk produced for an intersection beyond the bitmap.
+const span_correction_cap: u8 = 2;
+
 /// Smallest px such that `xs < @floatFromInt(px) + x_offset` -- the exact
 /// predicate the original per-pixel walk uses (`intersection.x < px_left`),
 /// evaluated at a span's opening x. Starts from a floor-based candidate purely
@@ -223,15 +289,6 @@ const span_pixel_bound: f32 = 2147483648.0; // 2^31
 /// occasionally 1 iteration either way, from f32 rounding in `xs - x_offset`
 /// vs. `px + x_offset`); the final value is always confirmed by the same
 /// comparison the original algorithm made, so this cannot disagree with it.
-// Correction loops are capped: for bitmap-bounded coordinates (well below f32's
-// 2^24 integer-precision limit) the floor candidate is off by at most 1, so the
-// cap never binds. For pathological huge-but-finite coordinates the increments
-// can stall below f32 precision (@floatFromInt(px) stops changing), which would
-// otherwise loop unboundedly; a capped result lands far outside any real bitmap
-// and fillSpan's clamp turns it into "no coverage" -- exactly what the original
-// per-pixel walk produced for an intersection beyond the bitmap.
-const span_correction_cap: u8 = 2;
-
 fn spanStartPixel(xs: f32, x_offset: f32) i64 {
     const floor_val = @min(@max(@floor(xs - x_offset), -span_pixel_bound), span_pixel_bound);
     var px_start: i64 = @intFromFloat(floor_val);
@@ -255,33 +312,105 @@ fn spanEndPixel(xe: f32, x_offset: f32) i64 {
     return px_end;
 }
 
-fn fillSpan(coverage: []u16, px_start_raw: i64, px_end_raw: i64) void {
-    const w_i64: i64 = @intCast(coverage.len);
+/// S1: delta-array equivalent of the original coverage[a..b] += 1 direct fill.
+/// Instead of touching every pixel in a span (cost proportional to span
+/// width), records the span as a +1/-1 pair at its boundaries; a prefix sum
+/// over `delta` afterward yields exactly the same per-pixel counts the direct
+/// fill would have produced (interval-delta-array trick). `delta` must have
+/// length width+1: a span whose already-clamped px_end reaches width-1 writes
+/// delta[width], one slot past the `width` pixels the prefix sum reads.
+///
+/// Crucially, **all n sub-scanlines of a row accumulate into the same delta
+/// buffer** before any prefix sum happens (see accumulateRowDelta), rather
+/// than each sub-scanline producing its own coverage delta that gets summed
+/// separately. This is still exact: the final per-pixel count is
+/// Σ_s indicator_s(px), and integer addition is commutative/associative, so
+/// summing every sub-scanline's +1/-1 pairs into one array first and prefix-
+/// summing once at the end equals prefix-summing each sub-scanline's pairs
+/// separately and then summing those -- both compute the same Σ_s.
+fn fillSpanDelta(delta: []i16, width: usize, px_start_raw: i64, px_end_raw: i64) void {
+    const w_i64: i64 = @intCast(width);
     const px_start = @max(@as(i64, 0), px_start_raw);
     const px_end = @min(w_i64 - 1, px_end_raw);
     if (px_start > px_end) return;
-    var px: usize = @intCast(px_start);
-    const px_max: usize = @intCast(px_end);
-    while (px <= px_max) : (px += 1) {
-        coverage[px] += 1;
-    }
+    const a: usize = @intCast(px_start);
+    const b: usize = @intCast(px_end);
+    delta[a] += 1;
+    delta[b + 1] -= 1;
 }
 
-fn rasterizeRowCoverage(
-    coverage: []u16,
+/// S2: sorts `items` by `.x` ascending, matching compareIntersections exactly.
+/// For the common case (len <= 16 -- almost always true for glyph-sized
+/// inputs and typical AET active-set sizes) a direct insertion sort avoids
+/// std.mem.sort's introsort dispatch/pivot-selection overhead, which
+/// dominates at these tiny n. Falls back to std.mem.sort above that
+/// threshold. Insertion sort's relative order of equal-x keys can differ from
+/// std.mem.sort's, but per the equal-x grouping argument in
+/// accumulateRowDelta, any correct ascending-by-x order (whatever it does
+/// with ties) yields byte-identical coverage, so this substitution cannot
+/// change output.
+fn sortIntersections(items: []Intersection) void {
+    if (items.len <= 16) {
+        var i: usize = 1;
+        while (i < items.len) : (i += 1) {
+            const key = items[i];
+            var j: usize = i;
+            while (j > 0 and key.x < items[j - 1].x) : (j -= 1) {
+                items[j] = items[j - 1];
+            }
+            items[j] = key;
+        }
+        return;
+    }
+    std.mem.sort(Intersection, items, {}, compareIntersections);
+}
+
+/// S1+S6: builds `delta` (see fillSpanDelta) for one row at sample count `n`,
+/// given `verdict` (the caller's already-computed
+/// `ctx.rowActivity(y, n)`; see SupersampleContext.rowActivity -- callers
+/// skip calling this function entirely for `.empty` rows, so `verdict` here
+/// is always `.static` or `.changing`).
+///
+/// Does not memset `delta` itself: it relies on the "clear-on-read" invariant
+/// every consumer of `delta` maintains (S5 -- see prefixSumToCoverage and
+/// rasterize()'s fused prefix-sum loops), so `delta` is guaranteed all-zero
+/// on entry here regardless of whether this is the first row (rasterize()'s
+/// one-time initial memset) or a later one (the previous row/pass's consumer
+/// zeroed everything it touched on its way out).
+fn accumulateRowDelta(
+    delta: []i16,
     y: usize,
     n: usize,
     pattern: SamplePattern,
+    verdict: SupersampleContext.RowActivity,
     ctx: *SupersampleContext,
     intersections: *std.ArrayList(Intersection),
     allocator: std.mem.Allocator,
 ) !void {
-    @memset(coverage, 0);
+    const width = delta.len - 1;
+
+    if (verdict == .static) {
+        // Proven by rowActivity: zero activations and zero deactivations
+        // through this row's last sub-scanline, so the per-subsample
+        // advance() calls this skips would only ever update last_sub_y -- do
+        // just that, once, up front. Leaving last_sub_y at the row's head
+        // (not its tail) is safe for every later advance() call too: sub_y is
+        // monotonically increasing across the whole rasterize() call, and no
+        // future call's sub_y can ever land strictly between this row's head
+        // and tail from a different context, so it cannot change any future
+        // backward-seek decision.
+        ctx.last_sub_y = subScanlineY(y, 0, n);
+    }
+
     for (0..n) |s| {
-        const sub_y = @as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(s)) + 0.5) / @as(f32, @floatFromInt(n));
+        const sub_y = subScanlineY(y, s, n);
         const x_offset = sampleXOffset(pattern, s, n);
 
-        try ctx.advance(allocator, sub_y);
+        if (verdict == .changing) {
+            try ctx.advance(allocator, sub_y);
+        }
+        // else (.static): the active set can't change across this row -- see
+        // the verdict==.static branch above.
 
         intersections.clearRetainingCapacity();
         for (ctx.active.items) |edge| {
@@ -296,14 +425,14 @@ fn rasterizeRowCoverage(
             try intersections.append(allocator, .{ .x = x, .direction = edge.direction });
         }
 
-        std.mem.sort(Intersection, intersections.items, {}, compareIntersections);
+        sortIntersections(intersections.items);
 
         // Span-fill walk, equivalent to the original per-pixel walk ("consume
         // every intersection with x < px_left, coverage[px] += 1 iff the
         // resulting winding != 0"): walk the x-sorted intersections, grouping
         // consecutive equal-x ones (a correct sort always keeps tied keys
         // contiguous, regardless of which order this run's AET-active-order-
-        // dependent input handed to std.mem.sort -- it is not stable) and
+        // dependent input handed to the sort -- see sortIntersections) and
         // applying each group's combined direction as one step. This is safe
         // because the original's `x < px_left` test can only ever consume an
         // equal-x group atomically: identical x means identical truth value for
@@ -333,7 +462,7 @@ fn rasterizeRowCoverage(
                 span_start_x = group_x;
             } else if (winding_before != 0 and winding == 0) {
                 span_open = false;
-                fillSpan(coverage, spanStartPixel(span_start_x, x_offset), spanEndPixel(group_x, x_offset));
+                fillSpanDelta(delta, width, spanStartPixel(span_start_x, x_offset), spanEndPixel(group_x, x_offset));
             }
         }
         if (span_open) {
@@ -341,9 +470,43 @@ fn rasterizeRowCoverage(
             // 0, e.g. malformed/self-intersecting geometry): the original loop
             // freezes `winding` for every remaining pixel once intersections run
             // out, so extend the span through the last column.
-            fillSpan(coverage, spanStartPixel(span_start_x, x_offset), @as(i64, @intCast(coverage.len)) - 1);
+            fillSpanDelta(delta, width, spanStartPixel(span_start_x, x_offset), @as(i64, @intCast(width)) - 1);
         }
     }
+}
+
+/// S1 (adaptive low pass) + S6 (has_edge fusion): prefix-sums `delta`
+/// (already populated by accumulateRowDelta) into `coverage` as per-pixel
+/// sub-scanline-coverage counts -- the same integer values direct fillSpan
+/// increments used to produce, via one O(w) scan. The adaptive path needs
+/// these materialized counts (not just quantized pixels) for its low/high
+/// blend below.
+///
+/// Also clears `delta` back to all-zero as it goes (S5's "clear-on-read"
+/// invariant -- see rasterize()'s one-time initial memset), and returns
+/// whether any pixel's count was "partial" (0 < count < n): the adaptive
+/// low pass's has_edge signal, computed for free in this same pass instead
+/// of a separate scan over `coverage` afterward.
+fn prefixSumToCoverage(coverage: []u16, delta: []i16, n: usize) bool {
+    var acc: i32 = 0;
+    var has_edge = false;
+    for (0..coverage.len) |px| {
+        acc += delta[px];
+        delta[px] = 0;
+        coverage[px] = @intCast(acc);
+        if (acc > 0 and acc < @as(i32, @intCast(n))) has_edge = true;
+    }
+    delta[coverage.len] = 0; // fillSpanDelta's max index is width == coverage.len
+    return has_edge;
+}
+
+/// S5: `(count * 255) >> shift` in place of `count * 255 / n`. `count` is
+/// always in [0, n] here (a genuine sub-scanline coverage count), so this
+/// non-negative-operand right shift is bit-for-bit the same as unsigned
+/// division by the power-of-two `n = 1 << shift` -- not an approximation.
+inline fn quantizeToU8(count: i32, shift: u5) u8 {
+    const scaled = (count * 255) >> shift;
+    return @intCast(@min(scaled, 255));
 }
 
 /// Optional scratch buffers threaded through from rasterizer.zig's
@@ -355,8 +518,10 @@ pub const RasterizeScratch = struct {
     edges: *std.ArrayList(Edge),
     active: *std.ArrayList(Edge),
     intersections: *std.ArrayList(Intersection),
+    /// S1 delta-array buffer (length width+1), shared by every row-processing
+    /// call site (non-adaptive fused write, and both adaptive passes).
+    delta: *std.ArrayList(i16),
     coverage: *std.ArrayList(u16),
-    coverage_high: *std.ArrayList(u16),
     cells: *std.ArrayList(analytical_mod.Cell),
 };
 
@@ -397,42 +562,72 @@ pub fn rasterize(
 
     const w = @as(usize, width);
 
-    var local_coverage: std.ArrayList(u16) = .empty;
-    defer local_coverage.deinit(allocator);
-    const coverage_list: *std.ArrayList(u16) = if (scratch) |s| s.coverage else &local_coverage;
-    try coverage_list.resize(allocator, w);
-    const coverage = coverage_list.items;
+    // S1: shared delta buffer, needed by every call site below (fused
+    // non-adaptive write, and both adaptive passes). Length w+1 -- see
+    // fillSpanDelta.
+    var local_delta: std.ArrayList(i16) = .empty;
+    defer local_delta.deinit(allocator);
+    const delta_list: *std.ArrayList(i16) = if (scratch) |s| s.delta else &local_delta;
+    try delta_list.resize(allocator, w + 1);
+    const delta = delta_list.items;
+    // S5: memset once per rasterize() call, not once per row. Every consumer
+    // of `delta` below (prefixSumToCoverage, and the two fused prefix-sum
+    // loops) clears every index it reads back to 0 as it goes
+    // ("clear-on-read"), so `delta` is always all-zero by the time the next
+    // row/pass populates it -- this one memset is the only place that has to
+    // establish that invariant from scratch. It also means a prior
+    // rasterize() call that errored out partway through (leaving some row's
+    // delta only partially cleared) self-heals: this runs unconditionally,
+    // before anything reads `delta`, regardless of what a previous call left
+    // behind.
+    @memset(delta, 0);
 
     if (options.adaptive) |adaptive_opts| {
         const low_n = adaptive_opts.low_level.toSampleCount();
         const high_n = adaptive_opts.high_level.toSampleCount();
+        const high_shift = adaptive_opts.high_level.log2SampleCount();
 
-        var local_coverage_high: std.ArrayList(u16) = .empty;
-        defer local_coverage_high.deinit(allocator);
-        const coverage_high_list: *std.ArrayList(u16) = if (scratch) |s| s.coverage_high else &local_coverage_high;
-        try coverage_high_list.resize(allocator, w);
-        const coverage_high = coverage_high_list.items;
+        var local_coverage: std.ArrayList(u16) = .empty;
+        defer local_coverage.deinit(allocator);
+        const coverage_list: *std.ArrayList(u16) = if (scratch) |s| s.coverage else &local_coverage;
+        try coverage_list.resize(allocator, w);
+        const coverage = coverage_list.items;
 
         for (0..height) |y| {
-            try rasterizeRowCoverage(coverage, y, low_n, options.sample_pattern, &ctx, intersections_list, allocator);
+            const verdict = ctx.rowActivity(y, low_n);
+            // S4: a provably empty row needs no work at all -- pixels stays 0
+            // (already zeroed at allocation). `coverage` is left stale here,
+            // but the next non-empty row's prefixSumToCoverage rewrites every
+            // one of its w entries before coverage is read again, so the
+            // staleness is never observed.
+            if (verdict == .empty) continue;
 
-            var has_edge = false;
-            for (0..w) |px| {
-                if (coverage[px] > 0 and coverage[px] < @as(u16, @intCast(low_n))) {
-                    has_edge = true;
-                    break;
-                }
-            }
+            try accumulateRowDelta(delta, y, low_n, options.sample_pattern, verdict, &ctx, intersections_list, allocator);
+            const has_edge = prefixSumToCoverage(coverage, delta, low_n);
 
             if (has_edge) {
-                try rasterizeRowCoverage(coverage_high, y, high_n, options.sample_pattern, &ctx, intersections_list, allocator);
+                // The high pass always re-walks this row from its (finer,
+                // earlier) head, which is before wherever the low pass's
+                // traversal just left ctx -- i.e. always a pending backward
+                // seek, always .changing (see
+                // SupersampleContext.rowActivity's doc); no rowActivity call
+                // is needed to know that here.
+                try accumulateRowDelta(delta, y, high_n, options.sample_pattern, .changing, &ctx, intersections_list, allocator);
+                // S1+S5 fused finish: prefix-sum delta straight into the
+                // blend decision, clearing delta back to zero as it goes,
+                // instead of materializing a separate coverage_high buffer
+                // first.
+                var acc: i32 = 0;
                 for (0..w) |px| {
+                    acc += delta[px];
+                    delta[px] = 0;
                     if (coverage[px] > 0 and coverage[px] < @as(u16, @intCast(low_n))) {
-                        pixels[y * w + px] = @as(u8, @intCast(@min(coverage_high[px] * 255 / @as(u16, @intCast(high_n)), 255)));
+                        pixels[y * w + px] = quantizeToU8(acc, high_shift);
                     } else {
                         pixels[y * w + px] = if (coverage[px] == 0) 0 else 255;
                     }
                 }
+                delta[w] = 0; // fillSpanDelta's max index is width == w
             } else {
                 for (0..w) |px| {
                     pixels[y * w + px] = if (coverage[px] == 0) 0 else 255;
@@ -441,12 +636,24 @@ pub fn rasterize(
         }
     } else {
         const n = options.aa_level.toSampleCount();
+        const shift = options.aa_level.log2SampleCount();
         for (0..height) |y| {
-            try rasterizeRowCoverage(coverage, y, n, options.sample_pattern, &ctx, intersections_list, allocator);
-            for (0..w) |px| {
-                const value = @as(u8, @intCast(@min(coverage[px] * 255 / @as(u16, @intCast(n)), 255)));
-                pixels[y * w + px] = value;
+            const verdict = ctx.rowActivity(y, n);
+            if (verdict == .empty) {
+                // S4: pixels is already zero-initialized at allocation, so a
+                // provably-empty row needs no write at all.
+                continue;
             }
+            try accumulateRowDelta(delta, y, n, options.sample_pattern, verdict, &ctx, intersections_list, allocator);
+            // S1+S5 fused finish: prefix-sum delta straight into quantized
+            // pixels, clearing delta back to zero as it goes, one pass.
+            var acc: i32 = 0;
+            for (0..w) |px| {
+                acc += delta[px];
+                delta[px] = 0;
+                pixels[y * w + px] = quantizeToU8(acc, shift);
+            }
+            delta[w] = 0; // fillSpanDelta's max index is width == w
         }
     }
 
@@ -700,7 +907,16 @@ test "T1/T2: rasterize matches pre-AET reference across shapes x aa levels x pat
     // Every shape above leaves rows 0-1 and 15 fully edge-free alongside rows
     // that do have edges, so this matrix also exercises adaptive's
     // has_edge=false path on every (shape, pattern) combination (T2).
-    const adaptive_variants = [_]?AdaptiveOptions{ null, .{} };
+    // The inverted (low>high) and equal (low==high) variants pin the degenerate
+    // adaptive configs where the high pass's backward-seek relationship to the
+    // low pass flips -- the one place rowActivity's fast paths interact with
+    // advance()'s backward-seek rebuild differently than the default config.
+    const adaptive_variants = [_]?AdaptiveOptions{
+        null,
+        .{},
+        .{ .low_level = .aa_32, .high_level = .aa_4 },
+        .{ .low_level = .aa_8, .high_level = .aa_8 },
+    };
 
     const width: u32 = 16;
     const height: u32 = 16;
@@ -752,11 +968,16 @@ test "T3: RasterScratch reused across a mixed sequence matches scratch-less outp
     // supersampling small -> analytical large -> supersampling large -> analytical small:
     // deliberately alternates method and size so the scratch's buffers are
     // grown, shrunk, and switched between the two producers' shapes in sequence.
+    // The trailing supersampling shrink-then-grow pair exercises the delta
+    // buffer's resize-down/resize-up path specifically (the per-call memset
+    // must cover regrown slots regardless of prior contents).
     const steps = [_]Step{
         .{ .size = 16, .method = .supersampling },
         .{ .size = 160, .method = .analytical },
         .{ .size = 160, .method = .supersampling },
         .{ .size = 16, .method = .analytical },
+        .{ .size = 48, .method = .supersampling },
+        .{ .size = 160, .method = .supersampling },
     };
 
     var scratch: rasterizer_mod.RasterScratch = .{};
@@ -805,4 +1026,68 @@ test "T4: non-finite segment coordinates do not hang or panic" {
         defer allocator.free(pixels);
         try std.testing.expectEqual(@as(usize, 16 * 16), pixels.len);
     }
+}
+
+// T5: like T1, but against real glyph outlines instead of synthetic 16x16
+// shapes, with adaptive AA on -- this is what actually caught a Phase S bug
+// (S4/S6's row-level lookahead checks reading stale AET state right before
+// an adaptive high-pass backward seek) that T1's small synthetic shapes
+// never triggered: real glyph curves are far more likely to produce an edge
+// that starts *and* ends within a single row's low-resolution sub-scanline
+// range (fully consumed by the low pass before the high pass revisits that
+// row), which is exactly the scenario the stale-state bug needed. Every
+// glyph outline in "Hello café" at a realistic render size, each compared
+// against referenceRasterize both via a bare rasterize() call and via
+// rasterizeGlyphWithScratch sharing one RasterScratch across all glyphs (the
+// production RowRenderer/renderText pattern).
+test "T5: adaptive matches reference for real glyph outlines (bare + shared scratch)" {
+    const allocator = std.testing.allocator;
+    const font_mod = @import("../font/font.zig");
+    const outline_mod2 = @import("outline.zig");
+    const rasterizer_mod = @import("rasterizer.zig");
+
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(allocator, font_data, null);
+    defer font.deinit();
+
+    const text = "Hello café";
+    const scale = 48.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
+    const options: RasterOptions = .{ .adaptive = .{} };
+
+    var scratch: rasterizer_mod.RasterScratch = .{};
+    defer scratch.deinit(allocator);
+
+    var tested: usize = 0;
+    var it = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
+    while (it.nextCodepoint()) |cp| {
+        const glyph_id = try font.getGlyphId(cp);
+        const outline_opt = try font.getGlyphOutline(allocator, glyph_id);
+        if (outline_opt == null) continue;
+        var outline = outline_opt.?;
+        defer outline.deinit();
+
+        const geom = rasterizer_mod.glyphBitmapGeometry(outline, scale, 0.0, 1.0) catch continue;
+        if (geom.width == 0 or geom.height == 0) continue;
+
+        const scaled = try outline_mod2.scaleOutline(allocator, outline, scale, geom.offset_x, geom.offset_y);
+        defer outline_mod2.freeScaledContours(allocator, scaled);
+        var segments_list = try outline_mod2.flattenContours(allocator, scaled);
+        defer segments_list.deinit(allocator);
+        const segments = segments_list.items;
+
+        const want = try referenceRasterize(allocator, segments, geom.width, geom.height, options);
+        defer allocator.free(want);
+
+        const got_bare = try rasterize(allocator, segments, geom.width, geom.height, options, null);
+        defer allocator.free(got_bare);
+        try std.testing.expectEqualSlices(u8, want, got_bare);
+
+        var got_shared = try rasterizer_mod.rasterizeGlyphWithScratch(allocator, outline, scale, 1, options, &scratch);
+        defer got_shared.deinit();
+        try std.testing.expectEqualSlices(u8, want, got_shared.pixels);
+        tested += 1;
+    }
+    // Guard against a vacuous pass: the per-glyph `continue`s above must not
+    // end up skipping every glyph (e.g. a fixture or scale change).
+    try std.testing.expect(tested >= 8);
 }

@@ -32,8 +32,8 @@ pub const RasterScratch = struct {
     edges: std.ArrayList(scanline_mod.Edge) = .empty,
     intersections: std.ArrayList(scanline_mod.Intersection) = .empty,
     active: std.ArrayList(scanline_mod.Edge) = .empty,
+    delta: std.ArrayList(i16) = .empty,
     coverage: std.ArrayList(u16) = .empty,
-    coverage_high: std.ArrayList(u16) = .empty,
     cells: std.ArrayList(analytical_mod.Cell) = .empty,
 
     pub fn deinit(self: *RasterScratch, allocator: std.mem.Allocator) void {
@@ -41,8 +41,8 @@ pub const RasterScratch = struct {
         self.edges.deinit(allocator);
         self.intersections.deinit(allocator);
         self.active.deinit(allocator);
+        self.delta.deinit(allocator);
         self.coverage.deinit(allocator);
-        self.coverage_high.deinit(allocator);
         self.cells.deinit(allocator);
     }
 };
@@ -258,8 +258,8 @@ fn scanlineScratchOf(scratch: ?*RasterScratch) ?scanline_mod.RasterizeScratch {
         .edges = &s.edges,
         .active = &s.active,
         .intersections = &s.intersections,
+        .delta = &s.delta,
         .coverage = &s.coverage,
-        .coverage_high = &s.coverage_high,
         .cells = &s.cells,
     };
 }
