@@ -27,13 +27,86 @@ pub const GlyfTable = struct {
     const X_IS_SAME_OR_POSITIVE: u8 = 0x10;
     const Y_IS_SAME_OR_POSITIVE: u8 = 0x20;
 
-    // compound glyph flags
-    const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
-    const ARGS_ARE_XY_VALUES: u16 = 0x0002;
-    const MORE_COMPONENTS: u16 = 0x0020;
-    const WE_HAVE_A_SCALE: u16 = 0x0008;
-    const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
-    const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+    // compound glyph flags. pub: shared by ComponentIterator's callers
+    // (cappan_subset) so they don't need their own copies of these bit values.
+    pub const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+    pub const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+    pub const MORE_COMPONENTS: u16 = 0x0020;
+    pub const WE_HAVE_A_SCALE: u16 = 0x0008;
+    pub const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+    pub const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+
+    /// Walks a compound glyph's component records, yielding each one's
+    /// glyph id, flags, and the byte offset of its glyph-id field -- the
+    /// single piece of traversal logic previously duplicated three times
+    /// (here, cappan_subset's collectCompoundComponents, and
+    /// cappan_subset's subsetGlyf remap loop). Does not read dx/dy/transform
+    /// *values*, only skips over them (callers that need the actual
+    /// transform, i.e. getComponentInfos below, decode it themselves from
+    /// `item.args_offset` using `item.flags`, which is not traversal logic
+    /// and was never duplicated).
+    pub const ComponentIterator = struct {
+        data: []const u8,
+        offset: usize = 10,
+        more: bool = true,
+        count: usize = 0,
+
+        /// Same cap `getComponentInfos` enforced before this was extracted:
+        /// a malformed/malicious glyph could otherwise set MORE_COMPONENTS
+        /// forever (or until running off the end of `data`, at which point
+        /// `parser.readU16` returns `error.UnexpectedEof` anyway -- this cap
+        /// just bounds the work done before that happens).
+        const MAX_COMPONENTS = MAX_COMPOUND_DEPTH * 64;
+
+        pub fn init(glyph_data: []const u8) ComponentIterator {
+            return .{ .data = glyph_data };
+        }
+
+        pub const Item = struct {
+            glyph_id: u16,
+            flags: u16,
+            /// Byte offset (within the iterator's `data`) of this
+            /// component's glyph-id field (2 bytes, big-endian) -- lets a
+            /// caller remap it with a single in-place `std.mem.writeInt` at
+            /// this offset instead of re-deriving it by re-walking the
+            /// flag/arg/transform layout.
+            id_field_offset: usize,
+            /// Byte offset (within `data`) right after the glyph-id field,
+            /// where this component's dx/dy args begin -- for callers that
+            /// need the transform values (this iterator only skips them).
+            args_offset: usize,
+        };
+
+        pub fn next(self: *ComponentIterator) GlyfError!?Item {
+            if (!self.more) return null;
+            self.count += 1;
+            if (self.count > MAX_COMPONENTS) return error.InvalidGlyphData;
+
+            const flags = try parser.readU16(self.data, self.offset);
+            const id_field_offset = self.offset + 2;
+            const glyph_id = try parser.readU16(self.data, id_field_offset);
+            const args_offset = id_field_offset + 2;
+
+            // ARGS_ARE_XY_VALUES changes whether the two args are dx/dy or
+            // point-matching indices, not how many bytes they occupy -- both
+            // cases advance by the same amount, word or byte, per
+            // ARG_1_AND_2_ARE_WORDS.
+            var offset = args_offset + @as(usize, if (flags & ARG_1_AND_2_ARE_WORDS != 0) 4 else 2);
+
+            if (flags & WE_HAVE_A_SCALE != 0) {
+                offset += 2;
+            } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE != 0) {
+                offset += 4;
+            } else if (flags & WE_HAVE_A_TWO_BY_TWO != 0) {
+                offset += 8;
+            }
+
+            self.offset = offset;
+            self.more = (flags & MORE_COMPONENTS) != 0;
+
+            return Item{ .glyph_id = glyph_id, .flags = flags, .id_field_offset = id_field_offset, .args_offset = args_offset };
+        }
+    };
 
     pub fn isCompoundGlyph(self: GlyfTable, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!bool {
         const loc = try loca.getGlyphLocation(glyph_id);
@@ -57,17 +130,10 @@ pub const GlyfTable = struct {
         var components: std.ArrayList(ComponentInfo) = .empty;
         errdefer components.deinit(allocator);
 
-        var offset: usize = 10;
-        var flags: u16 = MORE_COMPONENTS;
-        var component_count: u32 = 0;
-        while (flags & MORE_COMPONENTS != 0) {
-            if (component_count >= MAX_COMPOUND_DEPTH * 64) return error.InvalidGlyphData;
-            component_count += 1;
-            flags = try parser.readU16(glyph_data, offset);
-            offset += 2;
-            const component_glyph_id = try parser.readU16(glyph_data, offset);
-            offset += 2;
-
+        var it = ComponentIterator.init(glyph_data);
+        while (try it.next()) |item| {
+            const flags = item.flags;
+            var offset = item.args_offset;
             var dx: i16 = 0;
             var dy: i16 = 0;
 
@@ -98,21 +164,18 @@ pub const GlyfTable = struct {
             if (flags & WE_HAVE_A_SCALE != 0) {
                 mat_a = try parser.readF2Dot14(glyph_data, offset);
                 mat_d = mat_a;
-                offset += 2;
             } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE != 0) {
                 mat_a = try parser.readF2Dot14(glyph_data, offset);
                 mat_d = try parser.readF2Dot14(glyph_data, offset + 2);
-                offset += 4;
             } else if (flags & WE_HAVE_A_TWO_BY_TWO != 0) {
                 mat_a = try parser.readF2Dot14(glyph_data, offset);
                 mat_b = try parser.readF2Dot14(glyph_data, offset + 2);
                 mat_c = try parser.readF2Dot14(glyph_data, offset + 4);
                 mat_d = try parser.readF2Dot14(glyph_data, offset + 6);
-                offset += 8;
             }
 
             try components.append(allocator, .{
-                .glyph_id = component_glyph_id,
+                .glyph_id = item.glyph_id,
                 .dx = dx,
                 .dy = dy,
                 .mat_a = mat_a,
@@ -480,4 +543,76 @@ test "space glyph returns null" {
     const glyph_id = try cmap.charToGlyphId(0x0020); // space
     const outline = try glyf.getGlyphOutline(std.testing.allocator, glyph_id, loca);
     try std.testing.expect(outline == null);
+}
+
+// Synthetic compound-glyph byte layout, hand-constructed and independently
+// verified against the OpenType glyf spec, exercising both component-arg
+// encodings (word args + no scale, byte args + WE_HAVE_A_SCALE) and the
+// MORE_COMPONENTS continuation flag:
+//
+//   header (10 bytes): numberOfContours=-1 (compound), xMin/yMin/xMax/yMax=0/0/100/100
+//   component 0 (offset 10): flags=MORE_COMPONENTS|ARGS_ARE_XY_VALUES|ARG_1_AND_2_ARE_WORDS
+//                             (0x0023), glyphIndex=5, dx=10, dy=20 (both i16 words), no scale
+//   component 1 (offset 18): flags=ARGS_ARE_XY_VALUES|WE_HAVE_A_SCALE (0x000A),
+//                             glyphIndex=7, dx=3, dy=-4 (both i8 bytes), scale=1.0 (F2Dot14)
+test "GlyfTable.ComponentIterator walks a synthetic 2-component compound glyph" {
+    const glyph_data = [_]u8{
+        0xFF, 0xFF, // numberOfContours = -1
+        0x00, 0x00, // xMin = 0
+        0x00, 0x00, // yMin = 0
+        0x00, 0x64, // xMax = 100
+        0x00, 0x64, // yMax = 100
+        0x00, 0x23, // component 0: flags = 0x0023
+        0x00, 0x05, //   glyphIndex = 5
+        0x00, 0x0A, //   dx = 10 (word)
+        0x00, 0x14, //   dy = 20 (word)
+        0x00, 0x0A, // component 1: flags = 0x000A
+        0x00, 0x07, //   glyphIndex = 7
+        0x03, //         dx = 3 (byte)
+        0xFC, //         dy = -4 (byte)
+        0x40, 0x00, //   scale = 1.0 (F2Dot14)
+    };
+
+    var it = GlyfTable.ComponentIterator.init(&glyph_data);
+
+    const item0 = (try it.next()) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(u16, 5), item0.glyph_id);
+    try std.testing.expectEqual(@as(u16, 0x0023), item0.flags);
+    try std.testing.expectEqual(@as(usize, 12), item0.id_field_offset);
+    try std.testing.expectEqual(@as(usize, 14), item0.args_offset);
+
+    const item1 = (try it.next()) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(u16, 7), item1.glyph_id);
+    try std.testing.expectEqual(@as(u16, 0x000A), item1.flags);
+    try std.testing.expectEqual(@as(usize, 20), item1.id_field_offset);
+    try std.testing.expectEqual(@as(usize, 22), item1.args_offset);
+
+    try std.testing.expectEqual(@as(?GlyfTable.ComponentIterator.Item, null), try it.next());
+
+    // The scale value at item1.args_offset+2 (after the 2 dx/dy bytes) should
+    // decode to 1.0 -- confirms args_offset lets a caller locate the
+    // transform correctly, matching getComponentInfos' own decoding.
+    const scale = try parser.readF2Dot14(&glyph_data, item1.args_offset + 2);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), scale, 0.001);
+
+    // Cross-check against getComponentInfos, which uses the same iterator
+    // internally: it should decode this exact synthetic glyph identically.
+    const loca_data = [_]u8{
+        0x00, 0x00, 0x00, 0x00, // glyph 0 offset = 0
+        0x00, 0x00, 0x00, glyph_data.len, // glyph 0 end / glyph 1 offset
+    };
+    const loca = loca_mod.parse(&loca_data, 1, 1);
+    const glyf = GlyfTable{ .data = &glyph_data };
+    const infos = (try glyf.getComponentInfos(std.testing.allocator, 0, loca)).?;
+    defer std.testing.allocator.free(infos);
+    try std.testing.expectEqual(@as(usize, 2), infos.len);
+    try std.testing.expectEqual(@as(u16, 5), infos[0].glyph_id);
+    try std.testing.expectEqual(@as(i16, 10), infos[0].dx);
+    try std.testing.expectEqual(@as(i16, 20), infos[0].dy);
+    try std.testing.expect(!infos[0].has_transform);
+    try std.testing.expectEqual(@as(u16, 7), infos[1].glyph_id);
+    try std.testing.expectEqual(@as(i16, 3), infos[1].dx);
+    try std.testing.expectEqual(@as(i16, -4), infos[1].dy);
+    try std.testing.expect(infos[1].has_transform);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), infos[1].mat_a, 0.001);
 }
