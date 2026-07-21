@@ -7,7 +7,7 @@ TEXT="あのイーハトーヴォのすきとおった風"
 OUT="cappan_doc/content/guide/image/incremental-rendering"
 SIZE=64
 FPS=24
-FRAMES=144
+FRAMES=96
 HOLD=24
 
 mkdir -p "$OUT"
