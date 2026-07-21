@@ -3,14 +3,12 @@ const font_mod = @import("../font/font.zig");
 const shaper = @import("../layout/shaper.zig");
 const rasterizer_mod = @import("../raster/rasterizer.zig");
 const scanline_mod = @import("../raster/scanline.zig");
-const stem_darkening_mod = @import("../raster/stem_darkening.zig");
 const rgba_bitmap_mod = @import("rgba_bitmap.zig");
 const easing_mod = @import("easing.zig");
 const renderer_mod = @import("renderer.zig");
 const glyphCacheKey = renderer_mod.glyphCacheKey;
 const glyph_reveal_mod = @import("glyph_reveal.zig");
 const paint_mod = @import("paint.zig");
-const auto_hinting_mod = @import("../raster/auto_hinting.zig");
 
 pub const RgbaBitmap = rgba_bitmap_mod.RgbaBitmap;
 pub const Color = rgba_bitmap_mod.Color;
@@ -106,10 +104,10 @@ pub const IncrementalRenderer = struct {
         text: []const u8,
         options: Options,
     ) !IncrementalRenderer {
-        const raster_options = if (options.stem_darkening)
-            stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
-        else
-            options.raster_options;
+        // Delegates to renderer.zig's resolveRasterOptions so the `enable_hinting`
+        // comptime gate (stem darkening is a hinting-adjacent adjustment) has a
+        // single owner instead of an ungated duplicate here.
+        const raster_options = renderer_mod.resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
         var layout = try shaper.layoutText(allocator, fonts, text, .{
             .pixel_size = options.pixel_size,
@@ -195,14 +193,9 @@ pub const IncrementalRenderer = struct {
             };
 
             const fill_padding = if (options.paint_stack != null) extended_padding else options.padding;
-            if (options.cff_hinting) {
-                if (outline.hints) |*h| {
-                    h.blue_zones = glyph_font.getBlueZones(pos.glyph_id);
-                }
-            }
-            if (options.auto_hinting and outline.hints == null) {
-                outline.hints = try auto_hinting_mod.generateHints(allocator, outline, glyph_font.getAutoBlueZones());
-            }
+            // Delegates to renderer.zig's applyOutlineHinting so the `enable_hinting`
+            // comptime gate has a single owner instead of an ungated duplicate here.
+            try renderer_mod.applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
             const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
@@ -425,7 +418,7 @@ pub const IncrementalRenderer = struct {
             .glyph_cache = glyph_cache,
             .paint_glyph_cache = paint_glyph_cache,
             .scale = scale,
-            .base_baseline_y = pad + layout.ascender_px,
+            .base_baseline_y = layout.baseBaselineY(pad),
             .pad = pad,
             .fg_color = options.fg_color,
             .bg_color = options.bg_color,
@@ -687,6 +680,48 @@ test "renderFrame progress=1.0 matches renderText" {
         .pixel_size = pixel_size,
         .strategy = .{ .sweep = .{} },
         .timing = .simultaneous,
+    });
+    defer inc.deinit();
+
+    var actual = try inc.renderFrame(1.0);
+    defer actual.deinit();
+
+    try std.testing.expectEqual(expected.width, actual.width);
+    try std.testing.expectEqual(expected.height, actual.height);
+    try std.testing.expectEqualSlices(u8, expected.pixels, actual.pixels);
+}
+
+test "renderFrame progress=1.0 matches renderText with hinting options enabled (enable_hinting gate is shared)" {
+    // Regression guard: incremental.zig used to apply cff_hinting/auto_hinting/
+    // stem_darkening unconditionally, with no `enable_hinting` comptime gate of its
+    // own, while renderer.zig's applyOutlineHinting/resolveRasterOptions early-return
+    // when the feature is compiled out. Under a default build the two behaviors
+    // happened to coincide (hinting is on either way), so this specific divergence
+    // was only observable with `-Denable_hinting=false`. Now that incremental.zig
+    // delegates to renderer.zig's `pub` applyOutlineHinting/resolveRasterOptions,
+    // this invariant holds under every build configuration, not just the default.
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const pixel_size: f32 = 32;
+    const text = "Hi";
+
+    var expected = try renderer_mod.renderText(std.testing.allocator, &[_]font_mod.Font{font}, text, .{
+        .pixel_size = pixel_size,
+        .auto_hinting = true,
+        .cff_hinting = true,
+        .stem_darkening = true,
+    });
+    defer expected.deinit();
+
+    var inc = try IncrementalRenderer.init(std.testing.allocator, &[_]font_mod.Font{font}, text, .{
+        .pixel_size = pixel_size,
+        .strategy = .{ .sweep = .{} },
+        .timing = .simultaneous,
+        .auto_hinting = true,
+        .cff_hinting = true,
+        .stem_darkening = true,
     });
     defer inc.deinit();
 

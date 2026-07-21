@@ -40,20 +40,26 @@ pub const RenderOptions = struct {
     normalized_coords: []const f32 = &.{},
 };
 
-fn applyOutlineHinting(
+/// Applies CFF blue-zone hinting and/or auto-hinting to `outline` in place, gated
+/// on the `enable_hinting` build feature. Shared by renderer.zig's own render paths
+/// and incremental.zig (via this `pub` export), so this comptime gate is the single
+/// place that decides whether hinting is compiled in at all -- callers must not
+/// duplicate this logic with their own ungated copy.
+pub fn applyOutlineHinting(
     allocator: std.mem.Allocator,
     outline: *glyph_mod.GlyphOutline,
     glyph_font: font_mod.Font,
     glyph_id: u16,
-    options: RenderOptions,
+    cff_hinting: bool,
+    auto_hinting: bool,
 ) !void {
     if (comptime !ft.enable_hinting) return;
-    if (options.cff_hinting) {
+    if (cff_hinting) {
         if (outline.hints) |*h| {
             h.blue_zones = glyph_font.getBlueZones(glyph_id);
         }
     }
-    if (options.auto_hinting and outline.hints == null) {
+    if (auto_hinting and outline.hints == null) {
         outline.hints = try auto_hinting_mod.generateHints(allocator, outline.*, glyph_font.getAutoBlueZones());
     }
 }
@@ -97,7 +103,7 @@ fn getOrRasterizeGlyph(
     apply_hinting: bool,
     scratch: ?*rasterizer_mod.RasterScratch,
 ) !CachedRaster {
-    const cache_key = glyphCacheKey(font_index, glyph_id);
+    const cache_key = glyphRasterCacheKey(font_index, glyph_id, apply_hinting);
     if (glyph_cache.get(cache_key)) |cached| return cached;
 
     const outline_opt = glyph_font.getGlyphOutline(allocator, glyph_id) catch |err| switch (err) {
@@ -113,7 +119,7 @@ fn getOrRasterizeGlyph(
     defer outline.deinit();
 
     if (apply_hinting) {
-        try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options);
+        try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options.cff_hinting, options.auto_hinting);
     }
 
     const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
@@ -144,6 +150,29 @@ pub fn glyphCacheKey(font_index: u8, glyph_id: u16) u32 {
     return glyph_cache_mod.glyphCacheKeyU32(font_index, glyph_id);
 }
 
+/// Key for the `CachedRaster` glyph cache used by renderText's non-LCD path and
+/// RowRenderer. Unlike `glyphCacheKey`, this folds whether hinting was applied
+/// into bit 24 (free: `glyphCacheKeyU32` only uses bits 0-23 for glyph_id/font_index).
+///
+/// This distinction matters because a single glyph_id can be rasterized twice with
+/// different hinting within the same render: once as a COLR v0 palette layer
+/// (`getOrRasterizeGlyph(..., apply_hinting = false, ...)`, since layer components are
+/// historically unhinted) and once as an ordinary plain glyph
+/// (`apply_hinting = true`) elsewhere in the same text run. Without this bit, both
+/// calls would collide on the same `(font_index, glyph_id)` key and whichever ran
+/// first would silently poison the cache for the other.
+///
+/// All call sites that read or write this specific `glyph_cache` must agree on the
+/// `hinted` bucket for a given logical role: `getOrRasterizeGlyph` uses its own
+/// `apply_hinting` parameter; every other read/write in this file that operates on
+/// the *plain, top-level* glyph slot (as opposed to a COLR-layer sub-glyph) must
+/// pass `true`, since that slot is only ever populated by the hinted plain-glyph
+/// path (or the bitmap-glyph-decode-failure placeholder, which is bucketed the
+/// same way for consistency).
+fn glyphRasterCacheKey(font_index: u8, glyph_id: u16, hinted: bool) u32 {
+    return glyphCacheKey(font_index, glyph_id) | (@as(u32, @intFromBool(hinted)) << 24);
+}
+
 const PaintOpKind = enum(u8) { fill, stroke };
 
 const PaintCacheKey = struct {
@@ -156,14 +185,19 @@ const PaintCacheKey = struct {
     miter_limit_q: u16,
 };
 
-fn resolveRasterOptions(options: RenderOptions) scanline_mod.RasterOptions {
+/// Resolves the effective `RasterOptions` for a render, applying stem-darkening
+/// adjustment when requested, gated on the `enable_hinting` build feature (stem
+/// darkening is a hinting-adjacent visual adjustment). Shared by renderer.zig's own
+/// render paths and incremental.zig (via this `pub` export) so this comptime gate
+/// has a single owner -- callers must not duplicate it with their own ungated copy.
+pub fn resolveRasterOptions(stem_darkening: bool, pixel_size: f32, raster_options: scanline_mod.RasterOptions) scanline_mod.RasterOptions {
     if (comptime ft.enable_hinting) {
-        return if (options.stem_darkening)
-            stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
+        return if (stem_darkening)
+            stem_darkening_mod.resolveRasterOptions(pixel_size, raster_options)
         else
-            options.raster_options;
+            raster_options;
     }
-    return options.raster_options;
+    return raster_options;
 }
 
 pub fn computeStrokePadding(paint_stack: ?[]const paint_mod.PaintOperation, pixel_size: f32, base_padding: u32) u32 {
@@ -195,7 +229,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         return renderTextPaintStack(allocator, fonts, text, options, paint_stack);
     }
 
-    const raster_options = resolveRasterOptions(options);
+    const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
     var layout = try shaper.layoutText(allocator, fonts, text, .{
         .pixel_size = options.pixel_size,
@@ -267,7 +301,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
             var outline = outline_opt.?;
             defer outline.deinit();
 
-            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
+            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
             const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
 
             const entry = CachedLcdRaster{
@@ -303,7 +337,12 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         defer raster_scratch.deinit(allocator);
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            // This slot is keyed as "hinted" (true): it is only ever populated by the
+            // plain hinted-glyph path below or the bitmap-decode-failure placeholder,
+            // never by the COLR v0 layer path (which caches under `layer.glyph_id`,
+            // separately bucketed as unhinted via glyphRasterCacheKey inside
+            // getOrRasterizeGlyph). See glyphRasterCacheKey's doc comment.
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
 
             if (glyph_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
@@ -368,7 +407,7 @@ fn renderTextPaintStack(
     options: RenderOptions,
     paint_stack: []const paint_mod.PaintOperation,
 ) !rgba_bitmap_mod.RgbaBitmap {
-    const raster_options = resolveRasterOptions(options);
+    const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
     var layout = try shaper.layoutText(allocator, fonts, text, .{
         .pixel_size = options.pixel_size,
@@ -448,7 +487,7 @@ fn renderTextPaintStack(
 
             const entry = switch (op) {
                 .fill => blk: {
-                    try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
+                    try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
                     const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
@@ -979,6 +1018,74 @@ test "render text with repeated characters uses cache" {
     try std.testing.expect(bitmap.height > 0);
 }
 
+test "glyphRasterCacheKey: hinted and unhinted buckets never collide with each other or with distinct glyph_id/font_index" {
+    // Guards the fix for the COLR v0 layer (unhinted) vs. plain glyph (hinted)
+    // cache collision: getOrRasterizeGlyph rasterizes the *same* glyph_id twice
+    // with different `apply_hinting` values within a single renderText call (once
+    // as a palette layer's component glyph, once as an ordinary plain glyph), and
+    // both writes/reads must land in distinct cache slots.
+    const same_font: u8 = 3;
+    const same_glyph: u16 = 42;
+
+    // The core property this fix depends on: same (font_index, glyph_id), different
+    // `hinted` bit => different key.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font, same_glyph, false));
+
+    // Varying font_index or glyph_id (holding hinted fixed) must still be distinct,
+    // i.e. folding in the hinted bit must not clobber the pre-existing distinctness
+    // that glyphCacheKey already provided.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font + 1, same_glyph, true));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font, same_glyph + 1, true));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font + 1, same_glyph, false));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font, same_glyph + 1, false));
+
+    // And no cross-talk between an unhinted key at one (font,glyph) and a hinted
+    // key at a different (font,glyph): the hinted bit must not accidentally alias
+    // with the low 24 bits used by font_index/glyph_id.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font, same_glyph + (1 << 8), true));
+}
+
+test "renderText: a glyph_id used both as a COLR v0 layer component and as a plain glyph in the same call renders without cache corruption" {
+    // Regression test for the actual bug: before the fix, getOrRasterizeGlyph keyed
+    // solely on (font_index, glyph_id), so if the same numeric glyph_id was
+    // rasterized once unhinted (as a COLR v0 layer's component, apply_hinting =
+    // false) and once hinted (as a plain top-level glyph, apply_hinting = true)
+    // within one renderText call, whichever ran first would poison the cache for
+    // the other. NotoColorEmoji-style synthetic fixtures aren't available here, so
+    // this exercises the invariant at the getOrRasterizeGlyph level directly: two
+    // back-to-back calls for the same (font, glyph_id) with different
+    // `apply_hinting` must each reflect their own hinting setting, not whichever
+    // was cached first.
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_id = try font.getGlyphId('l');
+    const raster_options = scanline_mod.RasterOptions{};
+    const options = RenderOptions{ .pixel_size = 48 };
+
+    var glyph_cache: std.AutoHashMapUnmanaged(u32, CachedRaster) = .empty;
+    defer {
+        var it = glyph_cache.valueIterator();
+        while (it.next()) |entry| std.testing.allocator.free(entry.pixels);
+        glyph_cache.deinit(std.testing.allocator);
+    }
+
+    // Unhinted first (simulating the COLR v0 layer path running first)...
+    const unhinted = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, false, null);
+    // ...then hinted for the *same* glyph_id (simulating the plain glyph path).
+    const hinted = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, true, null);
+
+    // Both entries must exist independently in the cache (distinct keys), and a
+    // second lookup for each must return exactly what was first computed for that
+    // hinting bucket, not a value poisoned by the other call.
+    const unhinted_again = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, false, null);
+    const hinted_again = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, true, null);
+    try std.testing.expectEqual(unhinted.pixels.ptr, unhinted_again.pixels.ptr);
+    try std.testing.expectEqual(hinted.pixels.ptr, hinted_again.pixels.ptr);
+    try std.testing.expect(unhinted.pixels.ptr != hinted.pixels.ptr);
+}
+
 test "render text with LCD rendering" {
     const font_data = @embedFile("../fixture/DejaVuSans.ttf");
     var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
@@ -1027,7 +1134,7 @@ pub const RowRenderer = struct {
     scratch: rasterizer_mod.RasterScratch,
 
     pub fn init(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !RowRenderer {
-        const raster_options = resolveRasterOptions(options);
+        const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
         var layout = try shaper.layoutText(allocator, fonts, text, .{
             .pixel_size = options.pixel_size,
@@ -1059,7 +1166,10 @@ pub const RowRenderer = struct {
         errdefer scratch.deinit(allocator);
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            // RowRenderer never rasterizes a COLR v0 layer sub-glyph into this cache
+            // (only plain hinted glyphs), so `true` is the only bucket ever used here --
+            // kept consistent with getOrRasterizeGlyph's own key via glyphRasterCacheKey.
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
             if (glyph_cache.get(cache_key) != null) continue;
 
             const glyph_font = fonts[pos.font_index];
@@ -1112,7 +1222,7 @@ pub const RowRenderer = struct {
         const yf = @as(f32, @floatFromInt(y));
 
         for (self.layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
             const cached = self.glyph_cache.get(cache_key) orelse continue;
             if (cached.width == 0 or cached.height == 0) continue;
 
