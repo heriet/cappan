@@ -113,6 +113,16 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
 
     // Unfilter each scanline and convert to RGBA
     var row_src: usize = 0;
+    // Start of the *previous row's raw reconstructed bytes* within
+    // `decompressed` (channels-wide stride: width*3 for RGB, width*4 for
+    // RGBA) -- rows are reconstructed in place there, so this is always the
+    // correct previous-row reference regardless of color type. This must NOT
+    // be computed from `pixels` (the RGBA *output* buffer, always width*4
+    // stride): for color type 2 (RGB, channels=3) that stride mismatch reads
+    // the wrong bytes entirely -- with alpha bytes interleaved into what the
+    // Up/Average/Paeth filters expect to be tightly-packed RGB, every row
+    // past the first comes out corrupted.
+    var prev_raw_row_start: ?usize = null;
     for (0..@as(usize, height)) |y| {
         if (row_src >= decompressed.len) return error.UnexpectedEof;
         const filter_type = decompressed[row_src];
@@ -121,7 +131,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
         if (row_end > decompressed.len) return error.UnexpectedEof;
         const src_row = decompressed[row_src..row_end];
         const dst_row_start = std.math.mul(usize, y, @as(usize, width) * 4) catch return error.InvalidPng;
-        const prev_row_start: ?usize = if (y > 0) std.math.mul(usize, y - 1, @as(usize, width) * 4) catch return error.InvalidPng else null;
+        const prev_raw: ?[]u8 = if (prev_raw_row_start) |pr| decompressed[pr .. pr + stride] else null;
 
         // Apply PNG filter reconstruction
         switch (filter_type) {
@@ -132,18 +142,16 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
                 reconstructSub(src_row, channels);
             },
             2 => { // Up
-                if (prev_row_start) |pr| {
-                    reconstructUp(src_row, pixels[pr .. pr + stride], channels);
+                if (prev_raw) |pr| {
+                    reconstructUp(src_row, pr, channels);
                 }
                 // If no previous row, Up filter means add 0 (no change)
             },
             3 => { // Average
-                const prev_opt: ?[]u8 = if (prev_row_start) |pr| pixels[pr .. pr + stride] else null;
-                reconstructAverage(src_row, prev_opt, channels);
+                reconstructAverage(src_row, prev_raw, channels);
             },
             4 => { // Paeth
-                const prev_opt: ?[]u8 = if (prev_row_start) |pr| pixels[pr .. pr + stride] else null;
-                reconstructPaeth(src_row, prev_opt, channels);
+                reconstructPaeth(src_row, prev_raw, channels);
             },
             else => return error.InvalidFilterType,
         }
@@ -165,6 +173,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
             }
         }
 
+        prev_raw_row_start = row_src;
         row_src += stride;
     }
 
@@ -233,6 +242,75 @@ test "png decoder returns error on invalid signature" {
     const bad_data = [_]u8{0} ** 20;
     const result = decode(std.testing.allocator, &bad_data);
     try std.testing.expectError(error.InvalidPngSignature, result);
+}
+
+// Regression test for the RGB (color type 2) prev-row bug: Up/Average/Paeth
+// reconstruction read the previous row from `pixels` (the RGBA *output*
+// buffer, always width*4 stride) at an offset computed for width*4 spacing,
+// then sliced it to `stride` (width*3 for RGB) bytes -- misaligning every
+// channel read against the interleaved alpha bytes for any row past the
+// first. This 2x4 synthetic RGB PNG (chunk CRCs are dummy zero bytes; this
+// decoder doesn't check them) uses filter types 0 (row 0, no previous row to
+// need), 2/3/4 (rows 1-3) -- exactly the filters that read a previous row --
+// so any prev-row corruption shows up as wrong pixels starting at row 1.
+// Expected raw (pre-filter) RGB per row, hand-derived and independently
+// verified against a reference Python PNG filter implementation:
+//   row0 (10,20,30)(40,50,60)   row1 (15,25,35)(45,55,65)
+//   row2 (20,30,40)(70,80,90)   row3 (25,35,45)(50,60,70)
+test "png decoder reconstructs RGB (color type 2) filters 2/3/4 correctly across rows" {
+    const png_bytes = [_]u8{ 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 4, 8, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 73, 68, 65, 84, 120, 218, 99, 224, 18, 145, 211, 48, 178, 97, 98, 5, 3, 102, 94, 33, 113, 53, 53, 53, 22, 32, 243, 205, 155, 55, 0, 34, 86, 4, 117, 0, 0, 0, 0, 0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0 };
+
+    var img = try decode(std.testing.allocator, &png_bytes);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), img.width);
+    try std.testing.expectEqual(@as(u32, 4), img.height);
+
+    const expected_rgb = [4][2][3]u8{
+        .{ .{ 10, 20, 30 }, .{ 40, 50, 60 } },
+        .{ .{ 15, 25, 35 }, .{ 45, 55, 65 } },
+        .{ .{ 20, 30, 40 }, .{ 70, 80, 90 } },
+        .{ .{ 25, 35, 45 }, .{ 50, 60, 70 } },
+    };
+    for (0..4) |y| {
+        for (0..2) |x| {
+            const i = (y * 2 + x) * 4;
+            try std.testing.expectEqual(expected_rgb[y][x][0], img.pixels[i]);
+            try std.testing.expectEqual(expected_rgb[y][x][1], img.pixels[i + 1]);
+            try std.testing.expectEqual(expected_rgb[y][x][2], img.pixels[i + 2]);
+            try std.testing.expectEqual(@as(u8, 255), img.pixels[i + 3]); // alpha always opaque for RGB
+        }
+    }
+}
+
+// Companion test: the equivalent RGBA (color type 6) case, whose prev-row
+// offset happened to be numerically correct even with the bug (channels == 4
+// matches the output buffer's width*4 stride exactly) -- confirms this fix
+// doesn't disturb the already-working RGBA path. Same filter mix (0/2/3/4)
+// across 4 rows, with a non-constant alpha channel.
+test "png decoder reconstructs RGBA (color type 6) filters 2/3/4 correctly across rows" {
+    const png_bytes = [_]u8{ 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 4, 8, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 73, 68, 65, 84, 120, 218, 99, 224, 18, 145, 251, 175, 97, 100, 115, 130, 137, 149, 149, 245, 63, 8, 51, 243, 10, 137, 215, 169, 169, 169, 61, 97, 1, 241, 222, 188, 121, 243, 31, 0, 163, 137, 11, 154, 0, 0, 0, 0, 0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0 };
+
+    var img = try decode(std.testing.allocator, &png_bytes);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), img.width);
+    try std.testing.expectEqual(@as(u32, 4), img.height);
+
+    const expected_rgba = [4][2][4]u8{
+        .{ .{ 10, 20, 30, 255 }, .{ 40, 50, 60, 200 } },
+        .{ .{ 15, 25, 35, 254 }, .{ 45, 55, 65, 199 } },
+        .{ .{ 20, 30, 40, 253 }, .{ 70, 80, 90, 198 } },
+        .{ .{ 25, 35, 45, 252 }, .{ 50, 60, 70, 197 } },
+    };
+    for (0..4) |y| {
+        for (0..2) |x| {
+            const i = (y * 2 + x) * 4;
+            for (0..4) |c| {
+                try std.testing.expectEqual(expected_rgba[y][x][c], img.pixels[i + c]);
+            }
+        }
+    }
 }
 
 test "png decoder returns error on short data" {
