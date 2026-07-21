@@ -2468,10 +2468,10 @@ fn printUsage() void {
         \\  --stem-darkening     Enable stem darkening for small text
         \\  --cff-hinting        Enable CFF hinting
         \\  --auto-hinting       Enable auto-hinting for unhinted fonts
-        \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32
-        \\  --sample-pattern     Sample pattern: regular (default), rotated-grid
-        \\  --adaptive           Enable adaptive supersampling (4x + 32x refine)
-        \\  --raster-method      Rasterizer: supersampling (default), analytical
+        \\  --aa-level           Anti-aliasing level: 4, 8 (default), 16, 32 (supersampling only)
+        \\  --sample-pattern     Sample pattern: regular (default), rotated-grid (supersampling only)
+        \\  --adaptive           Enable adaptive supersampling (4x + 32x refine; supersampling only)
+        \\  --raster-method      Rasterizer: analytical (default), supersampling
         \\  --stroke             Add stroke: WIDTH,RRGGBB[,position=outside|center|inside]
         \\                                   [,join=round|miter|bevel][,opacity=0-1][,miter-limit=N]
         \\                                   [,time-weight=N]

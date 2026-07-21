@@ -27,6 +27,14 @@ pub const AntiAliasLevel = enum(u6) {
     }
 };
 
+/// Sub-scanline x sample position for `.supersampling`. `.regular`
+/// point-samples every sub-scanline at the pixel's *left edge* (x_offset = 0)
+/// -- this is why plain supersampling has no horizontal antialiasing on
+/// vertical edges (a vertical edge inside a pixel column is either fully in
+/// or fully out of every sub-scanline's sample, however many rows are
+/// sampled) and a systematic up-to-1px rightward bias versus true coverage.
+/// `.rotated_grid` varies the x offset per sub-scanline and partially
+/// mitigates this, but still isn't exact coverage.
 pub const SamplePattern = enum {
     regular,
     rotated_grid,
@@ -51,16 +59,28 @@ pub const AdaptiveOptions = struct {
     high_level: AntiAliasLevel = .aa_32,
 };
 
+/// `analytical` computes the exact area-coverage integral of each pixel cell
+/// against the outline -- the same convention FreeType's FT_RENDER_MODE_NORMAL
+/// and stb_truetype use, and the reason it's the default (see RasterOptions).
+/// `supersampling` point-samples the outline at a finite number of
+/// sub-scanline positions per row instead; it's an explicit opt-in for callers
+/// who want that specific (regular/rotated_grid, aa_level, adaptive) sampling
+/// behavior rather than exact coverage -- see `aa_level`/`sample_pattern`/
+/// `adaptive`'s docs, all of which only affect this method.
 pub const RasterMethod = enum {
     supersampling,
     analytical,
 };
 
 pub const RasterOptions = struct {
+    /// supersampling-only: sub-scanline count per row.
     aa_level: AntiAliasLevel = .aa_8,
+    /// supersampling-only: see SamplePattern.
     sample_pattern: SamplePattern = .regular,
+    /// supersampling-only: per-row low/high refinement (see AdaptiveOptions).
     adaptive: ?AdaptiveOptions = null,
-    method: RasterMethod = .supersampling,
+    /// Default `.analytical` -- see RasterMethod for the comparison and why.
+    method: RasterMethod = .analytical,
     embolden_strength: f32 = 0.0,
 };
 
@@ -925,7 +945,17 @@ test "T1/T2: rasterize matches pre-AET reference across shapes x aa levels x pat
         for (aa_levels) |aa| {
             for (patterns) |pattern| {
                 for (adaptive_variants) |adaptive| {
+                    // .method pinned explicitly: this test's whole point is
+                    // comparing the supersampling implementation against its
+                    // pre-AET oracle (referenceRasterize only implements the
+                    // supersampling algorithm; for .analytical it just
+                    // delegates to analytical_mod.rasterize same as
+                    // production rasterize() does). Since RasterOptions{}'s
+                    // default is now .analytical, leaving this implicit would
+                    // make both sides call the identical analytical function
+                    // and "pass" trivially, testing nothing.
                     const options: RasterOptions = .{
+                        .method = .supersampling,
                         .aa_level = aa,
                         .sample_pattern = pattern,
                         .adaptive = adaptive,
@@ -1052,7 +1082,11 @@ test "T5: adaptive matches reference for real glyph outlines (bare + shared scra
 
     const text = "Hello café";
     const scale = 48.0 / @as(f32, @floatFromInt(font.getUnitsPerEm()));
-    const options: RasterOptions = .{ .adaptive = .{} };
+    // .method pinned explicitly, same reason as T1/T2: `.adaptive` only takes
+    // effect under .supersampling, and referenceRasterize degenerates to a
+    // trivial self-comparison under .analytical (RasterOptions{}'s new
+    // default) -- see that test's comment for the full argument.
+    const options: RasterOptions = .{ .method = .supersampling, .adaptive = .{} };
 
     var scratch: rasterizer_mod.RasterScratch = .{};
     defer scratch.deinit(allocator);
@@ -1090,4 +1124,15 @@ test "T5: adaptive matches reference for real glyph outlines (bare + shared scra
     // Guard against a vacuous pass: the per-glyph `continue`s above must not
     // end up skipping every glyph (e.g. a fixture or scale change).
     try std.testing.expect(tested >= 8);
+}
+
+// T6: pins RasterOptions{}'s default method to .analytical (the intentional
+// default switch -- see RasterOptions/RasterMethod's doc comments), so an
+// accidental flip back is caught immediately instead of only showing up as a
+// diffuse quality/perf regression elsewhere.
+test "T6: default RasterOptions method is analytical" {
+    // rasterize() dispatches directly on options.method, so pinning the enum
+    // default is sufficient to pin the default rendering path (T1-T5 cover
+    // the behavior of each method under explicit selection).
+    try std.testing.expectEqual(RasterMethod.analytical, (RasterOptions{}).method);
 }

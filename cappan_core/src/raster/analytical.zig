@@ -10,6 +10,23 @@ pub const Cell = struct {
     area: f32 = 0,
 };
 
+/// Row-band height for the NON-SCRATCH path: `cells` is accumulated and
+/// integrated one band of `band_h` rows at a time instead of the whole W*H
+/// image at once, bounding the per-call buffer to `w * band_h`. A phase-level
+/// profile found alloc+memset at 82.8% of non-scratch analytical's per-glyph
+/// cost at 128px, and 32-row banding recovers ~2.3x there; 16 loses to
+/// redundant re-walking of band-spanning segments, 64 halves the win.
+///
+/// With a caller-provided scratch the buffer already persists across calls,
+/// so allocation isn't a cost at all and banding is pure overhead (measured
+/// +15-18% at 64-128px from segment re-walks and per-band memsets; the
+/// cache-residency hope did not materialize). The scratch path therefore uses
+/// one full-height band, i.e. the pre-banding behavior. Output is
+/// byte-identical for ANY band split (verified: identical checksums across
+/// band_h 16/32/64/full) -- band size is purely a performance knob, so the
+/// two paths differing here cannot diverge in output.
+const band_h: usize = 32;
+
 pub fn rasterize(
     allocator: std.mem.Allocator,
     segments: []const outline_mod.Segment,
@@ -20,37 +37,100 @@ pub fn rasterize(
     const w: usize = @intCast(width);
     const h: usize = @intCast(height);
 
+    // No memset: the band loop's reconstruction pass writes every pixel
+    // (bands tile [0, h) and the inner loop covers all of [0, w)), and the
+    // w/h == 0 early return below returns a zero-length buffer.
     const pixels = try allocator.alloc(u8, w * h);
     errdefer allocator.free(pixels);
-    @memset(pixels, 0);
 
     if (w == 0 or h == 0) return pixels;
+
+    // Scratch path: one full-height band; non-scratch: small bands -- see
+    // band_h's doc for the measured tradeoff.
+    const effective_band_h: usize = if (cells_scratch != null) h else @min(band_h, h);
 
     var local_cells: std.ArrayList(Cell) = .empty;
     defer local_cells.deinit(allocator);
     const cells_list: *std.ArrayList(Cell) = cells_scratch orelse &local_cells;
-    try cells_list.resize(allocator, w * h);
-    const cells = cells_list.items;
-    @memset(cells, .{});
+    try cells_list.resize(allocator, w * effective_band_h);
+    const band_cells = cells_list.items;
 
-    for (segments) |seg| {
-        renderLine(cells, w, h, seg.x0, seg.y0, seg.x1, seg.y1);
-    }
+    var band_start: usize = 0;
+    while (band_start < h) : (band_start += effective_band_h) {
+        const band_rows = @min(effective_band_h, h - band_start);
+        const band_slice = band_cells[0 .. w * band_rows];
+        @memset(band_slice, .{});
 
-    for (0..h) |y| {
-        var acc: f32 = 0;
-        for (0..w) |x| {
-            const cell = cells[y * w + x];
-            const coverage = @abs(acc + cell.area * 0.5);
-            acc += cell.cover;
-            pixels[y * w + x] = @intFromFloat(@min(coverage * 255.0, 255.0));
+        // Segments are walked in original array order, every band -- see
+        // renderLine's doc for why this preserves f32-addition-order byte
+        // identity. The y-range pre-check below is a pure optimization (skip
+        // entering renderLine's row-walk at all when this segment's *whole*
+        // unclipped y-span can't reach this band); it uses strict `<`/`>` so
+        // it only ever skips segments renderLine's own per-row band check
+        // would also have produced zero writes for -- never a false skip.
+        const band_lo_f: f32 = @floatFromInt(band_start);
+        const band_hi_f: f32 = @floatFromInt(band_start + band_rows);
+        for (segments) |seg| {
+            const seg_lo = @min(seg.y0, seg.y1);
+            const seg_hi = @max(seg.y0, seg.y1);
+            if (seg_hi < band_lo_f or seg_lo > band_hi_f) continue;
+            renderLine(band_slice, w, h, seg.x0, seg.y0, seg.x1, seg.y1, band_start, band_start + band_rows);
+        }
+
+        // Coverage reconstruction: add this cell's own `cover` to `acc`
+        // BEFORE reading out this cell's coverage, and SUBTRACT `area * 0.5`.
+        //
+        // Derivation (nonzero-winding average over the full row height): for
+        // the sub-portion of the row where the crossing has already moved
+        // past this cell into a later column, this cell is fully on the
+        // "post-crossing" side, contributing that sub-portion's dy directly
+        // -- and `cover` already includes it, since cover sums to the full
+        // row height across every column an edge visits in a row. Averaging
+        // gives cell_avg_winding = (acc_before + cover) - area/2, i.e.
+        // exactly acc-after-adding-cover minus half the area term.
+        //
+        // The read-before-update, add-area form is wrong: it coincides with
+        // this only when a crossing stays in one column for the whole row
+        // (straight near-vertical edges), and diverges for flattened curve
+        // segments, whose slope makes most row-crossings span 2+ columns.
+        // Guarded by the circle regression test below.
+        for (0..band_rows) |y_rel| {
+            var acc: f32 = 0;
+            for (0..w) |x| {
+                const cell = band_slice[y_rel * w + x];
+                acc += cell.cover;
+                const coverage = @abs(acc - cell.area * 0.5);
+                pixels[(band_start + y_rel) * w + x] = @intFromFloat(@min(coverage * 255.0, 255.0));
+            }
         }
     }
 
     return pixels;
 }
 
-fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: f32) void {
+/// Walks the segment exactly as the pre-banding version did -- identical
+/// t_start/t_end vertical clip against the *full* image height `h` (not the
+/// band), identical row-stepping recurrence for cur_x/cur_y, identical
+/// row-end/row-top computation -- with exactly two differences, both
+/// non-numeric: (1) a row's `renderRowSegment` call is skipped when that
+/// row falls outside [band_start, band_end), and (2) when it isn't skipped,
+/// the row index passed in is band-relative (iy - band_start) to match
+/// `cells` being a band-sized slice, not the full `w * h` image. No arithmetic that ends up in a written cell's cover/area changes:
+/// every f32 add a written cell receives is bit-for-bit the value the
+/// non-banded version would have computed for that same row, and (per
+/// rasterize()'s outer loop) happens in the same original segment order --
+/// the two properties f32 addition's non-associativity requires for byte
+/// identity.
+///
+/// Cost note: a segment spanning multiple bands gets walked again (from its
+/// own start, not resumed) on each band's pass, wasting the walk for rows
+/// outside that pass's band. Flattened curve chords are short (~0.6-6px, see
+/// outline.zig's flattening tolerance) so this touches at most 2 bands in
+/// practice; genuinely long straight edges (e.g. a full-height stem) do get
+/// re-walked once per band (O(bands) instead of O(1) row-steps for that one
+/// segment). Measured, this stays well below the allocation cost the banding
+/// removes (see band_h's doc for the numbers).
+fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: f32, band_start: usize, band_end: usize) void {
     const dy = y1 - y0;
     if (@abs(dy) < 1e-7) return;
 
@@ -82,13 +162,28 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
 
     if (dy > 0) {
         while (cur_y < cy1 - 1e-7) {
-            const iy: usize = @intFromFloat(@floor(cur_y));
+            const iy_f = @floor(cur_y);
+            if (iy_f < 0) {
+                // A segment entering from y < 0 clips with t_start = -y0/dy,
+                // which is only *mathematically* zero: f32 rounding can leave
+                // cur_y a hair below 0 (observed: -9.5e-7), where the usize
+                // cast below would trap. Advance to the y=0 row boundary --
+                // the sliver below the image contributes nothing. Mirrors the
+                // dy<0 branch's iy_f < 0 guard; runs at most once since cur_y
+                // becomes exactly 0.
+                cur_x += (0.0 - cur_y) * slope;
+                cur_y = 0.0;
+                continue;
+            }
+            const iy: usize = @intFromFloat(iy_f);
             if (iy >= h) break;
 
             const row_end = @min(@as(f32, @floatFromInt(iy + 1)), cy1);
             const end_x = cur_x + (row_end - cur_y) * slope;
 
-            renderRowSegment(cells, w, iy, cur_x, cur_y, end_x, row_end);
+            if (iy >= band_start and iy < band_end) {
+                renderRowSegment(cells, w, iy - band_start, cur_x, cur_y, end_x, row_end);
+            }
 
             cur_x = end_x;
             cur_y = row_end;
@@ -109,7 +204,9 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
             const row_top = @max(@as(f32, @floatFromInt(iy)), cy1);
             const end_x = cur_x + (row_top - cur_y) * slope;
 
-            renderRowSegment(cells, w, iy, cur_x, cur_y, end_x, row_top);
+            if (iy >= band_start and iy < band_end) {
+                renderRowSegment(cells, w, iy - band_start, cur_x, cur_y, end_x, row_top);
+            }
 
             cur_x = end_x;
             cur_y = row_top;
@@ -140,11 +237,20 @@ fn renderRowSegment(cells: []Cell, w: usize, cy: usize, x0_raw: f32, y0_raw: f32
         }
         if (x_lo >= w_f) return;
 
+        // Clipping at x=0 must not discard the clipped-off portion's winding:
+        // everything at x<0 is left of every bitmap column, so its dy still
+        // belongs in column 0 as cover-only (cx = -1), same as the x_hi <= 0
+        // branch above. Dropping it breaks row cover closure and corrupts the
+        // whole row, including pixels right of the shape.
         if (x0 < 0) {
-            y0 += (0 - x0) * dy_per_dx;
+            const y_at_zero = y0 + (0 - x0) * dy_per_dx;
+            addCellContribution(cells, w, cy, -1, y_at_zero - y0, 0, 0);
+            y0 = y_at_zero;
             x0 = 0;
         } else if (x1 < 0) {
-            y1 += (0 - x1) * dy_per_dx;
+            const y_at_zero = y1 + (0 - x1) * dy_per_dx;
+            addCellContribution(cells, w, cy, -1, y1 - y_at_zero, 0, 0);
+            y1 = y_at_zero;
             x1 = 0;
         }
 
@@ -168,7 +274,17 @@ fn renderRowSegment(cells: []Cell, w: usize, cy: usize, x0_raw: f32, y0_raw: f32
     const dx = x1 - x0;
 
     if (@abs(dx) < 1e-10) {
-        const ix: i32 = @intFromFloat(@floor(@max(x0, 0)));
+        // Vertical segments skip the clipping block above (full_dx ~ 0), so
+        // x0 may be anywhere: left of the bitmap it's cover-only in column 0
+        // (clamping ix while passing the raw negative x0 into the area term
+        // would credit column 0 with a bogus negative area); at or past the
+        // right edge it contributes nothing.
+        if (x0 < 0) {
+            addCellContribution(cells, w, cy, -1, dy, 0, 0);
+            return;
+        }
+        if (x0 >= w_f) return;
+        const ix: i32 = @intFromFloat(@floor(x0));
         addCellContribution(cells, w, cy, ix, dy, x0, x0);
         return;
     }
@@ -260,4 +376,154 @@ test "analytical rectangle coverage" {
     try std.testing.expect(pixels[2 * 10 + 7] > 100 and pixels[2 * 10 + 7] < 150);
 
     try std.testing.expectEqual(@as(u8, 0), pixels[2 * 10 + 8]);
+}
+
+/// Nonzero-winding coverage of pixel (px,py) via dense sub-sample point
+/// testing against `segments` directly -- an independent (no cell
+/// accumulation, no cover/area) ground truth for a single pixel, used only by
+/// the regression test below.
+fn bruteForceCoverage(segments: []const outline_mod.Segment, px: usize, py: usize) f32 {
+    const n: usize = 48; // 48x48 sub-samples: ~0.02px resolution, ample for the 20/255 tolerance
+    var inside_count: usize = 0;
+    const total: usize = n * n;
+    for (0..n) |sy| {
+        const y = @as(f32, @floatFromInt(py)) + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(n));
+        for (0..n) |sx| {
+            const x = @as(f32, @floatFromInt(px)) + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(n));
+            var winding: i32 = 0;
+            for (segments) |seg| {
+                const y0 = seg.y0;
+                const y1 = seg.y1;
+                if (y0 == y1) continue;
+                const lo = @min(y0, y1);
+                const hi = @max(y0, y1);
+                if (y < lo or y >= hi) continue;
+                const t = (y - y0) / (y1 - y0);
+                const cross_x = seg.x0 + t * (seg.x1 - seg.x0);
+                if (cross_x > x) winding += if (y1 > y0) 1 else -1;
+            }
+            if (winding != 0) inside_count += 1;
+        }
+    }
+    return @as(f32, @floatFromInt(inside_count)) / @as(f32, @floatFromInt(total));
+}
+
+/// Approximates a circle as `n` short straight segments -- deliberately many
+/// short chords (rather than a handful of long ones) to match the segment
+/// length/count a real flattened glyph curve produces (see flattenQuadBezier/
+/// flattenCubicBezier's 0.25px tolerance in outline.zig), which is exactly
+/// the shape of input that triggered the bug this guards.
+fn circleSegments(buf: []outline_mod.Segment, cx: f32, cy: f32, r: f32) void {
+    const n = buf.len;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const a0 = 2.0 * std.math.pi * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n));
+        const a1 = 2.0 * std.math.pi * @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(n));
+        buf[i] = .{
+            .x0 = cx + r * @cos(a0),
+            .y0 = cy + r * @sin(a0),
+            .x1 = cx + r * @cos(a1),
+            .y1 = cy + r * @sin(a1),
+        };
+    }
+}
+
+// Regression guard for the reconstruction-formula bug documented at
+// rasterize()'s coverage loop: without the fix, boundary coverage is off by
+// 100+ levels (out of 255) wherever a row-crossing spans multiple columns --
+// routine for the short chords a flattened curve produces. The 256-segment
+// circle (~0.6px chords) matches real flattened-glyph segment lengths.
+test "analytical circle boundary matches brute-force coverage" {
+    const allocator = std.testing.allocator;
+    const w: u32 = 64;
+    const h: u32 = 64;
+
+    var seg_buf: [256]outline_mod.Segment = undefined;
+    circleSegments(&seg_buf, 32.0, 32.0, 24.0);
+    const segments = seg_buf[0..];
+
+    const pixels = try rasterize(allocator, segments, w, h, null);
+    defer allocator.free(pixels);
+
+    // Each row's rightmost partial (boundary) pixel must agree with the
+    // independent brute-force sampler.
+    var checked: usize = 0;
+    var mismatches: usize = 0;
+    for (10..54) |y| {
+        var x: usize = w;
+        while (x > 0) {
+            x -= 1;
+            const v = pixels[y * w + x];
+            if (v > 0 and v < 255) {
+                const brute = bruteForceCoverage(segments, x, y) * 255.0;
+                if (@abs(@as(f32, @floatFromInt(v)) - brute) > 20.0) mismatches += 1;
+                checked += 1;
+                break;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    // Guard against a vacuous pass (no row finding a partial boundary pixel).
+    try std.testing.expect(checked >= 20);
+}
+
+// Regression guard for renderRowSegment's x<0 clipping paths: the winding of
+// any sub-segment clipped away at x<0 -- slanted row-crossings and vertical
+// edges alike -- must still land in column 0 as cover-only. Before the fix,
+// the triangle's x=0-crossing rows were off by 200+/255 across the whole row
+// (including pixels right of the shape), and the second case's hole-interior
+// pixel at column 0 rendered 255 instead of 0 (vertical x<0 edges leaked
+// bogus negative area into column 0).
+test "analytical x<0 clipped shapes match brute-force coverage" {
+    const allocator = std.testing.allocator;
+
+    // Triangle with a far-left vertex: both slanted edges cross x=0 mid-row.
+    const tri = [_]outline_mod.Segment{
+        .{ .x0 = -100, .y0 = 10, .x1 = 30, .y1 = 5 },
+        .{ .x0 = 30, .y0 = 5, .x1 = 30, .y1 = 15 },
+        .{ .x0 = 30, .y0 = 15, .x1 = -100, .y1 = 10 },
+    };
+    // Rect spanning the left edge, with a reversed-winding hole also spanning
+    // it: two vertical edges at x<0 whose cover (but not area) must cancel in
+    // column 0.
+    const holed = [_]outline_mod.Segment{
+        .{ .x0 = -10, .y0 = 1, .x1 = -10, .y1 = 9 },
+        .{ .x0 = -10, .y0 = 9, .x1 = 15, .y1 = 9 },
+        .{ .x0 = 15, .y0 = 9, .x1 = 15, .y1 = 1 },
+        .{ .x0 = 15, .y0 = 1, .x1 = -10, .y1 = 1 },
+        .{ .x0 = -5, .y0 = 3, .x1 = 5, .y1 = 3 },
+        .{ .x0 = 5, .y0 = 3, .x1 = 5, .y1 = 7 },
+        .{ .x0 = 5, .y0 = 7, .x1 = -5, .y1 = 7 },
+        .{ .x0 = -5, .y0 = 7, .x1 = -5, .y1 = 3 },
+    };
+
+    const cases = [_]struct { segs: []const outline_mod.Segment, w: u32, h: u32 }{
+        .{ .segs = &tri, .w = 40, .h = 20 },
+        .{ .segs = &holed, .w = 20, .h = 10 },
+    };
+    for (cases) |case| {
+        const pixels = try rasterize(allocator, case.segs, case.w, case.h, null);
+        defer allocator.free(pixels);
+        for (0..case.h) |y| {
+            for (0..case.w) |x| {
+                const want = bruteForceCoverage(case.segs, x, y) * 255.0;
+                const got: f32 = @floatFromInt(pixels[y * case.w + x]);
+                try std.testing.expect(@abs(got - want) <= 6.0);
+            }
+        }
+    }
+}
+
+test "analytical segment entering from y<0 does not trap on clip rounding" {
+    // Regression: t_start = -y0/dy is only mathematically zero; with these
+    // exact f32 bit patterns the clipped cur_y lands at ~-9.5e-7, where the
+    // dy>0 row walk's usize cast used to be safety-checked illegal behavior.
+    const y0: f32 = @bitCast(@as(u32, 0xc168aef8)); // ~-14.5427
+    const y1: f32 = @bitCast(@as(u32, 0x4224b8ef)); // ~41.1806
+    const segments = [_]outline_mod.Segment{
+        .{ .x0 = 1, .y0 = y0, .x1 = 5, .y1 = y1 },
+    };
+    const pixels = try rasterize(std.testing.allocator, &segments, 8, 50, null);
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expectEqual(@as(usize, 8 * 50), pixels.len);
 }

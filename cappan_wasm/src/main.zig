@@ -111,9 +111,12 @@ fn parseSamplePattern(sample_pattern: u32) scanline_mod.SamplePattern {
 }
 
 fn parseRasterMethod(raster_method: u32) scanline_mod.RasterMethod {
+    // 0 = default: follows the library default (RasterOptions.method, i.e.
+    // analytical). 1 stays analytical for ABI compatibility with callers that
+    // opted in explicitly; 2 selects supersampling explicitly.
     return switch (raster_method) {
-        1 => .analytical,
-        else => .supersampling,
+        2 => .supersampling,
+        else => .analytical,
     };
 }
 

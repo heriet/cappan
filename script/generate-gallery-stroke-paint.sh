@@ -58,7 +58,7 @@ paint_render stroke_neon \
   --fill "FFFFFF"
 
 FPS=24
-FRAMES=144
+FRAMES=96
 HOLD=24
 
 paint_animate() {

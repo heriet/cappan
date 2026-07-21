@@ -34,6 +34,11 @@ pub const RasterScratch = struct {
     active: std.ArrayList(scanline_mod.Edge) = .empty,
     delta: std.ArrayList(i16) = .empty,
     coverage: std.ArrayList(u16) = .empty,
+    /// analytical.zig's cell buffer, reused call-to-call across this
+    /// scratch's lifetime. On the scratch path analytical.zig deliberately
+    /// uses one full-height band (see its band_h doc), so this grows to
+    /// `width * height` of the largest glyph seen; only the scratch-less
+    /// path bands down to `width * band_h`.
     cells: std.ArrayList(analytical_mod.Cell) = .empty,
 
     pub fn deinit(self: *RasterScratch, allocator: std.mem.Allocator) void {
