@@ -162,7 +162,20 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
 
     if (dy > 0) {
         while (cur_y < cy1 - 1e-7) {
-            const iy: usize = @intFromFloat(@floor(cur_y));
+            const iy_f = @floor(cur_y);
+            if (iy_f < 0) {
+                // A segment entering from y < 0 clips with t_start = -y0/dy,
+                // which is only *mathematically* zero: f32 rounding can leave
+                // cur_y a hair below 0 (observed: -9.5e-7), where the usize
+                // cast below would trap. Advance to the y=0 row boundary --
+                // the sliver below the image contributes nothing. Mirrors the
+                // dy<0 branch's iy_f < 0 guard; runs at most once since cur_y
+                // becomes exactly 0.
+                cur_x += (0.0 - cur_y) * slope;
+                cur_y = 0.0;
+                continue;
+            }
+            const iy: usize = @intFromFloat(iy_f);
             if (iy >= h) break;
 
             const row_end = @min(@as(f32, @floatFromInt(iy + 1)), cy1);
@@ -499,4 +512,18 @@ test "analytical x<0 clipped shapes match brute-force coverage" {
             }
         }
     }
+}
+
+test "analytical segment entering from y<0 does not trap on clip rounding" {
+    // Regression: t_start = -y0/dy is only mathematically zero; with these
+    // exact f32 bit patterns the clipped cur_y lands at ~-9.5e-7, where the
+    // dy>0 row walk's usize cast used to be safety-checked illegal behavior.
+    const y0: f32 = @bitCast(@as(u32, 0xc168aef8)); // ~-14.5427
+    const y1: f32 = @bitCast(@as(u32, 0x4224b8ef)); // ~41.1806
+    const segments = [_]outline_mod.Segment{
+        .{ .x0 = 1, .y0 = y0, .x1 = 5, .y1 = y1 },
+    };
+    const pixels = try rasterize(std.testing.allocator, &segments, 8, 50, null);
+    defer std.testing.allocator.free(pixels);
+    try std.testing.expectEqual(@as(usize, 8 * 50), pixels.len);
 }
