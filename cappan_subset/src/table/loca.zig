@@ -1,5 +1,6 @@
 const std = @import("std");
-const writer = @import("../writer.zig");
+const cappan_core = @import("cappan_core");
+const writer = cappan_core.font.sfnt_writer;
 
 pub fn buildLoca(
     allocator: std.mem.Allocator,

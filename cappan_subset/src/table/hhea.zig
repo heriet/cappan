@@ -1,6 +1,6 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
-const writer = @import("../writer.zig");
+const writer = cappan_core.font.sfnt_writer;
 
 pub fn buildHhea(
     allocator: std.mem.Allocator,

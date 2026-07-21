@@ -1,6 +1,7 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
 const parser = cappan_core.font.parser;
+const os2_mod = cappan_core.font.table.os2;
 
 pub const FontComparison = struct {
     /// x-height ratio (font_b.x_height / font_a.x_height)
@@ -25,15 +26,11 @@ fn getXHeight(allocator: std.mem.Allocator, font: cappan_core.font.Font) f32 {
     // Try OS/2 sXHeight
     if (parser.findTable(font.offset_table, "OS/2".*)) |record| {
         if (parser.getTableData(font.data, record)) |data| {
-            if (data.len >= 90) {
-                const version = parser.readU16(data, 0) catch 0;
-                if (version >= 2) {
-                    const x_height = parser.readI16(data, 86) catch 0;
-                    if (x_height != 0) {
-                        return @as(f32, @floatFromInt(x_height)) / units_per_em;
-                    }
+            if (os2_mod.parse(data)) |os2| {
+                if (os2.sx_height != 0) {
+                    return @as(f32, @floatFromInt(os2.sx_height)) / units_per_em;
                 }
-            }
+            } else |_| {}
         } else |_| {}
     }
 
@@ -61,12 +58,11 @@ fn getAvgWidth(font: cappan_core.font.Font) f32 {
     // Try OS/2 xAvgCharWidth
     if (parser.findTable(font.offset_table, "OS/2".*)) |record| {
         if (parser.getTableData(font.data, record)) |data| {
-            if (data.len >= 4) {
-                const avg_char_width = parser.readI16(data, 2) catch 0;
-                if (avg_char_width != 0) {
-                    return @as(f32, @floatFromInt(avg_char_width)) / units_per_em;
+            if (os2_mod.parse(data)) |os2| {
+                if (os2.avg_char_width != 0) {
+                    return @as(f32, @floatFromInt(os2.avg_char_width)) / units_per_em;
                 }
-            }
+            } else |_| {}
         } else |_| {}
     }
 

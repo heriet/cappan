@@ -1,6 +1,6 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
-const os2_mod = @import("os2.zig");
+const os2_mod = cappan_core.font.table.os2;
 
 pub const PdfFontInfo = struct {
     postscript_name: []const u8,
@@ -82,7 +82,7 @@ pub fn getPdfFontInfo(
 
     var stem_v: i16 = 80;
     if (os2) |o| {
-        const w: i32 = @intCast(o.weight_class);
+        const w: i32 = @intCast(o.us_weight_class);
         stem_v = @intCast(50 + @divTrunc(w, 65) * @divTrunc(w, 65));
     }
 

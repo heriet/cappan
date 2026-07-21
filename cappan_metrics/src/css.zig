@@ -1,6 +1,7 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
 const parser = cappan_core.font.parser;
+const os2_mod = cappan_core.font.table.os2;
 
 pub const MetricsSource = enum {
     os2_typo,
@@ -28,32 +29,25 @@ pub fn getCssFontMetrics(font: cappan_core.font.Font) CssFontMetrics {
     // Try to find and parse the OS/2 table
     if (parser.findTable(font.offset_table, "OS/2".*)) |record| {
         if (parser.getTableData(font.data, record)) |data| {
-            if (data.len >= 78) {
-                const typo_ascender = parser.readI16(data, 68) catch 0;
-                const typo_descender = parser.readI16(data, 70) catch 0;
-                const typo_line_gap = parser.readI16(data, 72) catch 0;
-
-                if (typo_ascender != 0) {
+            if (os2_mod.parse(data)) |os2| {
+                if (os2.s_typo_ascender != 0) {
                     // Use sTypo values
                     return .{
-                        .ascent_override = @as(f32, @floatFromInt(typo_ascender)) / units_per_em * 100.0,
-                        .descent_override = @abs(@as(f32, @floatFromInt(typo_descender)) / units_per_em * 100.0),
-                        .line_gap_override = @as(f32, @floatFromInt(typo_line_gap)) / units_per_em * 100.0,
+                        .ascent_override = @as(f32, @floatFromInt(os2.s_typo_ascender)) / units_per_em * 100.0,
+                        .descent_override = @abs(@as(f32, @floatFromInt(os2.s_typo_descender)) / units_per_em * 100.0),
+                        .line_gap_override = @as(f32, @floatFromInt(os2.s_typo_line_gap)) / units_per_em * 100.0,
                         .source = .os2_typo,
                     };
                 }
 
                 // sTypoAscender == 0: fallback to usWinAscent/usWinDescent
-                const win_ascent = parser.readU16(data, 74) catch 0;
-                const win_descent = parser.readU16(data, 76) catch 0;
-
                 return .{
-                    .ascent_override = @as(f32, @floatFromInt(win_ascent)) / units_per_em * 100.0,
-                    .descent_override = @as(f32, @floatFromInt(win_descent)) / units_per_em * 100.0,
+                    .ascent_override = @as(f32, @floatFromInt(os2.us_win_ascent)) / units_per_em * 100.0,
+                    .descent_override = @as(f32, @floatFromInt(os2.us_win_descent)) / units_per_em * 100.0,
                     .line_gap_override = 0.0,
                     .source = .os2_win,
                 };
-            }
+            } else |_| {}
         } else |_| {}
     }
 

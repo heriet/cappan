@@ -1,6 +1,6 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
-const writer = @import("writer.zig");
+const sfnt_writer = cappan_core.font.sfnt_writer;
 const table_glyf = @import("table/glyf.zig");
 const table_loca = @import("table/loca.zig");
 const table_cmap = @import("table/cmap.zig");
@@ -156,10 +156,7 @@ fn buildGlyphMapping(
     return mapping;
 }
 
-const TableEntry = struct {
-    tag: [4]u8,
-    data: []const u8,
-};
+const TableEntry = sfnt_writer.TableEntry;
 
 fn assembleSfnt(
     allocator: std.mem.Allocator,
@@ -219,87 +216,18 @@ fn assembleSfnt(
     try entries.append(allocator, .{ .tag = "maxp".*, .data = maxp_data });
     try entries.append(allocator, .{ .tag = "post".*, .data = post_data });
 
-    var name_data_copy: ?[]u8 = null;
+    // `name_raw` is a slice into `font.data` (the caller-provided original font
+    // buffer), which is guaranteed to outlive this whole function -- no need to
+    // `allocator.dupe` an owned copy just to hand it to `sfnt_writer.assemble`,
+    // which only reads from `entries[].data` and never retains it past the call.
     if (options.keep_name_table) {
         if (cappan_core.font.parser.findTable(font.offset_table, "name".*)) |name_record| {
             const name_raw = try cappan_core.font.parser.getTableData(font.data, name_record);
-            name_data_copy = try allocator.dupe(u8, name_raw);
-            try entries.append(allocator, .{ .tag = "name".*, .data = name_data_copy.? });
+            try entries.append(allocator, .{ .tag = "name".*, .data = name_raw });
         }
     }
-    defer if (name_data_copy) |nd| allocator.free(nd);
 
-    const num_tables: u16 = @intCast(entries.items.len);
-
-    var search_range: u16 = 1;
-    var entry_selector: u16 = 0;
-    while (search_range * 2 <= num_tables) {
-        search_range *= 2;
-        entry_selector += 1;
-    }
-    search_range *= 16;
-    const range_shift: u16 = num_tables * 16 - search_range;
-
-    const header_size: usize = 12 + @as(usize, num_tables) * 16;
-    var tables_size: usize = 0;
-    for (entries.items) |e| {
-        tables_size += (e.data.len + 3) & ~@as(usize, 3);
-    }
-    const total_size = header_size + tables_size;
-
-    const out = try allocator.alloc(u8, total_size);
-    errdefer allocator.free(out);
-    @memset(out, 0);
-
-    var pos: usize = 0;
-    writer.writeU32BE(out, pos, 0x00010000);
-    pos += 4;
-    writer.writeU16BE(out, pos, num_tables);
-    pos += 2;
-    writer.writeU16BE(out, pos, search_range);
-    pos += 2;
-    writer.writeU16BE(out, pos, entry_selector);
-    pos += 2;
-    writer.writeU16BE(out, pos, range_shift);
-    pos += 2;
-
-    var data_offset: u32 = @intCast(header_size);
-    var head_checksum_offset: usize = 0;
-
-    for (entries.items) |e| {
-        const checksum = writer.calcChecksum(e.data);
-        out[pos] = e.tag[0];
-        out[pos + 1] = e.tag[1];
-        out[pos + 2] = e.tag[2];
-        out[pos + 3] = e.tag[3];
-        pos += 4;
-        writer.writeU32BE(out, pos, checksum);
-        pos += 4;
-        writer.writeU32BE(out, pos, data_offset);
-        pos += 4;
-        writer.writeU32BE(out, pos, @intCast(e.data.len));
-        pos += 4;
-
-        if (std.mem.eql(u8, &e.tag, "head")) {
-            head_checksum_offset = @intCast(data_offset + 8);
-        }
-
-        const aligned: usize = (e.data.len + 3) & ~@as(usize, 3);
-        data_offset += @intCast(aligned);
-    }
-
-    for (entries.items) |e| {
-        @memcpy(out[pos .. pos + e.data.len], e.data);
-        const aligned: usize = (e.data.len + 3) & ~@as(usize, 3);
-        pos += aligned;
-    }
-
-    writer.writeU32BE(out, head_checksum_offset, 0);
-    const file_checksum = writer.calcChecksum(out);
-    const adjustment: u32 = 0xB1B0AFBA -% file_checksum;
-    writer.writeU32BE(out, head_checksum_offset, adjustment);
-
-    return out;
+    return try sfnt_writer.assemble(allocator, entries.items);
 }
 
 test "subset font and re-parse" {

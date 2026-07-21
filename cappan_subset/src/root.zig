@@ -1,9 +1,7 @@
 const std = @import("std");
-pub const writer = @import("writer.zig");
 pub const subsetter = @import("subsetter.zig");
 
 test {
-    _ = @import("writer.zig");
     _ = @import("subsetter.zig");
     _ = @import("table/glyf.zig");
     _ = @import("table/loca.zig");
