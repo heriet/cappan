@@ -463,40 +463,6 @@ pub fn applyTransform(word: []const u8, transform_id: u32, output: []u8) usize {
     return pos;
 }
 
-// ── High-level dictionary word lookup ────────────────────────────────────────
-
-/// Maximum backward reference distance where we look into the static dictionary.
-/// (distance > max_backward_distance triggers dictionary lookup).
-///
-/// Given a distance code that resolves to a value > max_backward, decode the
-/// dictionary reference:
-///   word_id   = distance - max_backward - 1
-///   word_index = word_id % nWords(copy_length)
-///   transform  = word_id / nWords(copy_length)
-///
-/// Returns allocated slice; caller must free with allocator.free().
-pub fn getDictionaryWord(
-    allocator: std.mem.Allocator,
-    distance: u32,
-    copy_length: u8,
-    max_distance: u32,
-) ![]u8 {
-    const word_id = distance - max_distance - 1;
-    const n = nWords(copy_length);
-    const word_index = word_id % n;
-    const transform_id = word_id / n;
-
-    const word = getWord(copy_length, word_index);
-
-    // Maximum possible output length = prefix + word + suffix
-    // Largest prefix/suffix is " of the " = 8 bytes, so word_len + 32 is safe
-    const max_out = word.len + 64;
-    const buf = try allocator.alloc(u8, max_out);
-    const written = applyTransform(word, transform_id, buf);
-    const result = try allocator.realloc(buf, written);
-    return result;
-}
-
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 test "getWord returns correct slice length" {

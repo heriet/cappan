@@ -495,7 +495,6 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
     const encoder = new TextEncoder();
     const ctx = elements.canvas.getContext("2d");
     let wasm = null;
-    let wasmMemory = null;
     let fontPtr = 0;
     let fontLen = 0;
     let animationId = 0;
@@ -657,7 +656,6 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       const bytes = await response.arrayBuffer();
       const result = await WebAssembly.instantiate(bytes, {});
       wasm = result.instance.exports;
-      wasmMemory = wasm.memory;
     }
 
     function initFontData(bytes, name) {
@@ -705,11 +703,26 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       elements.canvas.width = width;
       elements.canvas.height = height;
       ctx.putImageData(imageData, 0, 0);
-      wasmMemory = wasm.memory;
       hasRendered = true;
       elements.downloadPngBtn.disabled = false;
       elements.downloadApngBtn.disabled = false;
       setStatus(`${width} x ${height}px`);
+    }
+
+    // Trailing args shared verbatim by wasm_render and wasm_init_animator: fg/bg
+    // color, then aa_level/sample_pattern/adaptive/raster_method (hardcoded to
+    // the UI's current defaults: 8/0/0/0), then the three hinting toggles.
+    function commonRenderArgs() {
+      const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
+      const [br, bg, bb] = hexToRgb(elements.bgColor.value);
+      return [
+        fr, fg, fb,
+        br, bg, bb,
+        8, 0, 0, 0,
+        elements.stemDarkening.checked ? 1 : 0,
+        elements.cffHinting.checked ? 1 : 0,
+        elements.autoHinting.checked ? 1 : 0,
+      ];
     }
 
     function renderStatic() {
@@ -717,8 +730,6 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
       elements.progressWrap.classList.add("hidden");
       const text = encoder.encode(elements.textInput.value);
       const textPtr = allocCopy(text);
-      const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
-      const [br, bg, bb] = hexToRgb(elements.bgColor.value);
 
       applyPaintStackToWasm();
 
@@ -727,19 +738,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
           textPtr,
           text.length,
           Number(elements.fontSize.value),
-          fr,
-          fg,
-          fb,
-          br,
-          bg,
-          bb,
-          8,
-          0,
-          0,
-          0,
-          elements.stemDarkening.checked ? 1 : 0,
-          elements.cffHinting.checked ? 1 : 0,
-          elements.autoHinting.checked ? 1 : 0,
+          ...commonRenderArgs(),
         );
         if (!ok) throw new Error("Render failed");
         drawBitmap();
@@ -751,8 +750,6 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
     function initAnimator() {
       const text = encoder.encode(elements.textInput.value);
       const textPtr = allocCopy(text);
-      const [fr, fg, fb] = hexToRgb(elements.fgColor.value);
-      const [br, bg, bb] = hexToRgb(elements.bgColor.value);
 
       applyPaintStackToWasm();
 
@@ -764,19 +761,7 @@ THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
           Number(elements.strategy.value),
           Number(elements.timing.value),
           Number(elements.paintLayerTiming.value),
-          fr,
-          fg,
-          fb,
-          br,
-          bg,
-          bb,
-          8,
-          0,
-          0,
-          0,
-          elements.stemDarkening.checked ? 1 : 0,
-          elements.cffHinting.checked ? 1 : 0,
-          elements.autoHinting.checked ? 1 : 0,
+          ...commonRenderArgs(),
         );
         if (!ok) throw new Error("Animator initialization failed");
       } finally {

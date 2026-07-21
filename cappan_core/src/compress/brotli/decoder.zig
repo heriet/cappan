@@ -108,11 +108,8 @@ pub fn decompress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
                 // Copy MLEN raw bytes to output
                 if (output.items.len + mlen > MAX_OUTPUT_SIZE) return error.OutputTooLarge;
                 try output.ensureTotalCapacity(allocator, output.items.len + mlen);
-                var i: u32 = 0;
-                while (i < mlen) : (i += 1) {
-                    const byte_val = try reader.readBits(8);
-                    output.appendAssumeCapacity(@intCast(byte_val));
-                }
+                const dest = output.addManyAsSliceAssumeCapacity(mlen);
+                try reader.readBytes(dest);
                 continue;
             }
         }
@@ -353,13 +350,31 @@ fn decodeCompressedMetaBlock(
             if (copy_length > bytes_remaining) {
                 return BrotliError.InvalidStream;
             }
-            var copy_i: u32 = 0;
-            while (copy_i < copy_length) : (copy_i += 1) {
-                const src_pos = output.items.len - distance;
-                const byte_val = output.items[src_pos];
-                try output.append(allocator, byte_val);
-                p2 = p1;
-                p1 = byte_val;
+            try output.ensureUnusedCapacity(allocator, copy_length);
+            if (distance >= copy_length) {
+                // Non-overlapping: every source byte already existed in `output`
+                // before this copy started, so the whole run can be appended in
+                // one bulk slice copy instead of byte-by-byte.
+                const src_start = output.items.len - distance;
+                output.appendSliceAssumeCapacity(output.items[src_start..][0..copy_length]);
+                if (copy_length >= 2) {
+                    p2 = output.items[output.items.len - 2];
+                    p1 = output.items[output.items.len - 1];
+                } else if (copy_length == 1) {
+                    p2 = p1;
+                    p1 = output.items[output.items.len - 1];
+                }
+            } else {
+                // Overlapping (e.g. RLE-style short repeats): later bytes depend
+                // on earlier just-appended bytes, so this must stay byte-by-byte.
+                var copy_i: u32 = 0;
+                while (copy_i < copy_length) : (copy_i += 1) {
+                    const src_pos = output.items.len - distance;
+                    const byte_val = output.items[src_pos];
+                    output.appendAssumeCapacity(byte_val);
+                    p2 = p1;
+                    p1 = byte_val;
+                }
             }
             bytes_remaining -= copy_length;
 

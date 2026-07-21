@@ -1,5 +1,6 @@
 const std = @import("std");
 const contour_trace_mod = @import("contour_trace.zig");
+const morphology = @import("morphology.zig");
 pub const ContourOrdering = contour_trace_mod.ContourOrdering;
 
 pub const MedialAxisOptions = struct {
@@ -24,45 +25,6 @@ pub const MedialAxisAnimation = struct {
     }
 };
 
-// Felzenszwalb-Huttenlocher 1D distance transform (parabola lower envelope)
-fn edt1d(f: []const f32, n: usize, v_buf: []usize, z_buf: []f32, output: []f32) void {
-    if (n == 0) return;
-    if (n == 1) {
-        output[0] = f[0];
-        return;
-    }
-
-    var k: usize = 0;
-    v_buf[0] = 0;
-    z_buf[0] = -1e10;
-    z_buf[1] = 1e10;
-
-    for (1..n) |q| {
-        const q_f = @as(f32, @floatFromInt(q));
-        while (true) {
-            const v_f = @as(f32, @floatFromInt(v_buf[k]));
-            const s = ((f[q] + q_f * q_f) - (f[v_buf[k]] + v_f * v_f)) / (2.0 * q_f - 2.0 * v_f);
-            if (k > 0 and s <= z_buf[k]) {
-                k -= 1;
-            } else {
-                k += 1;
-                v_buf[k] = q;
-                z_buf[k] = s;
-                z_buf[k + 1] = 1e10;
-                break;
-            }
-        }
-    }
-
-    k = 0;
-    for (0..n) |q| {
-        const q_f = @as(f32, @floatFromInt(q));
-        while (z_buf[k + 1] < q_f) : (k += 1) {}
-        const v_f = @as(f32, @floatFromInt(v_buf[k]));
-        output[q] = (q_f - v_f) * (q_f - v_f) + f[v_buf[k]];
-    }
-}
-
 fn computeDistanceField(allocator: std.mem.Allocator, coverage: []const u8, width: u32, height: u32) ![]f32 {
     const w: usize = @intCast(width);
     const h: usize = @intCast(height);
@@ -79,33 +41,7 @@ fn computeDistanceField(allocator: std.mem.Allocator, coverage: []const u8, widt
         grid[i] = if (coverage[i] > 0) 1e10 else 0.0;
     }
 
-    const max_dim = @max(w, h);
-    const temp = try allocator.alloc(f32, max_dim);
-    defer allocator.free(temp);
-    const output_buf = try allocator.alloc(f32, max_dim);
-    defer allocator.free(output_buf);
-    const v_buf = try allocator.alloc(usize, max_dim);
-    defer allocator.free(v_buf);
-    const z_buf = try allocator.alloc(f32, max_dim + 1);
-    defer allocator.free(z_buf);
-
-    // Transform rows
-    for (0..h) |y| {
-        const row_start = y * w;
-        edt1d(grid[row_start .. row_start + w], w, v_buf, z_buf, output_buf[0..w]);
-        @memcpy(grid[row_start .. row_start + w], output_buf[0..w]);
-    }
-
-    // Transform columns
-    for (0..w) |x| {
-        for (0..h) |y| {
-            temp[y] = grid[y * w + x];
-        }
-        edt1d(temp[0..h], h, v_buf, z_buf, output_buf[0..h]);
-        for (0..h) |y| {
-            grid[y * w + x] = output_buf[y];
-        }
-    }
+    try morphology.squaredEdt2dInPlace(allocator, grid, w, h);
 
     // Take sqrt
     for (0..total) |i| {
@@ -115,116 +51,7 @@ fn computeDistanceField(allocator: std.mem.Allocator, coverage: []const u8, widt
     return grid;
 }
 
-fn extractSkeleton(allocator: std.mem.Allocator, coverage: []const u8, width: u32, height: u32) ![]u8 {
-    const w: usize = @intCast(width);
-    const h: usize = @intCast(height);
-    const total = w * h;
-
-    if (total == 0) {
-        return try allocator.alloc(u8, 0);
-    }
-
-    const img = try allocator.alloc(u8, total);
-    errdefer allocator.free(img);
-
-    for (0..total) |i| {
-        img[i] = if (coverage[i] > 0) @as(u8, 1) else @as(u8, 0);
-    }
-
-    if (w <= 2 or h <= 2) return img;
-
-    const mark = try allocator.alloc(u8, total);
-    defer allocator.free(mark);
-
-    while (true) {
-        var changed = false;
-
-        // Sub-iteration 1
-        @memset(mark, 0);
-        for (1..h - 1) |y| {
-            for (1..w - 1) |x| {
-                const idx = y * w + x;
-                if (img[idx] != 1) continue;
-
-                const p2 = img[(y - 1) * w + x];
-                const p3 = img[(y - 1) * w + (x + 1)];
-                const p4 = img[y * w + (x + 1)];
-                const p5 = img[(y + 1) * w + (x + 1)];
-                const p6 = img[(y + 1) * w + x];
-                const p7 = img[(y + 1) * w + (x - 1)];
-                const p8 = img[y * w + (x - 1)];
-                const p9 = img[(y - 1) * w + (x - 1)];
-
-                const b = @as(u16, p2) + @as(u16, p3) + @as(u16, p4) + @as(u16, p5) +
-                    @as(u16, p6) + @as(u16, p7) + @as(u16, p8) + @as(u16, p9);
-                if (b < 2 or b > 6) continue;
-
-                const a = countTransitions(p2, p3, p4, p5, p6, p7, p8, p9);
-                if (a != 1) continue;
-
-                if (p2 * p4 * p6 != 0) continue;
-                if (p4 * p6 * p8 != 0) continue;
-
-                mark[idx] = 1;
-            }
-        }
-        for (0..total) |i| {
-            if (mark[i] == 1) {
-                img[i] = 0;
-                changed = true;
-            }
-        }
-
-        // Sub-iteration 2
-        @memset(mark, 0);
-        for (1..h - 1) |y| {
-            for (1..w - 1) |x| {
-                const idx = y * w + x;
-                if (img[idx] != 1) continue;
-
-                const p2 = img[(y - 1) * w + x];
-                const p3 = img[(y - 1) * w + (x + 1)];
-                const p4 = img[y * w + (x + 1)];
-                const p5 = img[(y + 1) * w + (x + 1)];
-                const p6 = img[(y + 1) * w + x];
-                const p7 = img[(y + 1) * w + (x - 1)];
-                const p8 = img[y * w + (x - 1)];
-                const p9 = img[(y - 1) * w + (x - 1)];
-
-                const b = @as(u16, p2) + @as(u16, p3) + @as(u16, p4) + @as(u16, p5) +
-                    @as(u16, p6) + @as(u16, p7) + @as(u16, p8) + @as(u16, p9);
-                if (b < 2 or b > 6) continue;
-
-                const a = countTransitions(p2, p3, p4, p5, p6, p7, p8, p9);
-                if (a != 1) continue;
-
-                if (p2 * p4 * p8 != 0) continue;
-                if (p2 * p6 * p8 != 0) continue;
-
-                mark[idx] = 1;
-            }
-        }
-        for (0..total) |i| {
-            if (mark[i] == 1) {
-                img[i] = 0;
-                changed = true;
-            }
-        }
-
-        if (!changed) break;
-    }
-
-    return img;
-}
-
-fn countTransitions(p2: u8, p3: u8, p4: u8, p5: u8, p6: u8, p7: u8, p8: u8, p9: u8) u8 {
-    var count: u8 = 0;
-    const seq = [9]u8{ p2, p3, p4, p5, p6, p7, p8, p9, p2 };
-    for (0..8) |i| {
-        if (seq[i] == 0 and seq[i + 1] == 1) count += 1;
-    }
-    return count;
-}
+const extractSkeleton = morphology.extractSkeleton;
 
 fn shouldReverseForWritingOrder(path: []const SkeletonPoint) bool {
     if (path.len < 2) return false;

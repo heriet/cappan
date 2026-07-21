@@ -146,6 +146,70 @@ const CachedLcdRaster = struct {
     offset_y: f32,
 };
 
+/// Looks up `(font_index, glyph_id)` in `lcd_cache`; on a miss, rasterizes the
+/// glyph outline as subpixel (LCD) coverage and inserts the result (or an empty
+/// placeholder, if the font has no outline for this glyph) before returning it.
+/// Mirrors `getOrRasterizeGlyph`'s shape for the LCD-specific cache/raster types.
+fn getOrRasterizeLcdGlyph(
+    lcd_cache: *std.AutoHashMapUnmanaged(u32, CachedLcdRaster),
+    allocator: std.mem.Allocator,
+    glyph_font: font_mod.Font,
+    font_index: u8,
+    glyph_id: u16,
+    raster_options: scanline_mod.RasterOptions,
+    options: RenderOptions,
+) !CachedLcdRaster {
+    const cache_key = glyphCacheKey(font_index, glyph_id);
+    if (lcd_cache.get(cache_key)) |cached| return cached;
+
+    const outline_opt = glyph_font.getGlyphOutline(allocator, glyph_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    if (outline_opt == null) {
+        const empty_r = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_r);
+        const empty_g = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_g);
+        const empty_b = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_b);
+        const empty_entry = CachedLcdRaster{
+            .r_coverage = empty_r,
+            .g_coverage = empty_g,
+            .b_coverage = empty_b,
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+        };
+        try lcd_cache.put(allocator, cache_key, empty_entry);
+        return empty_entry;
+    }
+    var outline = outline_opt.?;
+    defer outline.deinit();
+
+    try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options.cff_hinting, options.auto_hinting);
+    const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
+    const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
+
+    const entry = CachedLcdRaster{
+        .r_coverage = lcd_result.r_coverage,
+        .g_coverage = lcd_result.g_coverage,
+        .b_coverage = lcd_result.b_coverage,
+        .width = lcd_result.width,
+        .height = lcd_result.height,
+        .offset_x = lcd_result.offset_x,
+        .offset_y = lcd_result.offset_y,
+    };
+    errdefer {
+        allocator.free(entry.r_coverage);
+        allocator.free(entry.g_coverage);
+        allocator.free(entry.b_coverage);
+    }
+    try lcd_cache.put(allocator, cache_key, entry);
+    return entry;
+}
+
 pub fn glyphCacheKey(font_index: u8, glyph_id: u16) u32 {
     return glyph_cache_mod.glyphCacheKeyU32(font_index, glyph_id);
 }
@@ -265,61 +329,8 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         }
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
-
-            if (lcd_cache.get(cache_key)) |cached| {
-                if (cached.width == 0 or cached.height == 0) continue;
-                blendLcdRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color);
-                continue;
-            }
-
             const glyph_font = fonts[pos.font_index];
-            const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
-
-            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => null,
-            };
-            if (outline_opt == null) {
-                const empty_r = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_r);
-                const empty_g = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_g);
-                const empty_b = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_b);
-                try lcd_cache.put(allocator, cache_key, .{
-                    .r_coverage = empty_r,
-                    .g_coverage = empty_g,
-                    .b_coverage = empty_b,
-                    .width = 0,
-                    .height = 0,
-                    .offset_x = 0,
-                    .offset_y = 0,
-                });
-                continue;
-            }
-            var outline = outline_opt.?;
-            defer outline.deinit();
-
-            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
-            const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
-
-            const entry = CachedLcdRaster{
-                .r_coverage = lcd_result.r_coverage,
-                .g_coverage = lcd_result.g_coverage,
-                .b_coverage = lcd_result.b_coverage,
-                .width = lcd_result.width,
-                .height = lcd_result.height,
-                .offset_x = lcd_result.offset_x,
-                .offset_y = lcd_result.offset_y,
-            };
-            errdefer {
-                allocator.free(entry.r_coverage);
-                allocator.free(entry.g_coverage);
-                allocator.free(entry.b_coverage);
-            }
-            try lcd_cache.put(allocator, cache_key, entry);
-
+            const entry = try getOrRasterizeLcdGlyph(&lcd_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options);
             if (entry.width == 0 or entry.height == 0) continue;
             blendLcdRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color);
         }
@@ -346,7 +357,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
             if (glyph_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
-                blendRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(&bitmap, cached.pixels, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
                 continue;
             }
 
@@ -386,13 +397,13 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                             options.fg_color;
                         const layer_entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, layer.glyph_id, raster_options, options, false, &raster_scratch);
                         if (layer_entry.width == 0 or layer_entry.height == 0) continue;
-                        blendRaster(&bitmap, layer_entry, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
+                        blendRaster(&bitmap, layer_entry.pixels, layer_entry.width, layer_entry.height, layer_entry.offset_x, layer_entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
                     }
                 }
             } else {
                 const entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true, &raster_scratch);
                 if (entry.width == 0 or entry.height == 0) continue;
-                blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(&bitmap, entry.pixels, entry.width, entry.height, entry.offset_x, entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
             }
         }
     }
@@ -443,6 +454,9 @@ fn renderTextPaintStack(
         paint_cache.deinit(allocator);
     }
 
+    var raster_scratch: rasterizer_mod.RasterScratch = .{};
+    defer raster_scratch.deinit(allocator);
+
     for (paint_stack) |op| {
         const opacity = getOpacity(op);
         const needs_temp = opacity < 0.996;
@@ -463,7 +477,7 @@ fn renderTextPaintStack(
 
             if (paint_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
-                blendRaster(target, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(target, cached.pixels, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
                 continue;
             }
 
@@ -488,7 +502,7 @@ fn renderTextPaintStack(
             const entry = switch (op) {
                 .fill => blk: {
                     try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
-                    const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
+                    const glyph_result = try rasterizer_mod.rasterizeGlyphWithScratch(allocator, outline, glyph_scale, extended_padding, raster_options, &raster_scratch);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
                         .width = glyph_result.width,
@@ -503,7 +517,7 @@ fn renderTextPaintStack(
             try paint_cache.put(allocator, cache_key, entry);
 
             if (entry.width == 0 or entry.height == 0) continue;
-            blendRaster(target, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
+            blendRaster(target, entry.pixels, entry.width, entry.height, entry.offset_x, entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
         }
 
         if (temp_bmp) |tb| {
@@ -680,9 +694,22 @@ fn blendSubpixel(
     }
 }
 
-fn blendRaster(
+/// Blends a coverage-alpha glyph raster onto `bitmap` at the position implied by
+/// `pos`/`base_baseline_y`/`pad`, handling both the direct-pixel and (`fractional_positioning`)
+/// 4-tap bilinear-splat paths, with or without gamma-correct blending.
+///
+/// Takes the coverage buffer and its geometry as separate parameters (rather than a
+/// single `CachedRaster`) so callers with a differently-shaped cache entry type --
+/// e.g. incremental.zig's `CachedGlyph`, which keeps a possibly-animated coverage
+/// slice separate from its own cached-metadata struct -- can reuse this without
+/// wrapping their data in a `CachedRaster` first.
+pub fn blendRaster(
     bitmap: *rgba_bitmap_mod.RgbaBitmap,
-    raster: CachedRaster,
+    coverage_pixels: []const u8,
+    raster_width: u32,
+    raster_height: u32,
+    offset_x: f32,
+    offset_y: f32,
     pos: shaper.GlyphPosition,
     base_baseline_y: f32,
     pad: f32,
@@ -694,12 +721,12 @@ fn blendRaster(
 ) void {
     const origin_x = pos.x_offset + pad;
     const origin_y = base_baseline_y + pos.y_offset;
-    const bmp_x0 = origin_x - raster.offset_x;
-    const bmp_y0 = origin_y - raster.offset_y;
+    const bmp_x0 = origin_x - offset_x;
+    const bmp_y0 = origin_y - offset_y;
 
-    for (0..raster.height) |gy| {
-        for (0..raster.width) |gx| {
-            const coverage = raster.pixels[gy * @as(usize, raster.width) + gx];
+    for (0..raster_height) |gy| {
+        for (0..raster_width) |gx| {
+            const coverage = coverage_pixels[gy * @as(usize, raster_width) + gx];
             if (coverage == 0) continue;
 
             const bmp_xf = bmp_x0 + @as(f32, @floatFromInt(gx));
@@ -1208,6 +1235,27 @@ pub const RowRenderer = struct {
         self.layout.deinit();
     }
 
+    /// Blends `weight`-coverage `fg_color` into `row_buffer[off..off+4]` (a single
+    /// RGBA pixel slot), with or without gamma-correct blending. Shared by
+    /// `renderRow`'s fractional-positioning 2-tap splat (called once per tap) and
+    /// its direct-pixel path (called once, with `weight` = the glyph's own coverage).
+    fn blendRowPixel(row_buffer: []u8, off: usize, weight: u8, fg_color: rgba_bitmap_mod.Color, gamma_correction: bool) void {
+        if (gamma_correction) {
+            const alpha_f = @as(f32, @floatFromInt(weight)) * @as(f32, @floatFromInt(fg_color.a)) / (255.0 * 255.0);
+            row_buffer[off] = gamma_mod.blendLinear(row_buffer[off], fg_color.r, alpha_f);
+            row_buffer[off + 1] = gamma_mod.blendLinear(row_buffer[off + 1], fg_color.g, alpha_f);
+            row_buffer[off + 2] = gamma_mod.blendLinear(row_buffer[off + 2], fg_color.b, alpha_f);
+            row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, row_buffer[off + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
+        } else {
+            const alpha = @as(u16, weight) * @as(u16, fg_color.a) / 255;
+            const inv_alpha = 255 - alpha;
+            row_buffer[off] = @intCast((@as(u16, row_buffer[off]) * inv_alpha + @as(u16, fg_color.r) * alpha) / 255);
+            row_buffer[off + 1] = @intCast((@as(u16, row_buffer[off + 1]) * inv_alpha + @as(u16, fg_color.g) * alpha) / 255);
+            row_buffer[off + 2] = @intCast((@as(u16, row_buffer[off + 2]) * inv_alpha + @as(u16, fg_color.b) * alpha) / 255);
+            row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, row_buffer[off + 3]) + alpha));
+        }
+    }
+
     pub fn renderRow(self: *RowRenderer, y: u32) []const u8 {
         const bg = self.bg_color;
         var x: usize = 0;
@@ -1252,63 +1300,18 @@ pub const RowRenderer = struct {
                     const w1: u8 = @intFromFloat(@min(255.0, @round(cov_f * dx)));
 
                     if (w0 > 0 and ix >= 0 and @as(u32, @intCast(ix)) < self.width) {
-                        const off0 = @as(usize, @intCast(ix)) * 4;
-                        const fg = self.fg_color;
-                        if (self.gamma_correction) {
-                            const alpha_f = @as(f32, @floatFromInt(w0)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                            self.row_buffer[off0] = gamma_mod.blendLinear(self.row_buffer[off0], fg.r, alpha_f);
-                            self.row_buffer[off0 + 1] = gamma_mod.blendLinear(self.row_buffer[off0 + 1], fg.g, alpha_f);
-                            self.row_buffer[off0 + 2] = gamma_mod.blendLinear(self.row_buffer[off0 + 2], fg.b, alpha_f);
-                            self.row_buffer[off0 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off0 + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                        } else {
-                            const alpha = @as(u16, w0) * @as(u16, fg.a) / 255;
-                            const inv_alpha = 255 - alpha;
-                            self.row_buffer[off0] = @intCast((@as(u16, self.row_buffer[off0]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                            self.row_buffer[off0 + 1] = @intCast((@as(u16, self.row_buffer[off0 + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                            self.row_buffer[off0 + 2] = @intCast((@as(u16, self.row_buffer[off0 + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                            self.row_buffer[off0 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off0 + 3]) + alpha));
-                        }
+                        blendRowPixel(self.row_buffer, @as(usize, @intCast(ix)) * 4, w0, self.fg_color, self.gamma_correction);
                     }
                     const ix1 = ix + 1;
                     if (w1 > 0 and ix1 >= 0 and @as(u32, @intCast(ix1)) < self.width) {
-                        const off1 = @as(usize, @intCast(ix1)) * 4;
-                        const fg = self.fg_color;
-                        if (self.gamma_correction) {
-                            const alpha_f = @as(f32, @floatFromInt(w1)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                            self.row_buffer[off1] = gamma_mod.blendLinear(self.row_buffer[off1], fg.r, alpha_f);
-                            self.row_buffer[off1 + 1] = gamma_mod.blendLinear(self.row_buffer[off1 + 1], fg.g, alpha_f);
-                            self.row_buffer[off1 + 2] = gamma_mod.blendLinear(self.row_buffer[off1 + 2], fg.b, alpha_f);
-                            self.row_buffer[off1 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off1 + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                        } else {
-                            const alpha = @as(u16, w1) * @as(u16, fg.a) / 255;
-                            const inv_alpha = 255 - alpha;
-                            self.row_buffer[off1] = @intCast((@as(u16, self.row_buffer[off1]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                            self.row_buffer[off1 + 1] = @intCast((@as(u16, self.row_buffer[off1 + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                            self.row_buffer[off1 + 2] = @intCast((@as(u16, self.row_buffer[off1 + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                            self.row_buffer[off1 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off1 + 3]) + alpha));
-                        }
+                        blendRowPixel(self.row_buffer, @as(usize, @intCast(ix1)) * 4, w1, self.fg_color, self.gamma_correction);
                     }
                 } else {
                     if (bmp_xf < 0) continue;
                     const bmp_xi = @as(u32, @intFromFloat(bmp_xf));
                     if (bmp_xi >= self.width) continue;
 
-                    const off = @as(usize, bmp_xi) * 4;
-                    const fg = self.fg_color;
-                    if (self.gamma_correction) {
-                        const alpha_f = @as(f32, @floatFromInt(coverage)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                        self.row_buffer[off] = gamma_mod.blendLinear(self.row_buffer[off], fg.r, alpha_f);
-                        self.row_buffer[off + 1] = gamma_mod.blendLinear(self.row_buffer[off + 1], fg.g, alpha_f);
-                        self.row_buffer[off + 2] = gamma_mod.blendLinear(self.row_buffer[off + 2], fg.b, alpha_f);
-                        self.row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                    } else {
-                        const alpha = @as(u16, coverage) * @as(u16, fg.a) / 255;
-                        const inv_alpha = 255 - alpha;
-                        self.row_buffer[off] = @intCast((@as(u16, self.row_buffer[off]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                        self.row_buffer[off + 1] = @intCast((@as(u16, self.row_buffer[off + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                        self.row_buffer[off + 2] = @intCast((@as(u16, self.row_buffer[off + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                        self.row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off + 3]) + alpha));
-                    }
+                    blendRowPixel(self.row_buffer, @as(usize, bmp_xi) * 4, coverage, self.fg_color, self.gamma_correction);
                 }
             }
         }

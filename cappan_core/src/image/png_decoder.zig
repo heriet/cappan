@@ -93,16 +93,17 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Decode
     defer allocator.free(decompressed);
 
     {
+        // `filtered_size` (from IHDR width/height/stride) is already known
+        // exactly, so decompress directly into `decompressed` via a fixed
+        // writer instead of growing a separate `Writer.Allocating` buffer and
+        // then copying out of it -- avoids the double allocation/copy.
         var in: std.Io.Reader = .fixed(idat_buf.items);
-        var aw: std.Io.Writer.Allocating = .init(allocator);
-        defer aw.deinit();
+        var out: std.Io.Writer = .fixed(decompressed);
 
         var decompress: std.compress.flate.Decompress = .init(&in, .zlib, &.{});
-        _ = decompress.reader.streamRemaining(&aw.writer) catch return error.DecompressFailed;
+        _ = decompress.reader.streamRemaining(&out) catch return error.DecompressFailed;
 
-        const written = aw.written();
-        if (written.len < filtered_size) return error.DecompressFailed;
-        @memcpy(decompressed[0..filtered_size], written[0..filtered_size]);
+        if (out.end < filtered_size) return error.DecompressFailed;
     }
 
     // Allocate output RGBA buffer

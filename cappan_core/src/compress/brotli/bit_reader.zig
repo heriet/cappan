@@ -79,11 +79,6 @@ pub const BitReader = struct {
     pub fn isFinished(self: *const BitReader) bool {
         return self.byte_pos >= self.data.len;
     }
-
-    pub fn getRemainingBytes(self: *const BitReader) usize {
-        if (self.byte_pos >= self.data.len) return 0;
-        return self.data.len - self.byte_pos - (if (self.bit_pos > 0) @as(usize, 1) else 0);
-    }
 };
 
 test "readBits basic" {

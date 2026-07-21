@@ -7,6 +7,7 @@ pub const features = @import("features.zig");
 pub const font = struct {
     pub const parser = @import("font/parser.zig");
     pub const glyph = @import("font/glyph.zig");
+    pub const sfnt_writer = @import("font/sfnt_writer.zig");
     pub const charstring = if (ft.enable_cff) @import("font/charstring.zig") else struct {};
     pub const Font = @import("font/font.zig").Font;
     pub const woff = if (ft.enable_woff) @import("font/woff.zig") else struct {};
@@ -42,7 +43,13 @@ pub const font = struct {
         pub const vvar = if (ft.enable_variable) @import("font/table/vvar.zig") else struct {};
         pub const mvar = if (ft.enable_variable) @import("font/table/mvar.zig") else struct {};
         pub const stat = if (ft.enable_variable) @import("font/table/stat.zig") else struct {};
-        pub const os2 = if (ft.enable_hinting) @import("font/table/os2.zig") else struct {};
+        // Unconditional (unlike most other feature-gated table modules here):
+        // the OS/2 *table parser* itself has no hinting-specific content and is
+        // used directly by cappan_embed/cappan_metrics regardless of whether
+        // this cappan_core build enables hinting -- only `Font.os2` (the field
+        // used internally for auto-hinting blue-zone inference, below in
+        // font.zig) stays gated behind `enable_hinting`.
+        pub const os2 = @import("font/table/os2.zig");
     };
 };
 
@@ -87,6 +94,7 @@ pub const compress = struct {
 test {
     _ = @import("error.zig");
     _ = @import("font/parser.zig");
+    _ = @import("font/sfnt_writer.zig");
     if (ft.enable_woff) {
         _ = @import("font/woff.zig");
     }

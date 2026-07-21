@@ -97,6 +97,11 @@ pub const IncrementalRenderer = struct {
     paint_layer_cumsum: []f32,
     pixel_size: f32,
     raster_options: scanline_mod.RasterOptions,
+    // Scratch bitmap reused across renderFrame calls for paint-stack layers with
+    // opacity < 1.0 (composited via compositeWithOpacity). Lazily allocated on
+    // first use (many renders never touch a paint_stack at all) and freed once in
+    // deinit(), instead of being allocated and freed on every single frame.
+    temp_bmp: ?RgbaBitmap,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -156,6 +161,9 @@ pub const IncrementalRenderer = struct {
 
         var max_glyph_pixels: usize = 0;
 
+        var raster_scratch: rasterizer_mod.RasterScratch = .{};
+        defer raster_scratch.deinit(allocator);
+
         for (layout.positions) |pos| {
             const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
             if (glyph_cache.get(cache_key) != null) continue;
@@ -196,7 +204,7 @@ pub const IncrementalRenderer = struct {
             // Delegates to renderer.zig's applyOutlineHinting so the `enable_hinting`
             // comptime gate has a single owner instead of an ungated duplicate here.
             try renderer_mod.applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
-            const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, fill_padding, raster_options);
+            const glyph_result = try rasterizer_mod.rasterizeGlyphWithScratch(allocator, outline, glyph_scale, fill_padding, raster_options, &raster_scratch);
             const pixel_count = @as(usize, glyph_result.width) * @as(usize, glyph_result.height);
             if (pixel_count > max_glyph_pixels) max_glyph_pixels = pixel_count;
 
@@ -431,10 +439,12 @@ pub const IncrementalRenderer = struct {
             .paint_layer_cumsum = paint_layer_cumsum,
             .pixel_size = options.pixel_size,
             .raster_options = raster_options,
+            .temp_bmp = null,
         };
     }
 
     pub fn deinit(self: *IncrementalRenderer) void {
+        if (self.temp_bmp) |*tb| tb.deinit();
         self.allocator.free(self.temp_coverage);
         self.allocator.free(self.weight_cumsum);
         self.allocator.free(self.paint_layer_cumsum);
@@ -513,70 +523,6 @@ pub const IncrementalRenderer = struct {
         return output;
     }
 
-    fn blendCoverageToTarget(
-        self: *IncrementalRenderer,
-        target: *RgbaBitmap,
-        cached: CachedGlyph,
-        coverage: []const u8,
-        pos: shaper.GlyphPosition,
-        color: Color,
-    ) void {
-        const origin_x = pos.x_offset + self.pad;
-        const origin_y = self.base_baseline_y + pos.y_offset;
-        const bmp_x0 = origin_x - cached.offset_x;
-        const bmp_y0 = origin_y - cached.offset_y;
-
-        for (0..cached.height) |gy| {
-            for (0..cached.width) |gx| {
-                const cov = coverage[gy * @as(usize, cached.width) + gx];
-                if (cov == 0) continue;
-
-                const bmp_xf = bmp_x0 + @as(f32, @floatFromInt(gx));
-                const bmp_yf = bmp_y0 + @as(f32, @floatFromInt(gy));
-
-                if (self.fractional_positioning) {
-                    const ix = @as(i32, @intFromFloat(@floor(bmp_xf)));
-                    const iy = @as(i32, @intFromFloat(@floor(bmp_yf)));
-                    const dx = bmp_xf - @as(f32, @floatFromInt(ix));
-                    const dy = bmp_yf - @as(f32, @floatFromInt(iy));
-                    const cov_f = @as(f32, @floatFromInt(cov));
-
-                    const pairs = [_]struct { x: i32, y: i32, w: f32 }{
-                        .{ .x = ix, .y = iy, .w = (1.0 - dx) * (1.0 - dy) },
-                        .{ .x = ix + 1, .y = iy, .w = dx * (1.0 - dy) },
-                        .{ .x = ix, .y = iy + 1, .w = (1.0 - dx) * dy },
-                        .{ .x = ix + 1, .y = iy + 1, .w = dx * dy },
-                    };
-                    for (pairs) |pair| {
-                        if (pair.x < 0 or pair.y < 0) continue;
-                        const ux = @as(u32, @intCast(pair.x));
-                        const uy = @as(u32, @intCast(pair.y));
-                        if (ux >= self.width or uy >= self.height) continue;
-                        const weighted: u8 = @intFromFloat(@min(255.0, @round(cov_f * pair.w)));
-                        if (weighted == 0) continue;
-                        if (self.gamma_correction) {
-                            target.blendPixelLinear(ux, uy, weighted, color);
-                        } else {
-                            target.blendPixel(ux, uy, weighted, color);
-                        }
-                    }
-                } else {
-                    if (bmp_xf < 0 or bmp_yf < 0) continue;
-
-                    const bmp_xi = @as(u32, @intFromFloat(bmp_xf));
-                    const bmp_yi = @as(u32, @intFromFloat(bmp_yf));
-                    if (bmp_xi >= self.width or bmp_yi >= self.height) continue;
-
-                    if (self.gamma_correction) {
-                        target.blendPixelLinear(bmp_xi, bmp_yi, cov, color);
-                    } else {
-                        target.blendPixel(bmp_xi, bmp_yi, cov, color);
-                    }
-                }
-            }
-        }
-    }
-
     pub fn renderFrame(self: *IncrementalRenderer, progress: f32) !RgbaBitmap {
         const p = std.math.clamp(progress, 0.0, 1.0);
 
@@ -591,13 +537,17 @@ pub const IncrementalRenderer = struct {
                 };
                 const needs_temp = opacity < 0.996;
 
-                var temp_bmp: ?RgbaBitmap = if (needs_temp)
-                    try RgbaBitmap.init(self.allocator, self.width, self.height, rgba_bitmap_mod.Color.transparent)
-                else
-                    null;
-                defer if (temp_bmp) |*tb| tb.deinit();
-
-                const target = if (temp_bmp) |*tb| tb else &bitmap;
+                var target: *RgbaBitmap = &bitmap;
+                if (needs_temp) {
+                    if (self.temp_bmp) |*tb| {
+                        // Color.transparent is all-zero bytes, so a memset is
+                        // byte-for-byte equivalent to re-initializing with it.
+                        @memset(tb.pixels, 0);
+                    } else {
+                        self.temp_bmp = try RgbaBitmap.init(self.allocator, self.width, self.height, rgba_bitmap_mod.Color.transparent);
+                    }
+                    target = &self.temp_bmp.?;
+                }
                 const blend_color: Color = switch (op) {
                     .fill => |fill| if (needs_temp) fill.color else renderer_mod.applyOpacity(fill.color, fill.opacity),
                     .stroke => |stroke| if (needs_temp) stroke.color else renderer_mod.applyOpacity(stroke.color, stroke.opacity),
@@ -628,11 +578,11 @@ pub const IncrementalRenderer = struct {
                     else
                         try self.applyStrategy(cached, layer_gp);
 
-                    self.blendCoverageToTarget(target, cached, coverage, pos, blend_color);
+                    renderer_mod.blendRaster(target, coverage, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, self.base_baseline_y, self.pad, self.width, self.height, blend_color, self.gamma_correction, self.fractional_positioning);
                 }
 
-                if (temp_bmp) |tb| {
-                    renderer_mod.compositeWithOpacity(&bitmap, tb, opacity);
+                if (needs_temp) {
+                    renderer_mod.compositeWithOpacity(&bitmap, self.temp_bmp.?, opacity);
                 }
             }
         } else {
@@ -649,7 +599,7 @@ pub const IncrementalRenderer = struct {
                 else
                     try self.applyStrategy(cached, gp);
 
-                self.blendCoverageToTarget(&bitmap, cached, coverage, pos, self.fg_color);
+                renderer_mod.blendRaster(&bitmap, coverage, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, self.base_baseline_y, self.pad, self.width, self.height, self.fg_color, self.gamma_correction, self.fractional_positioning);
             }
         }
 

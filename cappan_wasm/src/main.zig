@@ -120,6 +120,25 @@ fn parseRasterMethod(raster_method: u32) scanline_mod.RasterMethod {
     };
 }
 
+/// Builds the `RasterOptions` sub-struct shared verbatim by `wasm_render`'s
+/// `RenderOptions` literal and `wasm_init_animator`'s `incremental.Options`
+/// literal (both take the same 4 raw wasm export params for it).
+fn buildRasterOptions(aa_level: u32, sample_pattern: u32, adaptive: u32, raster_method: u32) scanline_mod.RasterOptions {
+    return .{
+        .aa_level = parseAaLevel(aa_level),
+        .sample_pattern = parseSamplePattern(sample_pattern),
+        .adaptive = if (adaptive != 0) .{} else null,
+        .method = parseRasterMethod(raster_method),
+    };
+}
+
+/// Builds an opaque RGBA color from raw wasm export params (alpha fixed at
+/// 255): shared by `wasm_render`'s and `wasm_init_animator`'s fg/bg color
+/// construction.
+fn buildOpaqueColor(r: u8, g: u8, b: u8) cappan.render.rgba_bitmap.Color {
+    return .{ .r = r, .g = g, .b = b, .a = 255 };
+}
+
 export fn wasm_render(
     text_ptr: [*]const u8,
     text_len: usize,
@@ -148,15 +167,10 @@ export fn wasm_render(
         text,
         .{
             .pixel_size = pixel_size,
-            .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
-            .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+            .fg_color = buildOpaqueColor(fg_r, fg_g, fg_b),
+            .bg_color = buildOpaqueColor(bg_r, bg_g, bg_b),
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
-            .raster_options = .{
-                .aa_level = parseAaLevel(aa_level),
-                .sample_pattern = parseSamplePattern(sample_pattern),
-                .adaptive = if (adaptive != 0) .{} else null,
-                .method = parseRasterMethod(raster_method),
-            },
+            .raster_options = buildRasterOptions(aa_level, sample_pattern, adaptive, raster_method),
             .stem_darkening = stem_darkening != 0,
             .cff_hinting = cff_hinting != 0,
             .auto_hinting = auto_hinting != 0,
@@ -220,16 +234,11 @@ export fn wasm_init_animator(
             .pixel_size = pixel_size,
             .strategy = reveal_strategy,
             .timing = timing_mode,
-            .fg_color = .{ .r = fg_r, .g = fg_g, .b = fg_b, .a = 255 },
-            .bg_color = .{ .r = bg_r, .g = bg_g, .b = bg_b, .a = 255 },
+            .fg_color = buildOpaqueColor(fg_r, fg_g, fg_b),
+            .bg_color = buildOpaqueColor(bg_r, bg_g, bg_b),
             .paint_stack = if (paint_stack.items.len > 0) paint_stack.items else null,
             .paint_layer_timing = if (paint_layer_timing == 1) .sequential else .simultaneous,
-            .raster_options = .{
-                .aa_level = parseAaLevel(aa_level),
-                .sample_pattern = parseSamplePattern(sample_pattern),
-                .adaptive = if (adaptive != 0) .{} else null,
-                .method = parseRasterMethod(raster_method),
-            },
+            .raster_options = buildRasterOptions(aa_level, sample_pattern, adaptive, raster_method),
             .stem_darkening = stem_darkening != 0,
             .cff_hinting = cff_hinting != 0,
             .auto_hinting = auto_hinting != 0,
