@@ -10,6 +10,23 @@ pub const Cell = struct {
     area: f32 = 0,
 };
 
+/// Row-band height for the NON-SCRATCH path: `cells` is accumulated and
+/// integrated one band of `band_h` rows at a time instead of the whole W*H
+/// image at once, bounding the per-call buffer to `w * band_h`. A phase-level
+/// profile found alloc+memset at 82.8% of non-scratch analytical's per-glyph
+/// cost at 128px, and 32-row banding recovers ~2.3x there; 16 loses to
+/// redundant re-walking of band-spanning segments, 64 halves the win.
+///
+/// With a caller-provided scratch the buffer already persists across calls,
+/// so allocation isn't a cost at all and banding is pure overhead (measured
+/// +15-18% at 64-128px from segment re-walks and per-band memsets; the
+/// cache-residency hope did not materialize). The scratch path therefore uses
+/// one full-height band, i.e. the pre-banding behavior. Output is
+/// byte-identical for ANY band split (verified: identical checksums across
+/// band_h 16/32/64/full) -- band size is purely a performance knob, so the
+/// two paths differing here cannot diverge in output.
+const band_h: usize = 32;
+
 pub fn rasterize(
     allocator: std.mem.Allocator,
     segments: []const outline_mod.Segment,
@@ -20,54 +37,100 @@ pub fn rasterize(
     const w: usize = @intCast(width);
     const h: usize = @intCast(height);
 
+    // No memset: the band loop's reconstruction pass writes every pixel
+    // (bands tile [0, h) and the inner loop covers all of [0, w)), and the
+    // w/h == 0 early return below returns a zero-length buffer.
     const pixels = try allocator.alloc(u8, w * h);
     errdefer allocator.free(pixels);
-    @memset(pixels, 0);
 
     if (w == 0 or h == 0) return pixels;
+
+    // Scratch path: one full-height band; non-scratch: small bands -- see
+    // band_h's doc for the measured tradeoff.
+    const effective_band_h: usize = if (cells_scratch != null) h else @min(band_h, h);
 
     var local_cells: std.ArrayList(Cell) = .empty;
     defer local_cells.deinit(allocator);
     const cells_list: *std.ArrayList(Cell) = cells_scratch orelse &local_cells;
-    try cells_list.resize(allocator, w * h);
-    const cells = cells_list.items;
-    @memset(cells, .{});
+    try cells_list.resize(allocator, w * effective_band_h);
+    const band_cells = cells_list.items;
 
-    for (segments) |seg| {
-        renderLine(cells, w, h, seg.x0, seg.y0, seg.x1, seg.y1);
-    }
+    var band_start: usize = 0;
+    while (band_start < h) : (band_start += effective_band_h) {
+        const band_rows = @min(effective_band_h, h - band_start);
+        const band_slice = band_cells[0 .. w * band_rows];
+        @memset(band_slice, .{});
 
-    // Coverage reconstruction: add this cell's own `cover` to `acc` BEFORE
-    // reading out this cell's coverage, and SUBTRACT `area * 0.5`.
-    //
-    // Derivation (nonzero-winding average over the full row height): for the
-    // sub-portion of the row where the crossing has already moved past this
-    // cell into a later column, this cell is fully on the "post-crossing"
-    // side, contributing that sub-portion's dy directly -- and `cover`
-    // already includes it, since cover sums to the full row height across
-    // every column an edge visits in a row. Averaging gives
-    // cell_avg_winding = (acc_before + cover) - area/2, i.e. exactly
-    // acc-after-adding-cover minus half the area term.
-    //
-    // The read-before-update, add-area form is wrong: it coincides with this
-    // only when a crossing stays in one column for the whole row (straight
-    // near-vertical edges), and diverges for flattened curve segments, whose
-    // slope makes most row-crossings span 2+ columns. Guarded by the circle
-    // regression test below.
-    for (0..h) |y| {
-        var acc: f32 = 0;
-        for (0..w) |x| {
-            const cell = cells[y * w + x];
-            acc += cell.cover;
-            const coverage = @abs(acc - cell.area * 0.5);
-            pixels[y * w + x] = @intFromFloat(@min(coverage * 255.0, 255.0));
+        // Segments are walked in original array order, every band -- see
+        // renderLine's doc for why this preserves f32-addition-order byte
+        // identity. The y-range pre-check below is a pure optimization (skip
+        // entering renderLine's row-walk at all when this segment's *whole*
+        // unclipped y-span can't reach this band); it uses strict `<`/`>` so
+        // it only ever skips segments renderLine's own per-row band check
+        // would also have produced zero writes for -- never a false skip.
+        const band_lo_f: f32 = @floatFromInt(band_start);
+        const band_hi_f: f32 = @floatFromInt(band_start + band_rows);
+        for (segments) |seg| {
+            const seg_lo = @min(seg.y0, seg.y1);
+            const seg_hi = @max(seg.y0, seg.y1);
+            if (seg_hi < band_lo_f or seg_lo > band_hi_f) continue;
+            renderLine(band_slice, w, h, seg.x0, seg.y0, seg.x1, seg.y1, band_start, band_start + band_rows);
+        }
+
+        // Coverage reconstruction: add this cell's own `cover` to `acc`
+        // BEFORE reading out this cell's coverage, and SUBTRACT `area * 0.5`.
+        //
+        // Derivation (nonzero-winding average over the full row height): for
+        // the sub-portion of the row where the crossing has already moved
+        // past this cell into a later column, this cell is fully on the
+        // "post-crossing" side, contributing that sub-portion's dy directly
+        // -- and `cover` already includes it, since cover sums to the full
+        // row height across every column an edge visits in a row. Averaging
+        // gives cell_avg_winding = (acc_before + cover) - area/2, i.e.
+        // exactly acc-after-adding-cover minus half the area term.
+        //
+        // The read-before-update, add-area form is wrong: it coincides with
+        // this only when a crossing stays in one column for the whole row
+        // (straight near-vertical edges), and diverges for flattened curve
+        // segments, whose slope makes most row-crossings span 2+ columns.
+        // Guarded by the circle regression test below.
+        for (0..band_rows) |y_rel| {
+            var acc: f32 = 0;
+            for (0..w) |x| {
+                const cell = band_slice[y_rel * w + x];
+                acc += cell.cover;
+                const coverage = @abs(acc - cell.area * 0.5);
+                pixels[(band_start + y_rel) * w + x] = @intFromFloat(@min(coverage * 255.0, 255.0));
+            }
         }
     }
 
     return pixels;
 }
 
-fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: f32) void {
+/// Walks the segment exactly as the pre-banding version did -- identical
+/// t_start/t_end vertical clip against the *full* image height `h` (not the
+/// band), identical row-stepping recurrence for cur_x/cur_y, identical
+/// row-end/row-top computation -- with exactly two differences, both
+/// non-numeric: (1) a row's `renderRowSegment` call is skipped when that
+/// row falls outside [band_start, band_end), and (2) when it isn't skipped,
+/// the row index passed in is band-relative (iy - band_start) to match
+/// `cells` being a band-sized slice, not the full `w * h` image. No arithmetic that ends up in a written cell's cover/area changes:
+/// every f32 add a written cell receives is bit-for-bit the value the
+/// non-banded version would have computed for that same row, and (per
+/// rasterize()'s outer loop) happens in the same original segment order --
+/// the two properties f32 addition's non-associativity requires for byte
+/// identity.
+///
+/// Cost note: a segment spanning multiple bands gets walked again (from its
+/// own start, not resumed) on each band's pass, wasting the walk for rows
+/// outside that pass's band. Flattened curve chords are short (~0.6-6px, see
+/// outline.zig's flattening tolerance) so this touches at most 2 bands in
+/// practice; genuinely long straight edges (e.g. a full-height stem) do get
+/// re-walked once per band (O(bands) instead of O(1) row-steps for that one
+/// segment). Measured, this stays well below the allocation cost the banding
+/// removes (see band_h's doc for the numbers).
+fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: f32, band_start: usize, band_end: usize) void {
     const dy = y1 - y0;
     if (@abs(dy) < 1e-7) return;
 
@@ -105,7 +168,9 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
             const row_end = @min(@as(f32, @floatFromInt(iy + 1)), cy1);
             const end_x = cur_x + (row_end - cur_y) * slope;
 
-            renderRowSegment(cells, w, iy, cur_x, cur_y, end_x, row_end);
+            if (iy >= band_start and iy < band_end) {
+                renderRowSegment(cells, w, iy - band_start, cur_x, cur_y, end_x, row_end);
+            }
 
             cur_x = end_x;
             cur_y = row_end;
@@ -126,7 +191,9 @@ fn renderLine(cells: []Cell, w: usize, h: usize, x0: f32, y0: f32, x1: f32, y1: 
             const row_top = @max(@as(f32, @floatFromInt(iy)), cy1);
             const end_x = cur_x + (row_top - cur_y) * slope;
 
-            renderRowSegment(cells, w, iy, cur_x, cur_y, end_x, row_top);
+            if (iy >= band_start and iy < band_end) {
+                renderRowSegment(cells, w, iy - band_start, cur_x, cur_y, end_x, row_top);
+            }
 
             cur_x = end_x;
             cur_y = row_top;
