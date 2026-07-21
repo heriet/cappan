@@ -760,27 +760,7 @@ pub const Font = struct {
                 if (try self.getGlyphOutlineWithVariationRecursive(allocator, comp.glyph_id, adjusted_coords, depth + 1)) |component_outline_const| {
                     var component_outline = component_outline_const;
                     defer component_outline.deinit();
-                    for (component_outline.contours) |contour| {
-                        const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
-                        for (contour.points, 0..) |pt, i| {
-                            if (comp.has_transform) {
-                                const fx = @as(f32, @floatFromInt(pt.x));
-                                const fy = @as(f32, @floatFromInt(pt.y));
-                                new_points[i] = .{
-                                    .x = @as(i16, @intFromFloat(@round(comp.mat_a * fx + comp.mat_c * fy))) + comp.dx,
-                                    .y = @as(i16, @intFromFloat(@round(comp.mat_b * fx + comp.mat_d * fy))) + comp.dy,
-                                    .on_curve = pt.on_curve,
-                                };
-                            } else {
-                                new_points[i] = .{
-                                    .x = pt.x + comp.dx,
-                                    .y = pt.y + comp.dy,
-                                    .on_curve = pt.on_curve,
-                                };
-                            }
-                        }
-                        try all_contours.append(allocator, .{ .points = new_points });
-                    }
+                    try glyf_mod.GlyfTable.appendTransformedComponentContours(allocator, &all_contours, comp, component_outline);
                 }
             }
 

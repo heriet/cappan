@@ -9,6 +9,20 @@ fn shouldSkipGlyph(gdef: ?gdef_mod.GdefTable, glyph_id: u16, lookup_flag: u16) b
     return g.shouldSkipGlyph(glyph_id, lookup_flag, null);
 }
 
+fn advanceAfterNestedLookup(pos: usize, consumed: u16, old_len: usize, new_len: usize) usize {
+    const len_delta = @as(i32, @intCast(new_len)) - @as(i32, @intCast(old_len));
+    return @as(usize, @intCast(@as(i32, @intCast(pos + @as(usize, consumed))) + len_delta));
+}
+
+const ContextMatchMode = enum { glyph, class };
+
+fn contextValueMatches(comptime mode: ContextMatchMode, class_def: ?otlayout.ClassDef, glyph_id: u16, expected: u16) bool {
+    return switch (mode) {
+        .glyph => glyph_id == expected,
+        .class => class_def.?.getClass(glyph_id) == expected,
+    };
+}
+
 pub const GsubTable = struct {
     data: []const u8,
     script_list_offset: u16,
@@ -109,92 +123,7 @@ pub const GsubTable = struct {
                 const cov_offset = parser.readU16(self.data, subtable_offset + 2) catch return;
                 const coverage = otlayout.parseCoverage(self.data, subtable_offset + @as(usize, cov_offset)) catch return;
                 const sub_rule_set_count = parser.readU16(self.data, subtable_offset + 4) catch return;
-
-                var i: usize = 0;
-                while (i < glyphs.items.len) {
-                    const glyph_id = glyphs.items[i];
-                    const cov_idx = coverage.getCoverageIndex(glyph_id) orelse {
-                        i += 1;
-                        continue;
-                    };
-                    if (cov_idx >= sub_rule_set_count) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const srs_offset_pos = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-                    if (srs_offset_pos + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-                    const srs_offset = parser.readU16(self.data, srs_offset_pos) catch {
-                        i += 1;
-                        continue;
-                    };
-                    if (srs_offset == 0) {
-                        i += 1;
-                        continue;
-                    }
-                    const srs_base = subtable_offset + @as(usize, srs_offset);
-                    if (srs_base + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const sub_rule_count = parser.readU16(self.data, srs_base) catch {
-                        i += 1;
-                        continue;
-                    };
-
-                    var matched = false;
-                    var ri: usize = 0;
-                    while (ri < sub_rule_count) : (ri += 1) {
-                        const rule_offset_pos = srs_base + 2 + ri * 2;
-                        if (rule_offset_pos + 2 > self.data.len) break;
-                        const rule_offset = parser.readU16(self.data, rule_offset_pos) catch break;
-                        const rule_base = srs_base + @as(usize, rule_offset);
-                        if (rule_base + 4 > self.data.len) continue;
-
-                        const glyph_count = parser.readU16(self.data, rule_base) catch continue;
-                        const subst_count = parser.readU16(self.data, rule_base + 2) catch continue;
-                        if (glyph_count == 0) continue;
-
-                        const input_count = glyph_count - 1;
-                        if (i + 1 + input_count > glyphs.items.len) continue;
-
-                        var all_match = true;
-                        var ci: usize = 0;
-                        while (ci < input_count) : (ci += 1) {
-                            const input_offset = rule_base + 4 + ci * 2;
-                            if (input_offset + 2 > self.data.len) {
-                                all_match = false;
-                                break;
-                            }
-                            const expected = parser.readU16(self.data, input_offset) catch {
-                                all_match = false;
-                                break;
-                            };
-                            if (glyphs.items[i + 1 + ci] != expected) {
-                                all_match = false;
-                                break;
-                            }
-                        }
-
-                        if (all_match) {
-                            const records_offset = rule_base + 4 + @as(usize, input_count) * 2;
-                            const old_len = glyphs.items.len;
-                            try self.applyNestedLookups(allocator, glyphs, i, self.data, records_offset, subst_count);
-                            const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                            i = @as(usize, @intCast(@as(i32, @intCast(i + glyph_count)) + len_delta));
-                            matched = true;
-                            break;
-                        }
-                    }
-
-                    if (!matched) {
-                        i += 1;
-                    }
-                }
+                try self.applyContextRuleSets(allocator, glyphs, coverage, subtable_offset, sub_rule_set_count, subtable_offset + 6, .glyph, false, null, null, null, null);
             },
             2 => {
                 if (subtable_offset + 8 > self.data.len) return;
@@ -203,95 +132,7 @@ pub const GsubTable = struct {
                 const class_def_offset = parser.readU16(self.data, subtable_offset + 4) catch return;
                 const class_def = otlayout.parseClassDef(self.data, subtable_offset + @as(usize, class_def_offset)) catch return;
                 const sub_class_set_count = parser.readU16(self.data, subtable_offset + 6) catch return;
-
-                var i: usize = 0;
-                while (i < glyphs.items.len) {
-                    const glyph_id = glyphs.items[i];
-                    _ = coverage.getCoverageIndex(glyph_id) orelse {
-                        i += 1;
-                        continue;
-                    };
-
-                    const class_val = class_def.getClass(glyph_id);
-                    if (class_val >= sub_class_set_count) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const scs_offset_pos = subtable_offset + 8 + @as(usize, class_val) * 2;
-                    if (scs_offset_pos + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-                    const scs_offset = parser.readU16(self.data, scs_offset_pos) catch {
-                        i += 1;
-                        continue;
-                    };
-                    if (scs_offset == 0) {
-                        i += 1;
-                        continue;
-                    }
-                    const scs_base = subtable_offset + @as(usize, scs_offset);
-                    if (scs_base + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const sub_class_rule_count = parser.readU16(self.data, scs_base) catch {
-                        i += 1;
-                        continue;
-                    };
-
-                    var matched = false;
-                    var ri: usize = 0;
-                    while (ri < sub_class_rule_count) : (ri += 1) {
-                        const rule_offset_pos = scs_base + 2 + ri * 2;
-                        if (rule_offset_pos + 2 > self.data.len) break;
-                        const rule_offset = parser.readU16(self.data, rule_offset_pos) catch break;
-                        const rule_base = scs_base + @as(usize, rule_offset);
-                        if (rule_base + 4 > self.data.len) continue;
-
-                        const glyph_count = parser.readU16(self.data, rule_base) catch continue;
-                        const subst_count = parser.readU16(self.data, rule_base + 2) catch continue;
-                        if (glyph_count == 0) continue;
-
-                        const input_count = glyph_count - 1;
-                        if (i + 1 + input_count > glyphs.items.len) continue;
-
-                        var all_match = true;
-                        var ci: usize = 0;
-                        while (ci < input_count) : (ci += 1) {
-                            const input_offset = rule_base + 4 + ci * 2;
-                            if (input_offset + 2 > self.data.len) {
-                                all_match = false;
-                                break;
-                            }
-                            const expected_class = parser.readU16(self.data, input_offset) catch {
-                                all_match = false;
-                                break;
-                            };
-                            const actual_class = class_def.getClass(glyphs.items[i + 1 + ci]);
-                            if (actual_class != expected_class) {
-                                all_match = false;
-                                break;
-                            }
-                        }
-
-                        if (all_match) {
-                            const records_offset = rule_base + 4 + @as(usize, input_count) * 2;
-                            const old_len = glyphs.items.len;
-                            try self.applyNestedLookups(allocator, glyphs, i, self.data, records_offset, subst_count);
-                            const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                            i = @as(usize, @intCast(@as(i32, @intCast(i + glyph_count)) + len_delta));
-                            matched = true;
-                            break;
-                        }
-                    }
-
-                    if (!matched) {
-                        i += 1;
-                    }
-                }
+                try self.applyContextRuleSets(allocator, glyphs, coverage, subtable_offset, sub_class_set_count, subtable_offset + 8, .class, false, class_def, null, class_def, null);
             },
             3 => {
                 if (subtable_offset + 6 > self.data.len) return;
@@ -327,8 +168,7 @@ pub const GsubTable = struct {
                         const records_offset = subtable_offset + 6 + @as(usize, glyph_count) * 2;
                         const old_len = glyphs.items.len;
                         try self.applyNestedLookups(allocator, glyphs, i, self.data, records_offset, subst_count);
-                        const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                        i = @as(usize, @intCast(@as(i32, @intCast(i + glyph_count)) + len_delta));
+                        i = advanceAfterNestedLookup(i, glyph_count, old_len, glyphs.items.len);
                     } else {
                         i += 1;
                     }
@@ -348,140 +188,7 @@ pub const GsubTable = struct {
                 const cov_offset = parser.readU16(self.data, subtable_offset + 2) catch return;
                 const coverage = otlayout.parseCoverage(self.data, subtable_offset + @as(usize, cov_offset)) catch return;
                 const chain_sub_rule_set_count = parser.readU16(self.data, subtable_offset + 4) catch return;
-
-                var i: usize = 0;
-                while (i < glyphs.items.len) {
-                    const glyph_id = glyphs.items[i];
-                    const cov_idx = coverage.getCoverageIndex(glyph_id) orelse {
-                        i += 1;
-                        continue;
-                    };
-                    if (cov_idx >= chain_sub_rule_set_count) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const csrs_offset_pos = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-                    if (csrs_offset_pos + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-                    const csrs_offset = parser.readU16(self.data, csrs_offset_pos) catch {
-                        i += 1;
-                        continue;
-                    };
-                    if (csrs_offset == 0) {
-                        i += 1;
-                        continue;
-                    }
-                    const csrs_base = subtable_offset + @as(usize, csrs_offset);
-                    if (csrs_base + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const chain_rule_count = parser.readU16(self.data, csrs_base) catch {
-                        i += 1;
-                        continue;
-                    };
-
-                    var matched = false;
-                    var ri: usize = 0;
-                    while (ri < chain_rule_count) : (ri += 1) {
-                        const rule_offset_pos = csrs_base + 2 + ri * 2;
-                        if (rule_offset_pos + 2 > self.data.len) break;
-                        const rule_offset = parser.readU16(self.data, rule_offset_pos) catch break;
-                        const rule_base = csrs_base + @as(usize, rule_offset);
-                        if (rule_base + 2 > self.data.len) continue;
-
-                        var pos: usize = rule_base;
-
-                        const bt_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        if (i < bt_count) continue;
-                        var bt_match = true;
-                        var bi: usize = 0;
-                        while (bi < bt_count) : (bi += 1) {
-                            if (pos + 2 > self.data.len) {
-                                bt_match = false;
-                                break;
-                            }
-                            const expected = parser.readU16(self.data, pos) catch {
-                                bt_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            if (glyphs.items[i - 1 - bi] != expected) {
-                                bt_match = false;
-                                break;
-                            }
-                        }
-                        if (!bt_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const input_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        if (input_count == 0) continue;
-                        const actual_input = input_count - 1;
-                        if (i + 1 + actual_input > glyphs.items.len) continue;
-                        var in_match = true;
-                        var ii: usize = 0;
-                        while (ii < actual_input) : (ii += 1) {
-                            if (pos + 2 > self.data.len) {
-                                in_match = false;
-                                break;
-                            }
-                            const expected = parser.readU16(self.data, pos) catch {
-                                in_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            if (glyphs.items[i + 1 + ii] != expected) {
-                                in_match = false;
-                                break;
-                            }
-                        }
-                        if (!in_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const la_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        const lookahead_start = i + input_count;
-                        if (lookahead_start + la_count > glyphs.items.len) continue;
-                        var la_match = true;
-                        var lai: usize = 0;
-                        while (lai < la_count) : (lai += 1) {
-                            if (pos + 2 > self.data.len) {
-                                la_match = false;
-                                break;
-                            }
-                            const expected = parser.readU16(self.data, pos) catch {
-                                la_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            if (glyphs.items[lookahead_start + lai] != expected) {
-                                la_match = false;
-                                break;
-                            }
-                        }
-                        if (!la_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const subst_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        const old_len = glyphs.items.len;
-                        try self.applyNestedLookups(allocator, glyphs, i, self.data, pos, subst_count);
-                        const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                        i = @as(usize, @intCast(@as(i32, @intCast(i + input_count)) + len_delta));
-                        matched = true;
-                        break;
-                    }
-
-                    if (!matched) {
-                        i += 1;
-                    }
-                }
+                try self.applyContextRuleSets(allocator, glyphs, coverage, subtable_offset, chain_sub_rule_set_count, subtable_offset + 6, .glyph, true, null, null, null, null);
             },
             2 => {
                 if (subtable_offset + 12 > self.data.len) return;
@@ -494,145 +201,7 @@ pub const GsubTable = struct {
                 const la_class_def_offset = parser.readU16(self.data, subtable_offset + 8) catch return;
                 const la_class_def = otlayout.parseClassDef(self.data, subtable_offset + @as(usize, la_class_def_offset)) catch return;
                 const chain_sub_class_set_count = parser.readU16(self.data, subtable_offset + 10) catch return;
-
-                var i: usize = 0;
-                while (i < glyphs.items.len) {
-                    const glyph_id = glyphs.items[i];
-                    _ = coverage.getCoverageIndex(glyph_id) orelse {
-                        i += 1;
-                        continue;
-                    };
-
-                    const class_val = in_class_def.getClass(glyph_id);
-                    if (class_val >= chain_sub_class_set_count) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const cscs_offset_pos = subtable_offset + 12 + @as(usize, class_val) * 2;
-                    if (cscs_offset_pos + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-                    const cscs_offset = parser.readU16(self.data, cscs_offset_pos) catch {
-                        i += 1;
-                        continue;
-                    };
-                    if (cscs_offset == 0) {
-                        i += 1;
-                        continue;
-                    }
-                    const cscs_base = subtable_offset + @as(usize, cscs_offset);
-                    if (cscs_base + 2 > self.data.len) {
-                        i += 1;
-                        continue;
-                    }
-
-                    const chain_rule_count = parser.readU16(self.data, cscs_base) catch {
-                        i += 1;
-                        continue;
-                    };
-
-                    var matched = false;
-                    var ri: usize = 0;
-                    while (ri < chain_rule_count) : (ri += 1) {
-                        const rule_offset_pos = cscs_base + 2 + ri * 2;
-                        if (rule_offset_pos + 2 > self.data.len) break;
-                        const rule_offset = parser.readU16(self.data, rule_offset_pos) catch break;
-                        const rule_base = cscs_base + @as(usize, rule_offset);
-                        if (rule_base + 2 > self.data.len) continue;
-
-                        var pos: usize = rule_base;
-
-                        const bt_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        if (i < bt_count) continue;
-                        var bt_match = true;
-                        var bi: usize = 0;
-                        while (bi < bt_count) : (bi += 1) {
-                            if (pos + 2 > self.data.len) {
-                                bt_match = false;
-                                break;
-                            }
-                            const expected_class = parser.readU16(self.data, pos) catch {
-                                bt_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            const actual_class = bt_class_def.getClass(glyphs.items[i - 1 - bi]);
-                            if (actual_class != expected_class) {
-                                bt_match = false;
-                                break;
-                            }
-                        }
-                        if (!bt_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const input_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        if (input_count == 0) continue;
-                        const actual_input = input_count - 1;
-                        if (i + 1 + actual_input > glyphs.items.len) continue;
-                        var in_match = true;
-                        var ii: usize = 0;
-                        while (ii < actual_input) : (ii += 1) {
-                            if (pos + 2 > self.data.len) {
-                                in_match = false;
-                                break;
-                            }
-                            const expected_class = parser.readU16(self.data, pos) catch {
-                                in_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            const actual_class = in_class_def.getClass(glyphs.items[i + 1 + ii]);
-                            if (actual_class != expected_class) {
-                                in_match = false;
-                                break;
-                            }
-                        }
-                        if (!in_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const la_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        const lookahead_start = i + input_count;
-                        if (lookahead_start + la_count > glyphs.items.len) continue;
-                        var la_match = true;
-                        var lai: usize = 0;
-                        while (lai < la_count) : (lai += 1) {
-                            if (pos + 2 > self.data.len) {
-                                la_match = false;
-                                break;
-                            }
-                            const expected_class = parser.readU16(self.data, pos) catch {
-                                la_match = false;
-                                break;
-                            };
-                            pos += 2;
-                            const actual_class = la_class_def.getClass(glyphs.items[lookahead_start + lai]);
-                            if (actual_class != expected_class) {
-                                la_match = false;
-                                break;
-                            }
-                        }
-                        if (!la_match) continue;
-
-                        if (pos + 2 > self.data.len) continue;
-                        const subst_count = parser.readU16(self.data, pos) catch continue;
-                        pos += 2;
-                        const old_len = glyphs.items.len;
-                        try self.applyNestedLookups(allocator, glyphs, i, self.data, pos, subst_count);
-                        const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                        i = @as(usize, @intCast(@as(i32, @intCast(i + input_count)) + len_delta));
-                        matched = true;
-                        break;
-                    }
-
-                    if (!matched) {
-                        i += 1;
-                    }
-                }
+                try self.applyContextRuleSets(allocator, glyphs, coverage, subtable_offset, chain_sub_class_set_count, subtable_offset + 12, .class, true, in_class_def, bt_class_def, in_class_def, la_class_def);
             },
             3 => {
                 var pos: usize = subtable_offset + 2;
@@ -761,11 +330,205 @@ pub const GsubTable = struct {
 
                     const old_len = glyphs.items.len;
                     try self.applyNestedLookups(allocator, glyphs, i, self.data, records_offset, subst_count);
-                    const len_delta = @as(i32, @intCast(glyphs.items.len)) - @as(i32, @intCast(old_len));
-                    i = @as(usize, @intCast(@as(i32, @intCast(i + input_count)) + len_delta));
+                    i = advanceAfterNestedLookup(i, input_count, old_len, glyphs.items.len);
                 }
             },
             else => {},
+        }
+    }
+
+    fn applyContextRuleSets(
+        self: GsubTable,
+        allocator: std.mem.Allocator,
+        glyphs: *std.ArrayListUnmanaged(u16),
+        coverage: otlayout.Coverage,
+        subtable_offset: usize,
+        set_count: u16,
+        set_offsets_offset: usize,
+        comptime mode: ContextMatchMode,
+        comptime chained: bool,
+        selector_class_def: ?otlayout.ClassDef,
+        bt_class_def: ?otlayout.ClassDef,
+        in_class_def: ?otlayout.ClassDef,
+        la_class_def: ?otlayout.ClassDef,
+    ) !void {
+        var i: usize = 0;
+        while (i < glyphs.items.len) {
+            const glyph_id = glyphs.items[i];
+            const set_index = switch (mode) {
+                .glyph => coverage.getCoverageIndex(glyph_id) orelse {
+                    i += 1;
+                    continue;
+                },
+                .class => blk: {
+                    _ = coverage.getCoverageIndex(glyph_id) orelse {
+                        i += 1;
+                        continue;
+                    };
+                    break :blk selector_class_def.?.getClass(glyph_id);
+                },
+            };
+            if (set_index >= set_count) {
+                i += 1;
+                continue;
+            }
+
+            const set_offset_pos = set_offsets_offset + @as(usize, set_index) * 2;
+            if (set_offset_pos + 2 > self.data.len) {
+                i += 1;
+                continue;
+            }
+            const set_offset = parser.readU16(self.data, set_offset_pos) catch {
+                i += 1;
+                continue;
+            };
+            if (set_offset == 0) {
+                i += 1;
+                continue;
+            }
+            const set_base = subtable_offset + @as(usize, set_offset);
+            if (set_base + 2 > self.data.len) {
+                i += 1;
+                continue;
+            }
+
+            const rule_count = parser.readU16(self.data, set_base) catch {
+                i += 1;
+                continue;
+            };
+
+            var matched = false;
+            var ri: usize = 0;
+            while (ri < rule_count) : (ri += 1) {
+                const rule_offset_pos = set_base + 2 + ri * 2;
+                if (rule_offset_pos + 2 > self.data.len) break;
+                const rule_offset = parser.readU16(self.data, rule_offset_pos) catch break;
+                const rule_base = set_base + @as(usize, rule_offset);
+
+                if (comptime chained) {
+                    if (rule_base + 2 > self.data.len) continue;
+
+                    var pos: usize = rule_base;
+
+                    const bt_count = parser.readU16(self.data, pos) catch continue;
+                    pos += 2;
+                    if (i < bt_count) continue;
+                    var bt_match = true;
+                    var bi: usize = 0;
+                    while (bi < bt_count) : (bi += 1) {
+                        if (pos + 2 > self.data.len) {
+                            bt_match = false;
+                            break;
+                        }
+                        const expected = parser.readU16(self.data, pos) catch {
+                            bt_match = false;
+                            break;
+                        };
+                        pos += 2;
+                        if (!contextValueMatches(mode, bt_class_def, glyphs.items[i - 1 - bi], expected)) {
+                            bt_match = false;
+                            break;
+                        }
+                    }
+                    if (!bt_match) continue;
+
+                    if (pos + 2 > self.data.len) continue;
+                    const input_count = parser.readU16(self.data, pos) catch continue;
+                    pos += 2;
+                    if (input_count == 0) continue;
+                    const actual_input = input_count - 1;
+                    if (i + 1 + actual_input > glyphs.items.len) continue;
+                    var in_match = true;
+                    var ii: usize = 0;
+                    while (ii < actual_input) : (ii += 1) {
+                        if (pos + 2 > self.data.len) {
+                            in_match = false;
+                            break;
+                        }
+                        const expected = parser.readU16(self.data, pos) catch {
+                            in_match = false;
+                            break;
+                        };
+                        pos += 2;
+                        if (!contextValueMatches(mode, in_class_def, glyphs.items[i + 1 + ii], expected)) {
+                            in_match = false;
+                            break;
+                        }
+                    }
+                    if (!in_match) continue;
+
+                    if (pos + 2 > self.data.len) continue;
+                    const la_count = parser.readU16(self.data, pos) catch continue;
+                    pos += 2;
+                    const lookahead_start = i + input_count;
+                    if (lookahead_start + la_count > glyphs.items.len) continue;
+                    var la_match = true;
+                    var lai: usize = 0;
+                    while (lai < la_count) : (lai += 1) {
+                        if (pos + 2 > self.data.len) {
+                            la_match = false;
+                            break;
+                        }
+                        const expected = parser.readU16(self.data, pos) catch {
+                            la_match = false;
+                            break;
+                        };
+                        pos += 2;
+                        if (!contextValueMatches(mode, la_class_def, glyphs.items[lookahead_start + lai], expected)) {
+                            la_match = false;
+                            break;
+                        }
+                    }
+                    if (!la_match) continue;
+
+                    if (pos + 2 > self.data.len) continue;
+                    const subst_count = parser.readU16(self.data, pos) catch continue;
+                    pos += 2;
+                    const old_len = glyphs.items.len;
+                    try self.applyNestedLookups(allocator, glyphs, i, self.data, pos, subst_count);
+                    i = advanceAfterNestedLookup(i, input_count, old_len, glyphs.items.len);
+                } else {
+                    if (rule_base + 4 > self.data.len) continue;
+
+                    const glyph_count = parser.readU16(self.data, rule_base) catch continue;
+                    const subst_count = parser.readU16(self.data, rule_base + 2) catch continue;
+                    if (glyph_count == 0) continue;
+
+                    const input_count = glyph_count - 1;
+                    if (i + 1 + input_count > glyphs.items.len) continue;
+
+                    var all_match = true;
+                    var ci: usize = 0;
+                    while (ci < input_count) : (ci += 1) {
+                        const input_offset = rule_base + 4 + ci * 2;
+                        if (input_offset + 2 > self.data.len) {
+                            all_match = false;
+                            break;
+                        }
+                        const expected = parser.readU16(self.data, input_offset) catch {
+                            all_match = false;
+                            break;
+                        };
+                        if (!contextValueMatches(mode, in_class_def, glyphs.items[i + 1 + ci], expected)) {
+                            all_match = false;
+                            break;
+                        }
+                    }
+
+                    if (!all_match) continue;
+
+                    const records_offset = rule_base + 4 + @as(usize, input_count) * 2;
+                    const old_len = glyphs.items.len;
+                    try self.applyNestedLookups(allocator, glyphs, i, self.data, records_offset, subst_count);
+                    i = advanceAfterNestedLookup(i, glyph_count, old_len, glyphs.items.len);
+                }
+                matched = true;
+                break;
+            }
+
+            if (!matched) {
+                i += 1;
+            }
         }
     }
 
@@ -827,201 +590,33 @@ pub const GsubTable = struct {
 };
 
 fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
-    if (subtable_offset + 6 > data.len) return;
-    const format = parser.readU16(data, subtable_offset) catch return;
-    const cov_offset = parser.readU16(data, subtable_offset + 2) catch return;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, cov_offset)) catch return;
-
-    switch (format) {
-        1 => {
-            const delta_raw = parser.readI16(data, subtable_offset + 4) catch return;
-            const delta: i32 = delta_raw;
-            for (glyphs.items) |*g| {
-                if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
-                if (coverage.getCoverageIndex(g.*) != null) {
-                    const new_id = @as(i32, g.*) + delta;
-                    g.* = @intCast(@as(u32, @bitCast(new_id)) & 0xFFFF);
-                }
-            }
-        },
-        2 => {
-            const glyph_count = parser.readU16(data, subtable_offset + 4) catch return;
-            for (glyphs.items) |*g| {
-                if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
-                const cov_idx = coverage.getCoverageIndex(g.*) orelse continue;
-                if (cov_idx >= glyph_count) continue;
-                const sub_offset = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-                const substitute = parser.readU16(data, sub_offset) catch continue;
-                g.* = substitute;
-            }
-        },
-        else => {},
+    var i: usize = 0;
+    while (i < glyphs.items.len) : (i += 1) {
+        _ = applySingleSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag);
     }
 }
 
 fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
-    if (subtable_offset + 6 > data.len) return;
-    const format = parser.readU16(data, subtable_offset) catch return;
-    if (format != 1) return;
-
-    const cov_offset = parser.readU16(data, subtable_offset + 2) catch return;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, cov_offset)) catch return;
-    const lig_set_count = parser.readU16(data, subtable_offset + 4) catch return;
-
     var i: usize = 0;
     while (i < glyphs.items.len) {
-        const glyph_id = glyphs.items[i];
-        if (shouldSkipGlyph(gdef, glyph_id, lookup_flag)) {
-            i += 1;
-            continue;
-        }
-        const cov_idx = coverage.getCoverageIndex(glyph_id) orelse {
-            i += 1;
-            continue;
-        };
-        if (cov_idx >= lig_set_count) {
-            i += 1;
-            continue;
-        }
-
-        const ls_offset_pos = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-        if (ls_offset_pos + 2 > data.len) {
-            i += 1;
-            continue;
-        }
-        const ls_offset = parser.readU16(data, ls_offset_pos) catch {
-            i += 1;
-            continue;
-        };
-        const ls_base = subtable_offset + @as(usize, ls_offset);
-        if (ls_base + 2 > data.len) {
-            i += 1;
-            continue;
-        }
-
-        const lig_count = parser.readU16(data, ls_base) catch {
-            i += 1;
-            continue;
-        };
-
-        var matched = false;
-        var li: usize = 0;
-        while (li < lig_count) : (li += 1) {
-            const lig_offset_pos = ls_base + 2 + li * 2;
-            if (lig_offset_pos + 2 > data.len) break;
-            const lig_offset = parser.readU16(data, lig_offset_pos) catch break;
-            const lig_base = ls_base + @as(usize, lig_offset);
-            if (lig_base + 4 > data.len) continue;
-
-            const lig_glyph = parser.readU16(data, lig_base) catch continue;
-            const comp_count = parser.readU16(data, lig_base + 2) catch continue;
-            if (comp_count == 0) continue;
-
-            const components_needed = comp_count - 1;
-            if (i + components_needed >= glyphs.items.len) continue;
-
-            var components_match = true;
-            var ci: usize = 0;
-            while (ci < components_needed) : (ci += 1) {
-                const comp_offset = lig_base + 4 + ci * 2;
-                if (comp_offset + 2 > data.len) {
-                    components_match = false;
-                    break;
-                }
-                const expected = parser.readU16(data, comp_offset) catch {
-                    components_match = false;
-                    break;
-                };
-                if (glyphs.items[i + 1 + ci] != expected) {
-                    components_match = false;
-                    break;
-                }
-            }
-
-            if (components_match) {
-                glyphs.items[i] = lig_glyph;
-                var removed: usize = 0;
-                while (removed < components_needed) : (removed += 1) {
-                    _ = glyphs.orderedRemove(i + 1);
-                }
-                matched = true;
-                break;
-            }
-        }
-
-        if (!matched) {
+        if (!applyLigatureSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag)) {
             i += 1;
         }
     }
 }
 
 fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) !void {
-    if (subtable_offset + 6 > data.len) return;
-    const format = parser.readU16(data, subtable_offset) catch return;
-    if (format != 1) return;
-
-    const cov_offset = parser.readU16(data, subtable_offset + 2) catch return;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, cov_offset)) catch return;
-    const seq_count = parser.readU16(data, subtable_offset + 4) catch return;
-
     var i: usize = glyphs.items.len;
     while (i > 0) {
         i -= 1;
-        const glyph_id = glyphs.items[i];
-        if (shouldSkipGlyph(gdef, glyph_id, lookup_flag)) continue;
-        const cov_idx = coverage.getCoverageIndex(glyph_id) orelse continue;
-        if (cov_idx >= seq_count) continue;
-
-        const seq_offset_pos = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-        if (seq_offset_pos + 2 > data.len) continue;
-        const seq_offset = parser.readU16(data, seq_offset_pos) catch continue;
-        const seq_base = subtable_offset + @as(usize, seq_offset);
-        if (seq_base + 2 > data.len) continue;
-
-        const glyph_count = parser.readU16(data, seq_base) catch continue;
-
-        if (glyph_count == 0) {
-            _ = glyphs.orderedRemove(i);
-        } else {
-            const first_sub = parser.readU16(data, seq_base + 2) catch continue;
-            glyphs.items[i] = first_sub;
-
-            var si: usize = 1;
-            while (si < glyph_count) : (si += 1) {
-                const sub_offset = seq_base + 2 + si * 2;
-                if (sub_offset + 2 > data.len) break;
-                const sub_glyph = parser.readU16(data, sub_offset) catch break;
-                try glyphs.insert(allocator, i + si, sub_glyph);
-            }
-        }
+        _ = try applyMultipleSubstAtPos(data, subtable_offset, glyphs, i, allocator, gdef, lookup_flag);
     }
 }
 
 fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
-    if (subtable_offset + 6 > data.len) return;
-    const format = parser.readU16(data, subtable_offset) catch return;
-    if (format != 1) return;
-
-    const cov_offset = parser.readU16(data, subtable_offset + 2) catch return;
-    const coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, cov_offset)) catch return;
-    const alt_set_count = parser.readU16(data, subtable_offset + 4) catch return;
-
-    for (glyphs.items) |*g| {
-        if (shouldSkipGlyph(gdef, g.*, lookup_flag)) continue;
-        const cov_idx = coverage.getCoverageIndex(g.*) orelse continue;
-        if (cov_idx >= alt_set_count) continue;
-
-        const alt_set_offset_pos = subtable_offset + 6 + @as(usize, cov_idx) * 2;
-        if (alt_set_offset_pos + 2 > data.len) continue;
-        const alt_set_offset = parser.readU16(data, alt_set_offset_pos) catch continue;
-        const alt_set_base = subtable_offset + @as(usize, alt_set_offset);
-        if (alt_set_base + 4 > data.len) continue;
-
-        const alt_count = parser.readU16(data, alt_set_base) catch continue;
-        if (alt_count == 0) continue;
-
-        const first_alt = parser.readU16(data, alt_set_base + 2) catch continue;
-        g.* = first_alt;
+    var i: usize = 0;
+    while (i < glyphs.items.len) : (i += 1) {
+        _ = applyAlternateSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag);
     }
 }
 

@@ -36,16 +36,13 @@ pub const FvarTable = struct {
         const axis_end = std.math.add(usize, offset, @as(usize, self.axis_size)) catch return error.UnexpectedEof;
         if (axis_end > self.data.len or self.axis_size < 20) return error.UnexpectedEof;
         const tag = self.data[offset..][0..4].*;
-        const min_raw = try parser.readI32(self.data, offset + 4);
-        const default_raw = try parser.readI32(self.data, offset + 8);
-        const max_raw = try parser.readI32(self.data, offset + 12);
         const flags = try parser.readU16(self.data, offset + 16);
         const axis_name_id = try parser.readU16(self.data, offset + 18);
         return .{
             .tag = tag,
-            .min_value = @as(f32, @floatFromInt(min_raw)) / 65536.0,
-            .default_value = @as(f32, @floatFromInt(default_raw)) / 65536.0,
-            .max_value = @as(f32, @floatFromInt(max_raw)) / 65536.0,
+            .min_value = try parser.readFixed(self.data, offset + 4),
+            .default_value = try parser.readFixed(self.data, offset + 8),
+            .max_value = try parser.readFixed(self.data, offset + 12),
             .flags = flags,
             .axis_name_id = axis_name_id,
         };
@@ -101,8 +98,7 @@ pub const FvarTable = struct {
         const coords = try allocator.alloc(f32, self.axis_count);
         errdefer allocator.free(coords);
         for (0..self.axis_count) |i| {
-            const raw = try parser.readI32(self.data, inst_offset + 4 + i * 4);
-            coords[i] = @as(f32, @floatFromInt(raw)) / 65536.0;
+            coords[i] = try parser.readFixed(self.data, inst_offset + 4 + i * 4);
         }
 
         const min_ps_instance_size = std.math.add(usize, coords_size, 6) catch return error.UnexpectedEof;

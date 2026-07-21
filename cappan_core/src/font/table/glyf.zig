@@ -118,6 +118,47 @@ pub const GlyfTable = struct {
         return number_of_contours < 0;
     }
 
+    pub const GlyphHeader = struct {
+        /// True whenever `loca` resolved a valid, in-bounds glyph location for
+        /// this glyph_id (even an empty one, e.g. space) -- false only if the
+        /// lookup itself failed or the location was out of bounds. This is
+        /// tracked separately from whether the header fields below could
+        /// actually be read, since a well-formed non-empty glyph always has at
+        /// least a 10-byte header, but this stays lenient (matching this
+        /// function's prior inlined callers) for malformed/truncated input:
+        /// if the glyph's data is shorter than 10 bytes, `has_outline` is still
+        /// true but the header fields default to 0 rather than erroring.
+        has_outline: bool,
+        number_of_contours: i16 = 0,
+        x_min: i16 = 0,
+        y_min: i16 = 0,
+        x_max: i16 = 0,
+        y_max: i16 = 0,
+    };
+
+    /// Reads a glyph's 10-byte header (numberOfContours, xMin, yMin, xMax,
+    /// yMax) via `loca`, without parsing the rest of the glyph body. Shared by
+    /// callers that only need bounding-box/contour-count/simple-vs-compound
+    /// info and don't need the full parsed outline (e.g. cappan_inspect's
+    /// glyph_info.zig, which used to re-derive this via its own raw
+    /// `std.mem.readInt` calls).
+    pub fn getGlyphHeader(self: GlyfTable, glyph_id: u16, loca: loca_mod.LocaTable) GlyphHeader {
+        const loc = loca.getGlyphLocation(glyph_id) catch return .{ .has_outline = false };
+        if (loc.length == 0) return .{ .has_outline = false };
+        const end = std.math.add(usize, @as(usize, loc.offset), @as(usize, loc.length)) catch return .{ .has_outline = false };
+        if (end > self.data.len) return .{ .has_outline = false };
+        const glyph_data = self.data[loc.offset..end];
+        if (glyph_data.len < 10) return .{ .has_outline = true };
+        return .{
+            .has_outline = true,
+            .number_of_contours = parser.readI16(glyph_data, 0) catch return .{ .has_outline = true },
+            .x_min = parser.readI16(glyph_data, 2) catch return .{ .has_outline = true },
+            .y_min = parser.readI16(glyph_data, 4) catch return .{ .has_outline = true },
+            .x_max = parser.readI16(glyph_data, 6) catch return .{ .has_outline = true },
+            .y_max = parser.readI16(glyph_data, 8) catch return .{ .has_outline = true },
+        };
+    }
+
     pub fn getComponentInfos(self: GlyfTable, allocator: std.mem.Allocator, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!?[]ComponentInfo {
         const loc = try loca.getGlyphLocation(glyph_id);
         if (loc.length == 0) return null;
@@ -188,6 +229,35 @@ pub const GlyfTable = struct {
         return try components.toOwnedSlice(allocator);
     }
 
+    pub fn appendTransformedComponentContours(
+        allocator: std.mem.Allocator,
+        all_contours: *std.ArrayList(glyph_mod.Contour),
+        comp: ComponentInfo,
+        component: glyph_mod.GlyphOutline,
+    ) !void {
+        for (component.contours) |contour| {
+            const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
+            for (contour.points, 0..) |pt, i| {
+                if (comp.has_transform) {
+                    const fx = @as(f32, @floatFromInt(pt.x));
+                    const fy = @as(f32, @floatFromInt(pt.y));
+                    new_points[i] = .{
+                        .x = @as(i16, @intFromFloat(@round(comp.mat_a * fx + comp.mat_c * fy))) + comp.dx,
+                        .y = @as(i16, @intFromFloat(@round(comp.mat_b * fx + comp.mat_d * fy))) + comp.dy,
+                        .on_curve = pt.on_curve,
+                    };
+                } else {
+                    new_points[i] = .{
+                        .x = pt.x + comp.dx,
+                        .y = pt.y + comp.dy,
+                        .on_curve = pt.on_curve,
+                    };
+                }
+            }
+            try all_contours.append(allocator, .{ .points = new_points });
+        }
+    }
+
     pub fn getGlyphOutline(self: GlyfTable, allocator: std.mem.Allocator, glyph_id: u16, loca: loca_mod.LocaTable) GlyfError!?glyph_mod.GlyphOutline {
         return self.getGlyphOutlineRecursive(allocator, glyph_id, loca, 0);
     }
@@ -210,7 +280,7 @@ pub const GlyfTable = struct {
         if (number_of_contours >= 0) {
             return try self.parseSimpleGlyph(allocator, glyph_data, @intCast(number_of_contours), x_min, y_min, x_max, y_max);
         } else {
-            return try self.parseCompoundGlyph(allocator, glyph_data, loca, x_min, y_min, x_max, y_max, depth);
+            return try self.parseCompoundGlyph(allocator, glyph_id, glyph_data, loca, x_min, y_min, x_max, y_max, depth);
         }
     }
 
@@ -355,6 +425,7 @@ pub const GlyfTable = struct {
     fn parseCompoundGlyph(
         self: GlyfTable,
         allocator: std.mem.Allocator,
+        glyph_id: u16,
         glyph_data: []const u8,
         loca: loca_mod.LocaTable,
         x_min: i16,
@@ -363,87 +434,18 @@ pub const GlyfTable = struct {
         y_max: i16,
         depth: u32,
     ) !glyph_mod.GlyphOutline {
-        var offset: usize = 10;
+        _ = glyph_data;
+        const components = (try self.getComponentInfos(allocator, glyph_id, loca)) orelse return error.InvalidGlyphData;
+        defer allocator.free(components);
+
         var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
         defer all_contours.deinit(allocator);
 
-        var flags: u16 = MORE_COMPONENTS;
-        while (flags & MORE_COMPONENTS != 0) {
-            flags = try parser.readU16(glyph_data, offset);
-            offset += 2;
-            const component_glyph_id = try parser.readU16(glyph_data, offset);
-            offset += 2;
-
-            var dx: i16 = 0;
-            var dy: i16 = 0;
-
-            if (flags & ARGS_ARE_XY_VALUES != 0) {
-                if (flags & ARG_1_AND_2_ARE_WORDS != 0) {
-                    dx = try parser.readI16(glyph_data, offset);
-                    dy = try parser.readI16(glyph_data, offset + 2);
-                    offset += 4;
-                } else {
-                    dx = @as(i16, try parser.readI8(glyph_data, offset));
-                    dy = @as(i16, try parser.readI8(glyph_data, offset + 1));
-                    offset += 2;
-                }
-            } else {
-                // Point number args (skip for now, just read the bytes)
-                if (flags & ARG_1_AND_2_ARE_WORDS != 0) {
-                    offset += 4;
-                } else {
-                    offset += 2;
-                }
-            }
-
-            // Read transform matrix (defaults to identity)
-            var mat_a: f32 = 1.0;
-            var mat_b: f32 = 0.0;
-            var mat_c: f32 = 0.0;
-            var mat_d: f32 = 1.0;
-            const has_transform = (flags & (WE_HAVE_A_SCALE | WE_HAVE_AN_X_AND_Y_SCALE | WE_HAVE_A_TWO_BY_TWO)) != 0;
-
-            if (flags & WE_HAVE_A_SCALE != 0) {
-                mat_a = try parser.readF2Dot14(glyph_data, offset);
-                mat_d = mat_a;
-                offset += 2;
-            } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE != 0) {
-                mat_a = try parser.readF2Dot14(glyph_data, offset);
-                mat_d = try parser.readF2Dot14(glyph_data, offset + 2);
-                offset += 4;
-            } else if (flags & WE_HAVE_A_TWO_BY_TWO != 0) {
-                mat_a = try parser.readF2Dot14(glyph_data, offset);
-                mat_b = try parser.readF2Dot14(glyph_data, offset + 2);
-                mat_c = try parser.readF2Dot14(glyph_data, offset + 4);
-                mat_d = try parser.readF2Dot14(glyph_data, offset + 6);
-                offset += 8;
-            }
-
-            // Recursively get component outline
-            if (try self.getGlyphOutlineRecursive(allocator, component_glyph_id, loca, depth + 1)) |component_const| {
+        for (components) |comp| {
+            if (try self.getGlyphOutlineRecursive(allocator, comp.glyph_id, loca, depth + 1)) |component_const| {
                 var component = component_const;
                 defer component.deinit();
-                for (component.contours) |contour| {
-                    const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
-                    for (contour.points, 0..) |pt, i| {
-                        if (has_transform) {
-                            const fx = @as(f32, @floatFromInt(pt.x));
-                            const fy = @as(f32, @floatFromInt(pt.y));
-                            new_points[i] = .{
-                                .x = @as(i16, @intFromFloat(@round(mat_a * fx + mat_c * fy))) + dx,
-                                .y = @as(i16, @intFromFloat(@round(mat_b * fx + mat_d * fy))) + dy,
-                                .on_curve = pt.on_curve,
-                            };
-                        } else {
-                            new_points[i] = .{
-                                .x = pt.x + dx,
-                                .y = pt.y + dy,
-                                .on_curve = pt.on_curve,
-                            };
-                        }
-                    }
-                    try all_contours.append(allocator, .{ .points = new_points });
-                }
+                try appendTransformedComponentContours(allocator, &all_contours, comp, component);
             }
         }
 
