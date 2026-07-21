@@ -651,7 +651,11 @@ test "renderTextMtsdf: variation coords change output" {
     const fonts = [_]font_mod.Font{font};
     var bitmap_default = try renderTextMtsdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0 });
     defer bitmap_default.deinit();
-    const normalized = [_]f32{1.0};
+    // Same contract note as sdf.zig's equivalent test: apply avar directly to
+    // this raw axis value, since normalized_coords expects final (already
+    // avar-mapped) coordinates.
+    var normalized = [_]f32{1.0};
+    if (font.avar) |avar| try avar.mapNormalizedCoords(&normalized);
     var bitmap_bold = try renderTextMtsdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0, .normalized_coords = &normalized });
     defer bitmap_bold.deinit();
     var differs = bitmap_default.width != bitmap_bold.width or bitmap_default.height != bitmap_bold.height;

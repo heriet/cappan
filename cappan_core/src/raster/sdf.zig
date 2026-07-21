@@ -607,7 +607,12 @@ test "renderTextSdf: --variation coords change the SDF output" {
     var bitmap_default = try renderTextSdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0 });
     defer bitmap_default.deinit();
 
-    const normalized = [_]f32{1.0};
+    // normalized_coords' contract is "final normalized coords, already
+    // avar-mapped" (same as Font.computeNormalizedCoords' output -- see its
+    // doc) -- apply avar directly to this raw axis value to match that
+    // contract, same as font.zig's "Variable Font gvar apply deltas" test.
+    var normalized = [_]f32{1.0};
+    if (font.avar) |avar| try avar.mapNormalizedCoords(&normalized);
     var bitmap_bold = try renderTextSdf(allocator, &fonts, "A", .{
         .pixel_size = 96.0,
         .spread = 8.0,
