@@ -1583,6 +1583,8 @@ test "word wrap preserves mark-to-mark y anchor (I4b)" {
 
 test "vertical styled layout honors span.font_index (I5)" {
     if (comptime !ft.enable_vertical) return error.SkipZigTest;
+    // font1 below is a CFF/OTF font; skip when CFF is compiled out.
+    if (comptime !ft.enable_cff) return error.SkipZigTest;
     // Two genuinely different fonts (not the same font loaded twice) so a
     // resolved glyph_id actually distinguishes "which font resolved this" --
     // before the fix, `layoutStyledTextVertical` ignored `span.font_index`
