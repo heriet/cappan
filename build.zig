@@ -20,6 +20,8 @@ pub fn build(b: *std.Build) void {
     const enable_sdf = b.option(bool, "enable_sdf", "Enable SDF glyph rendering") orelse true;
 
     const feature_options = b.addOptions();
+    // Single source of truth for the version: the package manifest.
+    feature_options.addOption([]const u8, "version", @import("build.zig.zon").version);
     feature_options.addOption(bool, "enable_cff", enable_cff);
     feature_options.addOption(bool, "enable_opentype_layout", enable_opentype_layout);
     feature_options.addOption(bool, "enable_color", enable_color);

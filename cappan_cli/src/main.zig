@@ -25,7 +25,13 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
 
-    if (std.mem.eql(u8, subcmd, "render")) {
+    if (std.mem.eql(u8, subcmd, "version") or
+        std.mem.eql(u8, subcmd, "--version") or
+        std.mem.eql(u8, subcmd, "-V"))
+    {
+        std.debug.print("cappan {s}\n", .{cappan_core.version});
+        return;
+    } else if (std.mem.eql(u8, subcmd, "render")) {
         try render_cmd.cmdRender(allocator, io, &args);
     } else if (std.mem.eql(u8, subcmd, "animate")) {
         if (comptime !ft.enable_incremental) {
@@ -62,6 +68,7 @@ const usage_header =
     \\  svg        Convert text to SVG file with vector paths
     \\  metrics    Show CSS font metrics and compare fonts
     \\  atlas      Generate an SDF/MSDF glyph atlas (PNG pages + metrics JSON)
+    \\  version    Print the cappan version
     \\
     \\cappan render --font <path> --text <string> --output <path.png> [options]
     \\cappan animate --font <path> --text <string> --output <path.apng> [options]

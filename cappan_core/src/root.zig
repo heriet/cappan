@@ -4,6 +4,9 @@ const ft = @import("features.zig").features;
 pub const err = @import("error.zig");
 pub const features = @import("features.zig");
 
+/// Package version, sourced from build.zig.zon via build_options.
+pub const version = @import("build_options").version;
+
 pub const font = struct {
     pub const parser = @import("font/parser.zig");
     pub const glyph = @import("font/glyph.zig");
