@@ -3,10 +3,10 @@ const parser = @import("../parser.zig");
 const otlayout = @import("otlayout.zig");
 const gdef_mod = @import("gdef.zig");
 
-fn shouldSkipGlyph(gdef: ?gdef_mod.GdefTable, glyph_id: u16, lookup_flag: u16) bool {
+fn shouldSkipGlyph(gdef: ?gdef_mod.GdefTable, glyph_id: u16, lookup_flag: u16, mark_filtering_set: ?u16) bool {
     if (lookup_flag & 0xFFFE == 0) return false;
     const g = gdef orelse return false;
-    return g.shouldSkipGlyph(glyph_id, lookup_flag, null);
+    return g.shouldSkipGlyph(glyph_id, lookup_flag, mark_filtering_set);
 }
 
 fn advanceAfterNestedLookup(pos: usize, consumed: u16, old_len: usize, new_len: usize) usize {
@@ -107,10 +107,10 @@ pub const GsubTable = struct {
             }
 
             switch (effective_type) {
-                1 => applySingleSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
-                2 => try applyMultipleSubst(self.data, effective_offset, glyphs, allocator, self.gdef, info.lookup_flag),
-                3 => applyAlternateSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
-                4 => applyLigatureSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag),
+                1 => applySingleSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag, info.mark_filtering_set),
+                2 => try applyMultipleSubst(self.data, effective_offset, glyphs, allocator, self.gdef, info.lookup_flag, info.mark_filtering_set),
+                3 => applyAlternateSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag, info.mark_filtering_set),
+                4 => applyLigatureSubst(self.data, effective_offset, glyphs, self.gdef, info.lookup_flag, info.mark_filtering_set),
                 5 => try self.applyContextSubst(allocator, effective_offset, glyphs),
                 6 => try self.applyChainingContextSubst(allocator, effective_offset, glyphs),
                 else => {},
@@ -577,16 +577,16 @@ pub const GsubTable = struct {
 
             switch (effective_type) {
                 1 => {
-                    if (applySingleSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
+                    if (applySingleSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag, info.mark_filtering_set)) return;
                 },
                 2 => {
-                    if (try applyMultipleSubstAtPos(self.data, effective_offset, glyphs, pos, allocator, self.gdef, info.lookup_flag)) return;
+                    if (try applyMultipleSubstAtPos(self.data, effective_offset, glyphs, pos, allocator, self.gdef, info.lookup_flag, info.mark_filtering_set)) return;
                 },
                 3 => {
-                    if (applyAlternateSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
+                    if (applyAlternateSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag, info.mark_filtering_set)) return;
                 },
                 4 => {
-                    if (applyLigatureSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag)) return;
+                    if (applyLigatureSubstAtPos(self.data, effective_offset, glyphs, pos, self.gdef, info.lookup_flag, info.mark_filtering_set)) return;
                 },
                 else => {},
             }
@@ -594,40 +594,40 @@ pub const GsubTable = struct {
     }
 };
 
-fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
+fn applySingleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) void {
     var i: usize = 0;
     while (i < glyphs.items.len) : (i += 1) {
-        _ = applySingleSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag);
+        _ = applySingleSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag, mark_filtering_set);
     }
 }
 
-fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
+fn applyLigatureSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) void {
     var i: usize = 0;
     while (i < glyphs.items.len) {
-        if (!applyLigatureSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag)) {
+        if (!applyLigatureSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag, mark_filtering_set)) {
             i += 1;
         }
     }
 }
 
-fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) !void {
+fn applyMultipleSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) !void {
     var i: usize = glyphs.items.len;
     while (i > 0) {
         i -= 1;
-        _ = try applyMultipleSubstAtPos(data, subtable_offset, glyphs, i, allocator, gdef, lookup_flag);
+        _ = try applyMultipleSubstAtPos(data, subtable_offset, glyphs, i, allocator, gdef, lookup_flag, mark_filtering_set);
     }
 }
 
-fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16) void {
+fn applyAlternateSubst(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) void {
     var i: usize = 0;
     while (i < glyphs.items.len) : (i += 1) {
-        _ = applyAlternateSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag);
+        _ = applyAlternateSubstAtPos(data, subtable_offset, glyphs, i, gdef, lookup_flag, mark_filtering_set);
     }
 }
 
-fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
+fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) bool {
     if (pos >= glyphs.items.len) return false;
-    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag, mark_filtering_set)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     const cov_offset = parser.readU16(data, subtable_offset + 2) catch return false;
@@ -654,9 +654,9 @@ fn applySingleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.
     }
 }
 
-fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) !bool {
+fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, allocator: std.mem.Allocator, gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) !bool {
     if (pos >= glyphs.items.len) return false;
-    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag, mark_filtering_set)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -695,9 +695,9 @@ fn applyMultipleSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *st
     return true;
 }
 
-fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
+fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) bool {
     if (pos >= glyphs.items.len) return false;
-    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag, mark_filtering_set)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -723,9 +723,9 @@ fn applyAlternateSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *s
     return true;
 }
 
-fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16) bool {
+fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *std.ArrayListUnmanaged(u16), pos: usize, gdef: ?gdef_mod.GdefTable, lookup_flag: u16, mark_filtering_set: ?u16) bool {
     if (pos >= glyphs.items.len) return false;
-    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag)) return false;
+    if (shouldSkipGlyph(gdef, glyphs.items[pos], lookup_flag, mark_filtering_set)) return false;
     if (subtable_offset + 6 > data.len) return false;
     const format = parser.readU16(data, subtable_offset) catch return false;
     if (format != 1) return false;
@@ -838,7 +838,7 @@ test "LigatureSubst with componentCount=1 self-map terminates (no infinite loop)
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{5});
 
     // Before the fix this call never returns; with the fix it returns promptly.
-    applyLigatureSubst(&data, 0, &glyphs, null, 0);
+    applyLigatureSubst(&data, 0, &glyphs, null, 0, null);
 
     try std.testing.expectEqual(@as(usize, 1), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
@@ -859,7 +859,7 @@ test "Single Substitution Format 1: delta" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 10, 15, 20, 30 });
 
-    applySingleSubst(&data, 0, &glyphs, null, 0);
+    applySingleSubst(&data, 0, &glyphs, null, 0, null);
 
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[0]);
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[1]);
@@ -884,7 +884,7 @@ test "Single Substitution Format 2: direct mapping" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 10, 15, 20 });
 
-    applySingleSubst(&data, 0, &glyphs, null, 0);
+    applySingleSubst(&data, 0, &glyphs, null, 0, null);
 
     try std.testing.expectEqual(@as(u16, 100), glyphs.items[0]);
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[1]);
@@ -911,7 +911,7 @@ test "Ligature Substitution: f + i -> fi" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 40, 41, 42 });
 
-    applyLigatureSubst(&data, 0, &glyphs, null, 0);
+    applyLigatureSubst(&data, 0, &glyphs, null, 0, null);
 
     try std.testing.expectEqual(@as(usize, 2), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 99), glyphs.items[0]);
@@ -1000,7 +1000,7 @@ test "Multiple Substitution: 1 glyph to 3 glyphs" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 5, 10, 15 });
 
-    try applyMultipleSubst(&data, 0, &glyphs, std.testing.allocator, null, 0);
+    try applyMultipleSubst(&data, 0, &glyphs, std.testing.allocator, null, 0, null);
 
     try std.testing.expectEqual(@as(usize, 5), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
@@ -1028,12 +1028,86 @@ test "Alternate Substitution: glyph 10 to first alternate 100" {
     defer glyphs.deinit(std.testing.allocator);
     try glyphs.appendSlice(std.testing.allocator, &[_]u16{ 5, 10, 15 });
 
-    applyAlternateSubst(&data, 0, &glyphs, null, 0);
+    applyAlternateSubst(&data, 0, &glyphs, null, 0, null);
 
     try std.testing.expectEqual(@as(usize, 3), glyphs.items.len);
     try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
     try std.testing.expectEqual(@as(u16, 100), glyphs.items[1]);
     try std.testing.expectEqual(@as(u16, 15), glyphs.items[2]);
+}
+
+test "GSUB useMarkFilteringSet: only marks in the GDEF MarkGlyphSet participate (I7)" {
+    // GDEF: glyphs 10 and 11 are both classified as marks (class 3), but only
+    // glyph 10 is a member of MarkGlyphSet index 0.
+    const gdef_data = [_]u8{
+        // header (14 bytes, minorVersion=2 to enable markGlyphSetsDefOffset)
+        0x00, 0x01, // majorVersion = 1
+        0x00, 0x02, // minorVersion = 2
+        0x00, 0x0E, // glyphClassDefOffset = 14
+        0x00, 0x00, // attachListOffset = 0
+        0x00, 0x00, // ligCaretListOffset = 0
+        0x00, 0x00, // markAttachClassDefOffset = 0
+        0x00, 0x18, // markGlyphSetsDefOffset = 24
+        // GlyphClassDef Format 1 @ 14
+        0x00, 0x01, // format = 1
+        0x00, 0x0A, // startGlyphID = 10
+        0x00, 0x02, // glyphCount = 2
+        0x00, 0x03, // glyph 10 = mark (3)
+        0x00, 0x03, // glyph 11 = mark (3)
+        // MarkGlyphSetsTable @ 24 (format(2) + markGlyphSetCount(2) + coverageOffsets[1](4) = 8 bytes)
+        0x00, 0x01, // format = 1
+        0x00, 0x01, // markGlyphSetCount = 1
+        0x00, 0x00, 0x00, 0x08, // coverageOffsets[0] = 8 (relative to offset 24 -> absolute 32)
+        // Coverage (Format 1) @ 32: only glyph 10 is in the set
+        0x00, 0x01, // format = 1
+        0x00, 0x01, // glyphCount = 1
+        0x00, 0x0A, // glyph 10
+    };
+    const gdef = try gdef_mod.parse(&gdef_data);
+
+    // GSUB: a single lookup (type 1, single subst, delta +100) with
+    // lookupFlag = 0x0010 (useMarkFilteringSet) and markFilteringSet = 0.
+    // Coverage includes both glyph 10 and glyph 11, so without mark-set
+    // filtering both would substitute; with it, only glyph 10 (a member of
+    // the set) should.
+    const gsub_data = [_]u8{
+        // LookupList @ 0
+        0x00, 0x01, // lookupCount = 1
+        0x00, 0x04, // lookupOffsets[0] = 4
+        // Lookup table @ 4
+        0x00, 0x01, // lookupType = 1 (single subst)
+        0x00, 0x10, // lookupFlag = 0x0010 (useMarkFilteringSet)
+        0x00, 0x01, // subTableCount = 1
+        0x00, 0x0A, // subtableOffsets[0] = 10 (relative to Lookup table start @4 -> absolute 14)
+        0x00, 0x00, // markFilteringSet = 0
+        // SingleSubst Format 1 @ 14
+        0x00, 0x01, // format = 1
+        0x00, 0x06, // coverageOffset = 6 (relative to subtable start @14 -> absolute 20)
+        0x00, 0x64, // deltaGlyphID = +100
+        // Coverage (Format 1) @ 20
+        0x00, 0x01, // format = 1
+        0x00, 0x02, // glyphCount = 2
+        0x00, 0x0A, // glyph 10
+        0x00, 0x0B, // glyph 11
+    };
+
+    const gsub = GsubTable{
+        .data = &gsub_data,
+        .script_list_offset = 0,
+        .feature_list_offset = 0,
+        .lookup_list_offset = 0,
+        .gdef = gdef,
+    };
+
+    const input = [_]u16{ 10, 11 };
+    const result = try gsub.applyLookupIndices(std.testing.allocator, &[_]u16{0}, &input);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    // glyph 10 is in the mark filtering set -> participates -> substituted (+100).
+    try std.testing.expectEqual(@as(u16, 110), result[0]);
+    // glyph 11 is a mark but NOT in the mark filtering set -> skipped -> unchanged.
+    try std.testing.expectEqual(@as(u16, 11), result[1]);
 }
 
 test "GSUB chaining context with DejaVuSans" {
