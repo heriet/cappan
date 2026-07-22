@@ -1,6 +1,6 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
-const os2_mod = @import("os2.zig");
+const os2_mod = cappan_core.font.table.os2;
 
 pub const PdfFontInfo = struct {
     postscript_name: []const u8,
@@ -82,7 +82,7 @@ pub fn getPdfFontInfo(
 
     var stem_v: i16 = 80;
     if (os2) |o| {
-        const w: i32 = @intCast(o.weight_class);
+        const w: i32 = @intCast(o.us_weight_class);
         stem_v = @intCast(50 + @divTrunc(w, 65) * @divTrunc(w, 65));
     }
 
@@ -104,6 +104,21 @@ pub fn getPdfFontInfo(
     };
 }
 
+/// Scales a glyph's font-unit advance width to PDF's fixed 1000-unit glyph
+/// space (`advance_width * 1000 / unitsPerEm`), guarding two ways a
+/// malformed/untrusted font can otherwise crash this (I10):
+/// - `upm == 0` would divide by zero -- treated as an unscalable glyph (0)
+///   rather than panicking.
+/// - A small-but-nonzero upm combined with a large advance_width can produce
+///   a scaled value that overflows u16 (max advance_width 65535 * 1000 /
+///   minimum legal upm 16 ≈ 4.1M) -- clamped to u16's range instead of
+///   truncating (which would otherwise panic on the `@intCast`).
+fn scaleAdvanceToPdfWidth(advance_width: u16, upm: u16) u16 {
+    if (upm == 0) return 0;
+    const scaled: u32 = @as(u32, advance_width) * 1000 / @as(u32, upm);
+    return @intCast(@min(scaled, std.math.maxInt(u16)));
+}
+
 pub fn getGlyphWidths(
     allocator: std.mem.Allocator,
     font: cappan_core.font.Font,
@@ -117,7 +132,7 @@ pub fn getGlyphWidths(
     for (codepoints) |cp| {
         const glyph_id = font.getGlyphId(@intCast(cp)) catch continue;
         const metrics = font.getHMetrics(glyph_id) catch continue;
-        const width_1000: u16 = @intCast(@as(u32, metrics.advance_width) * 1000 / @as(u32, upm));
+        const width_1000: u16 = scaleAdvanceToPdfWidth(metrics.advance_width, upm);
         try widths.append(allocator, .{
             .codepoint = cp,
             .glyph_id = glyph_id,
@@ -184,6 +199,23 @@ test "getGlyphWidths" {
         try std.testing.expect(w.width > 0);
         try std.testing.expect(w.glyph_id != 0);
     }
+}
+
+test "scaleAdvanceToPdfWidth: upm=0 returns 0 instead of dividing by zero (I10)" {
+    try std.testing.expectEqual(@as(u16, 0), scaleAdvanceToPdfWidth(500, 0));
+    try std.testing.expectEqual(@as(u16, 0), scaleAdvanceToPdfWidth(65535, 0));
+}
+
+test "scaleAdvanceToPdfWidth: large advance + small upm clamps instead of overflowing u16 (I10)" {
+    // 65535 * 1000 / 16 ≈ 4,095,937 -- vastly exceeds u16's range.
+    try std.testing.expectEqual(@as(u16, std.math.maxInt(u16)), scaleAdvanceToPdfWidth(65535, 16));
+}
+
+test "scaleAdvanceToPdfWidth: normal values unchanged by the fix" {
+    // 500 * 1000 / 1000 == 500 (unitsPerEm=1000, a common convention).
+    try std.testing.expectEqual(@as(u16, 500), scaleAdvanceToPdfWidth(500, 1000));
+    // 1024 * 1000 / 2048 == 500 (unitsPerEm=2048, DejaVuSans's convention).
+    try std.testing.expectEqual(@as(u16, 500), scaleAdvanceToPdfWidth(1024, 2048));
 }
 
 test "buildCidToGidMap" {

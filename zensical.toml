@@ -7,9 +7,20 @@ repo_url = "https://github.com/heriet/cappan"
 
 nav = [
   "index.md",
-  { Guide = ["guide/getting-started.md", "guide/cli.md", "guide/incremental-rendering.md", "guide/stroke-paint.md", "guide/developer-guide.md"] },
+  { Guide = [
+    "guide/cli.md",
+    "guide/incremental-rendering.md",
+    "guide/stroke-paint.md",
+    "guide/developer-guide.md",
+  ] },
   { Spec = [
-    { "cappan_core" = ["spec/cappan_core/overview.md", "spec/cappan_core/font.md", "spec/cappan_core/layout.md", "spec/cappan_core/raster.md", "spec/cappan_core/render.md"] },
+    { "cappan_core" = [
+      "spec/cappan_core/overview.md",
+      "spec/cappan_core/font.md",
+      "spec/cappan_core/layout.md",
+      "spec/cappan_core/raster.md",
+      "spec/cappan_core/render.md",
+    ] },
     "spec/cappan_cli.md",
     "spec/cappan_subset.md",
     "spec/cappan_embed.md",

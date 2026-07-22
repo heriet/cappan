@@ -402,43 +402,25 @@ pub const Font = struct {
         return self.hmtx.getMetrics(glyph_id);
     }
 
-    fn adjustCoordsForVariation(
-        self: Font,
-        normalized_coords: []const f32,
-        stack_buf: []f32,
-    ) !struct { coords: []f32, allocated: bool } {
-        var adjusted: []f32 = undefined;
-        var allocated = false;
-        if (normalized_coords.len <= stack_buf.len) {
-            @memcpy(stack_buf[0..normalized_coords.len], normalized_coords);
-            adjusted = stack_buf[0..normalized_coords.len];
-        } else {
-            const heap = try self.allocator.alloc(f32, normalized_coords.len);
-            @memcpy(heap, normalized_coords);
-            adjusted = heap;
-            allocated = true;
-        }
-
-        if (comptime ft.enable_variable) {
-            if (self.avar) |avar| {
-                try avar.mapNormalizedCoords(adjusted);
-            }
-        }
-
-        return .{ .coords = adjusted, .allocated = allocated };
-    }
-
+    /// All `*WithVariation` APIs below (this one, `getVMetricsWithVariation`,
+    /// `getMetricDelta`, `getGlyphOutlineWithVariation`) share one contract:
+    /// `normalized_coords` must already be the *final* normalized coordinates
+    /// -- fvar-normalized AND avar-mapped -- exactly what
+    /// `computeNormalizedCoords` returns. None of these apply avar
+    /// themselves; there is exactly one avar application site in this file
+    /// (`computeNormalizedCoords`). A previous version of this code re-ran
+    /// avar here via a since-removed `adjustCoordsForVariation` helper,
+    /// double-applying it for every real caller (all of which already pass
+    /// `computeNormalizedCoords`'s output) -- see the regression test
+    /// "single vs double avar application" below.
     pub fn getHMetricsWithVariation(self: Font, glyph_id: u16, normalized_coords: []const f32) !hmtx_mod.HMetrics {
         var metrics = try self.hmtx.getMetrics(glyph_id);
         if (comptime ft.enable_variable) {
             if (self.hvar) |hvar| {
-                var buf: [16]f32 = undefined;
-                const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-                defer if (adj.allocated) self.allocator.free(adj.coords);
-                const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, adj.coords);
+                const aw_delta = try hvar.getAdvanceWidthDelta(glyph_id, normalized_coords);
                 const new_aw = @as(i32, metrics.advance_width) + aw_delta;
                 metrics.advance_width = @as(u16, @intCast(std.math.clamp(new_aw, 0, std.math.maxInt(u16))));
-                const lsb_delta = try hvar.getLsbDelta(glyph_id, adj.coords);
+                const lsb_delta = try hvar.getLsbDelta(glyph_id, normalized_coords);
                 const new_lsb = @as(i32, metrics.lsb) + lsb_delta;
                 metrics.lsb = @as(i16, @intCast(std.math.clamp(new_lsb, std.math.minInt(i16), std.math.maxInt(i16))));
             }
@@ -463,13 +445,10 @@ pub const Font = struct {
         var metrics = (try self.getVMetrics(glyph_id)) orelse return null;
         if (comptime ft.enable_variable) {
             if (self.vvar) |vvar| {
-                var buf: [16]f32 = undefined;
-                const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-                defer if (adj.allocated) self.allocator.free(adj.coords);
-                const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, adj.coords);
+                const ah_delta = try vvar.getAdvanceHeightDelta(glyph_id, normalized_coords);
                 const new_ah = @as(i32, metrics.advance_height) + ah_delta;
                 metrics.advance_height = @as(u16, @intCast(std.math.clamp(new_ah, 0, std.math.maxInt(u16))));
-                const tsb_delta = try vvar.getTsbDelta(glyph_id, adj.coords);
+                const tsb_delta = try vvar.getTsbDelta(glyph_id, normalized_coords);
                 const new_tsb = @as(i32, metrics.tsb) + tsb_delta;
                 metrics.tsb = @as(i16, @intCast(std.math.clamp(new_tsb, std.math.minInt(i16), std.math.maxInt(i16))));
             }
@@ -480,11 +459,7 @@ pub const Font = struct {
     pub fn getMetricDelta(self: Font, tag: [4]u8, normalized_coords: []const f32) !i32 {
         if (comptime !ft.enable_variable) return 0;
         if (self.mvar) |mvar| {
-            var buf: [16]f32 = undefined;
-            const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-            defer if (adj.allocated) self.allocator.free(adj.coords);
-
-            return mvar.getMetricDelta(tag, adj.coords);
+            return mvar.getMetricDelta(tag, normalized_coords);
         }
         return 0;
     }
@@ -495,8 +470,11 @@ pub const Font = struct {
     }
 
     /// Normalize fvar user coordinates and apply avar mapping. Caller owns the returned slice.
-    /// The returned coordinates are already avar-adjusted; do not pass them to APIs such as
-    /// getHMetricsWithVariation/getVMetricsWithVariation that apply avar internally.
+    /// This is the *only* avar application site in this file: the returned coordinates are
+    /// the final normalized coordinates every `*WithVariation` API (getHMetricsWithVariation,
+    /// getVMetricsWithVariation, getMetricDelta, getGlyphOutlineWithVariation) expects to
+    /// receive as-is -- none of them apply avar themselves, so passing this function's output
+    /// straight through is always correct (not double-application).
     pub fn computeNormalizedCoords(self: Font, allocator: std.mem.Allocator, user_coords: []const f32) ![]f32 {
         if (comptime !ft.enable_variable) return error.VariableDisabled;
         const fvar = self.fvar orelse return error.NoFvar;
@@ -750,11 +728,7 @@ pub const Font = struct {
         normalized_coords: []const f32,
     ) !?glyph_mod.GlyphOutline {
         if (comptime !ft.enable_variable) return self.getGlyphOutline(allocator, glyph_id);
-        var buf: [16]f32 = undefined;
-        const adj = try self.adjustCoordsForVariation(normalized_coords, &buf);
-        defer if (adj.allocated) self.allocator.free(adj.coords);
-
-        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, adj.coords, 0);
+        return self.getGlyphOutlineWithVariationRecursive(allocator, glyph_id, normalized_coords, 0);
     }
 
     fn getGlyphOutlineWithVariationRecursive(
@@ -780,33 +754,21 @@ pub const Font = struct {
             }
 
             var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
-            defer all_contours.deinit(allocator);
+            // errdefer (not defer): success transfers ownership via
+            // toOwnedSlice; on error we must also free the point slices already
+            // appended so a malformed later component doesn't leak them.
+            errdefer {
+                for (all_contours.items) |contour| {
+                    if (contour.points.len > 0) allocator.free(contour.points);
+                }
+                all_contours.deinit(allocator);
+            }
 
             for (components) |comp| {
                 if (try self.getGlyphOutlineWithVariationRecursive(allocator, comp.glyph_id, adjusted_coords, depth + 1)) |component_outline_const| {
                     var component_outline = component_outline_const;
                     defer component_outline.deinit();
-                    for (component_outline.contours) |contour| {
-                        const new_points = try allocator.alloc(glyph_mod.Point, contour.points.len);
-                        for (contour.points, 0..) |pt, i| {
-                            if (comp.has_transform) {
-                                const fx = @as(f32, @floatFromInt(pt.x));
-                                const fy = @as(f32, @floatFromInt(pt.y));
-                                new_points[i] = .{
-                                    .x = @as(i16, @intFromFloat(@round(comp.mat_a * fx + comp.mat_c * fy))) + comp.dx,
-                                    .y = @as(i16, @intFromFloat(@round(comp.mat_b * fx + comp.mat_d * fy))) + comp.dy,
-                                    .on_curve = pt.on_curve,
-                                };
-                            } else {
-                                new_points[i] = .{
-                                    .x = pt.x + comp.dx,
-                                    .y = pt.y + comp.dy,
-                                    .on_curve = pt.on_curve,
-                                };
-                            }
-                        }
-                        try all_contours.append(allocator, .{ .points = new_points });
-                    }
+                    try glyf_mod.GlyfTable.appendTransformedComponentContours(allocator, &all_contours, comp, component_outline);
                 }
             }
 
@@ -983,7 +945,13 @@ test "Variable Font gvar apply deltas" {
     var outline_default = (try font.getGlyphOutline(std.testing.allocator, glyph_id)) orelse return error.TableNotFound;
     defer outline_default.deinit();
 
-    const normalized = [_]f32{1.0};
+    // getGlyphOutlineWithVariation's contract is "final normalized coords,
+    // already avar-mapped" (see computeNormalizedCoords's doc) -- apply avar
+    // here directly (rather than routing through computeNormalizedCoords,
+    // which starts from *user* coords, not a directly-set normalized value)
+    // to match that contract for this directly-set raw axis value.
+    var normalized = [_]f32{1.0};
+    if (font.avar) |avar| try avar.mapNormalizedCoords(&normalized);
     var outline_bold = (try font.getGlyphOutlineWithVariation(std.testing.allocator, glyph_id, &normalized)) orelse return error.TableNotFound;
     defer outline_bold.deinit();
 
@@ -999,4 +967,79 @@ test "Variable Font gvar apply deltas" {
         }
     }
     try std.testing.expect(differs);
+}
+
+// Regression test for the avar double-application bug: `getGlyphOutlineWithVariation`
+// used to re-run avar internally (via a since-removed `adjustCoordsForVariation`
+// helper) on top of coordinates that were, in every real call site, already
+// avar-mapped by `computeNormalizedCoords` -- silently applying avar twice.
+//
+// SourceSans3VF-Subset's avar segment map pins the axis endpoints (-1->-1,
+// 0->0, 1->1, required by the avar spec) but is genuinely non-linear in
+// between: 0.5 maps to ~0.543 on one application and ~0.577 on two (verified
+// directly against AvarTable.mapNormalizedCoord below), so this fixture can
+// actually distinguish single- from double-application -- unlike the
+// existing "Variable Font gvar apply deltas" test, which happens to probe
+// exactly 1.0 (a pinned, double-application-invariant point).
+//
+// Proof structure: `getGlyphOutlineWithVariation` is (after the fix) a
+// one-line delegate straight to the private `getGlyphOutlineWithVariationRecursive`
+// with the coordinates unchanged. Calling both with the *same*
+// once-avar-mapped coordinates and requiring byte-identical outlines directly
+// verifies the public entry point adds no further avar step -- if it did
+// (the pre-fix behavior), the public call's internal coordinates would be the
+// *twice*-mapped value while the direct recursive call's would stay
+// once-mapped, and the two outlines would differ.
+test "avar single- vs double-application: getGlyphOutlineWithVariation applies avar exactly once" {
+    if (comptime !ft.enable_variable) return;
+    const font_data = @embedFile("../fixture/SourceSans3VF-Subset.ttf");
+    var font = try Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+    const avar = font.avar orelse return error.SkipZigTest; // needs a non-identity avar to be meaningful
+
+    // Confirm this fixture's avar is genuinely non-identity at a non-pinned
+    // point, and that double application is numerically distinguishable from
+    // single -- otherwise this test would vacuously pass regardless of the bug.
+    const once_raw = try avar.mapNormalizedCoord(0, 0.5);
+    const twice_raw = try avar.mapNormalizedCoord(0, once_raw);
+    try std.testing.expect(@abs(once_raw - 0.5) > 0.01); // non-identity
+    try std.testing.expect(@abs(twice_raw - once_raw) > 0.01); // single != double
+
+    const glyph_id = try font.getGlyphId(0x0041);
+    var once_coords = [_]f32{0.5};
+    try avar.mapNormalizedCoords(&once_coords); // the contract: caller applies avar exactly once
+
+    var outline_via_public_api = (try font.getGlyphOutlineWithVariation(std.testing.allocator, glyph_id, &once_coords)) orelse return error.TableNotFound;
+    defer outline_via_public_api.deinit();
+
+    var outline_via_recursive_direct = (try font.getGlyphOutlineWithVariationRecursive(std.testing.allocator, glyph_id, &once_coords, 0)) orelse return error.TableNotFound;
+    defer outline_via_recursive_direct.deinit();
+
+    try std.testing.expectEqual(outline_via_recursive_direct.contours.len, outline_via_public_api.contours.len);
+    for (outline_via_recursive_direct.contours, outline_via_public_api.contours) |rc, pc| {
+        try std.testing.expectEqual(rc.points.len, pc.points.len);
+        for (rc.points, pc.points) |rp, pp| {
+            try std.testing.expectEqual(rp.x, pp.x);
+            try std.testing.expectEqual(rp.y, pp.y);
+        }
+    }
+
+    // And directly against a *manufactured* double-application outline, to
+    // show the bug (if reintroduced) would actually move the geometry, not
+    // just fail an internal-consistency check that could pass vacuously.
+    var double_coords = [_]f32{twice_raw};
+    var outline_double_applied = (try font.getGlyphOutlineWithVariationRecursive(std.testing.allocator, glyph_id, &double_coords, 0)) orelse return error.TableNotFound;
+    defer outline_double_applied.deinit();
+    var differs_from_double = outline_via_public_api.contours.len != outline_double_applied.contours.len;
+    if (!differs_from_double) {
+        outer: for (outline_via_public_api.contours, outline_double_applied.contours) |pc, dc| {
+            for (pc.points, dc.points) |pp, dp| {
+                if (pp.x != dp.x or pp.y != dp.y) {
+                    differs_from_double = true;
+                    break :outer;
+                }
+            }
+        }
+    }
+    try std.testing.expect(differs_from_double);
 }

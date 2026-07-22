@@ -11,12 +11,6 @@ pub const SubsetGlyfResult = struct {
     }
 };
 
-pub const MORE_COMPONENTS: u16 = 0x0020;
-pub const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
-pub const WE_HAVE_A_SCALE: u16 = 0x0008;
-pub const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
-pub const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
-
 pub fn subsetGlyf(
     allocator: std.mem.Allocator,
     glyf_data: []const u8,
@@ -59,29 +53,16 @@ pub fn subsetGlyf(
 
         const num_contours = try cappan_core.font.parser.readI16(glyph_bytes, 0);
         if (num_contours < 0) {
-            var offset: usize = 10;
-            var flags: u16 = MORE_COMPONENTS;
-            while (flags & MORE_COMPONENTS != 0) {
-                if (offset + 4 > dest.len) break;
-                flags = try cappan_core.font.parser.readU16(dest, offset);
-                offset += 2;
-                const old_id = try cappan_core.font.parser.readU16(dest, offset);
-                const new_id = if (old_id < mapping.len) mapping[old_id] else 0;
-                std.mem.writeInt(u16, dest[offset..][0..2], new_id, .big);
-                offset += 2;
-
-                if (flags & ARG_1_AND_2_ARE_WORDS != 0) {
-                    offset += 4;
-                } else {
-                    offset += 2;
-                }
-                if (flags & WE_HAVE_A_SCALE != 0) {
-                    offset += 2;
-                } else if (flags & WE_HAVE_AN_X_AND_Y_SCALE != 0) {
-                    offset += 4;
-                } else if (flags & WE_HAVE_A_TWO_BY_TWO != 0) {
-                    offset += 8;
-                }
+            // Remap each component's glyph id in place, one write per
+            // component at the offset the shared iterator reports --
+            // `dest` is a live copy of these bytes (memcpy'd above), so
+            // walking it via the iterator and writing back through
+            // `id_field_offset` is exactly the single-write remap the
+            // iterator's doc promises.
+            var it = cappan_core.font.table.glyf.GlyfTable.ComponentIterator.init(dest);
+            while (try it.next()) |item| {
+                const new_id = if (item.glyph_id < mapping.len) mapping[item.glyph_id] else 0;
+                std.mem.writeInt(u16, dest[item.id_field_offset..][0..2], new_id, .big);
             }
         }
 

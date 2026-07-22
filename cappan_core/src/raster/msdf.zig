@@ -444,6 +444,9 @@ pub fn renderTextMtsdf(
         return try rgba_mod.RgbaBitmap.init(allocator, 1, 1, .transparent);
     }
 
+    const max_bmp_dim: f32 = 16384.0;
+    if (!(bmp_width_f <= max_bmp_dim) or !(bmp_height_f <= max_bmp_dim)) return error.OutOfMemory;
+
     const bmp_width: u32 = @intFromFloat(bmp_width_f);
     const bmp_height: u32 = @intFromFloat(bmp_height_f);
     var bitmap = try rgba_mod.RgbaBitmap.init(allocator, bmp_width, bmp_height, .transparent);
@@ -651,7 +654,11 @@ test "renderTextMtsdf: variation coords change output" {
     const fonts = [_]font_mod.Font{font};
     var bitmap_default = try renderTextMtsdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0 });
     defer bitmap_default.deinit();
-    const normalized = [_]f32{1.0};
+    // Same contract note as sdf.zig's equivalent test: apply avar directly to
+    // this raw axis value, since normalized_coords expects final (already
+    // avar-mapped) coordinates.
+    var normalized = [_]f32{1.0};
+    if (font.avar) |avar| try avar.mapNormalizedCoords(&normalized);
     var bitmap_bold = try renderTextMtsdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0, .normalized_coords = &normalized });
     defer bitmap_bold.deinit();
     var differs = bitmap_default.width != bitmap_bold.width or bitmap_default.height != bitmap_bold.height;
@@ -757,4 +764,24 @@ test "MtsdfResult rejects invalid spread" {
     var contours: [1]glyph_mod.Contour = undefined;
     const outline = sdf_mod.testSquareOutline(&contours, &points, allocator);
     try std.testing.expectError(error.InvalidSdfSpread, generateGlyphMtsdf(allocator, outline, 0.1, .{ .spread = 0 }));
+}
+
+test "C16: renderTextMtsdf with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const allocator = std.testing.allocator;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(allocator, font_data, null);
+    defer font.deinit();
+    const fonts = [_]font_mod.Font{font};
+
+    try std.testing.expectError(error.OutOfMemory, renderTextMtsdf(allocator, &fonts, "AB", .{ .pixel_size = 1e9, .spread = 8.0 }));
+}
+
+test "C16: renderTextMtsdf with NaN pixel_size returns error.OutOfMemory instead of panicking" {
+    const allocator = std.testing.allocator;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(allocator, font_data, null);
+    defer font.deinit();
+    const fonts = [_]font_mod.Font{font};
+
+    try std.testing.expectError(error.OutOfMemory, renderTextMtsdf(allocator, &fonts, "AB", .{ .pixel_size = std.math.nan(f32), .spread = 8.0 }));
 }

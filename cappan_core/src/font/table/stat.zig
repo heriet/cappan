@@ -103,7 +103,7 @@ pub const StatTable = struct {
                     .axis_index = try parser.readU16(self.data, av_offset + 2),
                     .flags = try parser.readU16(self.data, av_offset + 4),
                     .value_name_id = try parser.readU16(self.data, av_offset + 6),
-                    .value = try readFixed(self.data, av_offset + 8),
+                    .value = try parser.readFixed(self.data, av_offset + 8),
                 } };
             },
             2 => {
@@ -111,9 +111,9 @@ pub const StatTable = struct {
                     .axis_index = try parser.readU16(self.data, av_offset + 2),
                     .flags = try parser.readU16(self.data, av_offset + 4),
                     .value_name_id = try parser.readU16(self.data, av_offset + 6),
-                    .nominal_value = try readFixed(self.data, av_offset + 8),
-                    .range_min_value = try readFixed(self.data, av_offset + 12),
-                    .range_max_value = try readFixed(self.data, av_offset + 16),
+                    .nominal_value = try parser.readFixed(self.data, av_offset + 8),
+                    .range_min_value = try parser.readFixed(self.data, av_offset + 12),
+                    .range_max_value = try parser.readFixed(self.data, av_offset + 16),
                 } };
             },
             3 => {
@@ -121,8 +121,8 @@ pub const StatTable = struct {
                     .axis_index = try parser.readU16(self.data, av_offset + 2),
                     .flags = try parser.readU16(self.data, av_offset + 4),
                     .value_name_id = try parser.readU16(self.data, av_offset + 6),
-                    .value = try readFixed(self.data, av_offset + 8),
-                    .linked_value = try readFixed(self.data, av_offset + 12),
+                    .value = try parser.readFixed(self.data, av_offset + 8),
+                    .linked_value = try parser.readFixed(self.data, av_offset + 12),
                 } };
             },
             4 => {
@@ -157,15 +157,10 @@ pub const StatTable = struct {
         if (rec_offset + 6 > self.data.len) return error.UnexpectedEof;
         return .{
             .axis_index = try parser.readU16(self.data, rec_offset),
-            .value = try readFixed(self.data, rec_offset + 2),
+            .value = try parser.readFixed(self.data, rec_offset + 2),
         };
     }
 };
-
-fn readFixed(data: []const u8, offset: usize) !f32 {
-    const raw = try parser.readI32(data, offset);
-    return @as(f32, @floatFromInt(raw)) / 65536.0;
-}
 
 pub fn parse(data: []const u8) !StatTable {
     if (data.len < 18) return error.UnexpectedEof;

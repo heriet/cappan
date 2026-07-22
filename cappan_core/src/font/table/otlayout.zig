@@ -328,6 +328,13 @@ pub const LookupInfo = struct {
     lookup_flag: u16,
     subtable_count: u16,
     base_offset: usize,
+    /// The lookup's markFilteringSet index (GDEF MarkGlyphSets), present only
+    /// when `lookup_flag`'s useMarkFilteringSet bit (0x0010) is set -- it is
+    /// the extra uint16 that follows `subtableOffsets[subtable_count]` in the
+    /// LookupTable layout. Null when the bit is unset or the field can't be
+    /// read (out-of-bounds), matching every other best-effort read in this
+    /// parser (I7).
+    mark_filtering_set: ?u16,
 };
 
 pub fn getLookupInfo(
@@ -346,11 +353,20 @@ pub fn getLookupInfo(
     const lo_base = ll_base + @as(usize, lo_offset);
     if (lo_base + 6 > data.len) return null;
 
+    const lookup_flag = parser.readU16(data, lo_base + 2) catch return null;
+    const subtable_count = parser.readU16(data, lo_base + 4) catch return null;
+
+    const mark_filtering_set: ?u16 = if (lookup_flag & 0x0010 != 0)
+        parser.readU16(data, lo_base + 6 + @as(usize, subtable_count) * 2) catch null
+    else
+        null;
+
     return .{
         .lookup_type = parser.readU16(data, lo_base) catch return null,
-        .lookup_flag = parser.readU16(data, lo_base + 2) catch return null,
-        .subtable_count = parser.readU16(data, lo_base + 4) catch return null,
+        .lookup_flag = lookup_flag,
+        .subtable_count = subtable_count,
         .base_offset = lo_base,
+        .mark_filtering_set = mark_filtering_set,
     };
 }
 
@@ -542,4 +558,38 @@ test "parseAnchor invalid format returns null" {
 test "parseAnchor truncated data returns null" {
     const data = [_]u8{ 0x00, 0x01, 0x00 }; // only 3 bytes
     try std.testing.expectEqual(@as(?Anchor, null), parseAnchor(&data, 0));
+}
+
+test "getLookupInfo: reads trailing markFilteringSet when useMarkFilteringSet is set (I7)" {
+    const data = [_]u8{
+        0x00, 0x01, // lookupCount = 1
+        0x00, 0x04, // lookupOffsets[0] = 4 (relative to LookupList start)
+        // Lookup table @ 4
+        0x00, 0x01, // lookupType = 1
+        0x00, 0x10, // lookupFlag = 0x0010 (useMarkFilteringSet)
+        0x00, 0x01, // subTableCount = 1
+        0x00, 0x0A, // subtableOffsets[0] = 10 (relative to Lookup table start)
+        0x00, 0x2A, // markFilteringSet = 42 (trailing field, present because bit 0x0010 is set)
+    };
+
+    const info = getLookupInfo(&data, 0, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 0x0010), info.lookup_flag);
+    try std.testing.expectEqual(@as(?u16, 42), info.mark_filtering_set);
+}
+
+test "getLookupInfo: mark_filtering_set is null when useMarkFilteringSet is unset (I7)" {
+    const data = [_]u8{
+        0x00, 0x01, // lookupCount = 1
+        0x00, 0x04, // lookupOffsets[0] = 4
+        // Lookup table @ 4
+        0x00, 0x01, // lookupType = 1
+        0x00, 0x00, // lookupFlag = 0 (no useMarkFilteringSet)
+        0x00, 0x01, // subTableCount = 1
+        0x00, 0x0A, // subtableOffsets[0] = 10
+        // no trailing markFilteringSet field
+    };
+
+    const info = getLookupInfo(&data, 0, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u16, 0), info.lookup_flag);
+    try std.testing.expectEqual(@as(?u16, null), info.mark_filtering_set);
 }

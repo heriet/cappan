@@ -14,8 +14,12 @@ pub const Index = struct {
         if (self.count == 0) return 2; // count=0 の場合は 2 バイトのみ
         // last offset value gives the total data size
         const last_offset = self.readOffset(self.count);
+        // Offsets are 1-indexed, so the data size is last_offset - 1. A
+        // malformed/out-of-bounds offset can read back as 0 (readOffset returns
+        // 0 on OOB); guard the subtraction so it can't underflow usize.
+        const data_size = std.math.sub(usize, last_offset, 1) catch 0;
         // 2(count) + 1(offSize) + (count+1)*offSize + data_size
-        return 3 + @as(usize, @as(u32, self.count) + 1) * @as(usize, self.off_size) + (last_offset - 1);
+        return 3 + @as(usize, @as(u32, self.count) + 1) * @as(usize, self.off_size) + data_size;
     }
 
     /// i 番目の要素のデータスライスを返す (0-indexed)

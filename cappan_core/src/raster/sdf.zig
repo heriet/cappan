@@ -325,6 +325,9 @@ pub fn renderTextSdf(
         return bmp;
     }
 
+    const max_bmp_dim: f32 = 16384.0;
+    if (!(bmp_width_f <= max_bmp_dim) or !(bmp_height_f <= max_bmp_dim)) return error.OutOfMemory;
+
     const bmp_width: u32 = @intFromFloat(bmp_width_f);
     const bmp_height: u32 = @intFromFloat(bmp_height_f);
 
@@ -607,7 +610,12 @@ test "renderTextSdf: --variation coords change the SDF output" {
     var bitmap_default = try renderTextSdf(allocator, &fonts, "A", .{ .pixel_size = 96.0, .spread = 8.0 });
     defer bitmap_default.deinit();
 
-    const normalized = [_]f32{1.0};
+    // normalized_coords' contract is "final normalized coords, already
+    // avar-mapped" (same as Font.computeNormalizedCoords' output -- see its
+    // doc) -- apply avar directly to this raw axis value to match that
+    // contract, same as font.zig's "Variable Font gvar apply deltas" test.
+    var normalized = [_]f32{1.0};
+    if (font.avar) |avar| try avar.mapNormalizedCoords(&normalized);
     var bitmap_bold = try renderTextSdf(allocator, &fonts, "A", .{
         .pixel_size = 96.0,
         .spread = 8.0,
@@ -658,6 +666,26 @@ test "renderTextSdf: vertical layout basic bitmap shape for 'AB'" {
     }
     try std.testing.expect(has_inside);
     try std.testing.expect(has_outside);
+}
+
+test "C16: renderTextSdf with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const allocator = std.testing.allocator;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(allocator, font_data, null);
+    defer font.deinit();
+    const fonts = [_]font_mod.Font{font};
+
+    try std.testing.expectError(error.OutOfMemory, renderTextSdf(allocator, &fonts, "AB", .{ .pixel_size = 1e9, .spread = 8.0 }));
+}
+
+test "C16: renderTextSdf with NaN pixel_size returns error.OutOfMemory instead of panicking" {
+    const allocator = std.testing.allocator;
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(allocator, font_data, null);
+    defer font.deinit();
+    const fonts = [_]font_mod.Font{font};
+
+    try std.testing.expectError(error.OutOfMemory, renderTextSdf(allocator, &fonts, "AB", .{ .pixel_size = std.math.nan(f32), .spread = 8.0 }));
 }
 
 test "generateGlyphSdf: matches rasterizeGlyph inside/outside for CFF font (SourceSans3 'A')" {

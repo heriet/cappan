@@ -151,7 +151,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
     const feature_list_offset = try parser.readU16(data, 6);
     const lookup_list_offset = try parser.readU16(data, 8);
 
-    // Collect lookup indices referenced by each feature type
+    // GPOS deliberately scans all FeatureList records, unlike GSUB's script/langsys filtered path.
     var kern_lookup_indices = std.ArrayListUnmanaged(u16).empty;
     var vkrn_lookup_indices: if (ft.enable_vertical) std.ArrayListUnmanaged(u16) else void = if (comptime ft.enable_vertical) .empty else {};
     var mark_lookup_indices = std.ArrayListUnmanaged(u16).empty;
@@ -252,6 +252,19 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !GposTable {
 const max_lookups_per_feature = 256;
 const max_subtables_per_lookup = 64;
 
+const EffectiveSubtable = struct {
+    lookup_type: u16,
+    offset: usize,
+};
+
+fn resolveEffectiveSubtable(data: []const u8, lookup_type: u16, subtable_offset: usize) ?EffectiveSubtable {
+    if (lookup_type == 9) {
+        const ext = otlayout.parseExtensionSubtable(data, subtable_offset) orelse return null;
+        return .{ .lookup_type = ext.effective_type, .offset = ext.effective_offset };
+    }
+    return .{ .lookup_type = lookup_type, .offset = subtable_offset };
+}
+
 fn buildKernLookups(
     allocator: std.mem.Allocator,
     data: []const u8,
@@ -274,22 +287,16 @@ fn buildKernLookups(
 
         var si: usize = 0;
         while (si < capped_subtable_count) : (si += 1) {
-            var sub_abs = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
-            var effective_type = info.lookup_type;
+            const sub_abs = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
+            const effective = resolveEffectiveSubtable(data, info.lookup_type, sub_abs) orelse continue;
 
-            if (effective_type == 9) {
-                const ext = otlayout.parseExtensionSubtable(data, sub_abs) orelse continue;
-                effective_type = ext.effective_type;
-                sub_abs = ext.effective_offset;
-            }
+            if (effective.lookup_type != 2) continue;
 
-            if (effective_type != 2) continue;
-
-            if (sub_abs + 2 > data.len) break;
-            const pos_format = parser.readU16(data, sub_abs) catch break;
+            if (effective.offset + 2 > data.len) break;
+            const pos_format = parser.readU16(data, effective.offset) catch break;
             if (pos_format != 1 and pos_format != 2) continue;
             try subtables.append(allocator, .{
-                .offset = sub_abs,
+                .offset = effective.offset,
                 .format = pos_format,
             });
         }
@@ -329,17 +336,11 @@ fn collectLookupRefs(
 
         var si: usize = 0;
         while (si < capped_subtable_count) : (si += 1) {
-            var sub_offset = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
-            var effective_type = info.lookup_type;
+            const sub_offset = otlayout.getSubtableOffset(data, info.base_offset, si) orelse break;
+            const effective = resolveEffectiveSubtable(data, info.lookup_type, sub_offset) orelse continue;
 
-            if (effective_type == 9) {
-                const ext = otlayout.parseExtensionSubtable(data, sub_offset) orelse continue;
-                effective_type = ext.effective_type;
-                sub_offset = ext.effective_offset;
-            }
-
-            if (effective_type == target_type) {
-                try subtables.append(allocator, .{ .offset = sub_offset });
+            if (effective.lookup_type == target_type) {
+                try subtables.append(allocator, .{ .offset = effective.offset });
             }
         }
 
@@ -470,6 +471,50 @@ fn pairValueFormat2(data: []const u8, subtable_offset: usize, left: u16, right: 
     return otlayout.readValueRecord(data, rec_offset, value_format1) catch return null;
 }
 
+const MarkAttachment = struct {
+    target_cov_index: u16,
+    mark_class: u16,
+    mark_class_count: u16,
+    mark_anchor: otlayout.Anchor,
+};
+
+fn readMarkAttachment(
+    data: []const u8,
+    subtable_offset: usize,
+    mark_cov_offset: u16,
+    target_cov_offset: u16,
+    mark_class_count: u16,
+    mark_array_offset: u16,
+    target_glyph: u16,
+    mark_glyph: u16,
+) ?MarkAttachment {
+    const mark_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, mark_cov_offset)) catch return null;
+    const mark_cov_index = mark_coverage.getCoverageIndex(mark_glyph) orelse return null;
+
+    const target_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, target_cov_offset)) catch return null;
+    const target_cov_index = target_coverage.getCoverageIndex(target_glyph) orelse return null;
+
+    const mark_array_base = subtable_offset + @as(usize, mark_array_offset);
+    if (mark_array_base + 2 > data.len) return null;
+    const mark_count = parser.readU16(data, mark_array_base) catch return null;
+    if (mark_cov_index >= mark_count) return null;
+
+    const mark_rec_offset = mark_array_base + 2 + @as(usize, mark_cov_index) * 4;
+    if (mark_rec_offset + 4 > data.len) return null;
+    const mark_class = parser.readU16(data, mark_rec_offset) catch return null;
+    const mark_anchor_offset = parser.readU16(data, mark_rec_offset + 2) catch return null;
+
+    if (mark_class >= mark_class_count) return null;
+
+    const mark_anchor = otlayout.parseAnchor(data, mark_array_base + @as(usize, mark_anchor_offset)) orelse return null;
+    return .{
+        .target_cov_index = target_cov_index,
+        .mark_class = mark_class,
+        .mark_class_count = mark_class_count,
+        .mark_anchor = mark_anchor,
+    };
+}
+
 fn queryMarkBase(data: []const u8, subtable_offset: usize, base_glyph: u16, mark_glyph: u16) ?AnchorPair {
     // MarkBasePos / MarkMarkPos Format 1:
     // +0: posFormat (u16) = 1
@@ -489,39 +534,17 @@ fn queryMarkBase(data: []const u8, subtable_offset: usize, base_glyph: u16, mark
     const mark_array_offset = parser.readU16(data, subtable_offset + 8) catch return null;
     const base_array_offset = parser.readU16(data, subtable_offset + 10) catch return null;
 
-    // Check coverages
-    const mark_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, mark_cov_offset)) catch return null;
-    const mark_cov_index = mark_coverage.getCoverageIndex(mark_glyph) orelse return null;
-
-    const base_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, base_cov_offset)) catch return null;
-    const base_cov_index = base_coverage.getCoverageIndex(base_glyph) orelse return null;
-
-    // Read MarkArray
-    const mark_array_base = subtable_offset + @as(usize, mark_array_offset);
-    if (mark_array_base + 2 > data.len) return null;
-    const mark_count = parser.readU16(data, mark_array_base) catch return null;
-    if (mark_cov_index >= mark_count) return null;
-
-    // MarkRecord: markClass (u16) + markAnchorOffset (u16) = 4 bytes each
-    const mark_rec_offset = mark_array_base + 2 + @as(usize, mark_cov_index) * 4;
-    if (mark_rec_offset + 4 > data.len) return null;
-    const mark_class = parser.readU16(data, mark_rec_offset) catch return null;
-    const mark_anchor_offset = parser.readU16(data, mark_rec_offset + 2) catch return null;
-
-    if (mark_class >= mark_class_count) return null;
-
-    // Parse mark anchor
-    const mark_anchor = otlayout.parseAnchor(data, mark_array_base + @as(usize, mark_anchor_offset)) orelse return null;
+    const mark = readMarkAttachment(data, subtable_offset, mark_cov_offset, base_cov_offset, mark_class_count, mark_array_offset, base_glyph, mark_glyph) orelse return null;
 
     // Read BaseArray / Mark2Array
     const base_array_base = subtable_offset + @as(usize, base_array_offset);
     if (base_array_base + 2 > data.len) return null;
     const base_count = parser.readU16(data, base_array_base) catch return null;
-    if (base_cov_index >= base_count) return null;
+    if (mark.target_cov_index >= base_count) return null;
 
     // BaseRecord: baseAnchorOffsets[markClassCount] — each u16
-    const base_rec_offset = base_array_base + 2 + @as(usize, base_cov_index) * @as(usize, mark_class_count) * 2;
-    const base_anchor_offset_pos = base_rec_offset + @as(usize, mark_class) * 2;
+    const base_rec_offset = base_array_base + 2 + @as(usize, mark.target_cov_index) * @as(usize, mark.mark_class_count) * 2;
+    const base_anchor_offset_pos = base_rec_offset + @as(usize, mark.mark_class) * 2;
     if (base_anchor_offset_pos + 2 > data.len) return null;
     const base_anchor_offset = parser.readU16(data, base_anchor_offset_pos) catch return null;
 
@@ -533,8 +556,8 @@ fn queryMarkBase(data: []const u8, subtable_offset: usize, base_glyph: u16, mark
     return .{
         .base_x = base_anchor.x,
         .base_y = base_anchor.y,
-        .mark_x = mark_anchor.x,
-        .mark_y = mark_anchor.y,
+        .mark_x = mark.mark_anchor.x,
+        .mark_y = mark.mark_anchor.y,
     };
 }
 
@@ -557,36 +580,16 @@ fn queryMarkLig(data: []const u8, subtable_offset: usize, lig_glyph: u16, mark_g
     const mark_array_offset = parser.readU16(data, subtable_offset + 8) catch return null;
     const lig_array_offset = parser.readU16(data, subtable_offset + 10) catch return null;
 
-    // Check coverages
-    const mark_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, mark_cov_offset)) catch return null;
-    const mark_cov_index = mark_coverage.getCoverageIndex(mark_glyph) orelse return null;
-
-    const lig_coverage = otlayout.parseCoverage(data, subtable_offset + @as(usize, lig_cov_offset)) catch return null;
-    const lig_cov_index = lig_coverage.getCoverageIndex(lig_glyph) orelse return null;
-
-    // Read MarkArray
-    const mark_array_base = subtable_offset + @as(usize, mark_array_offset);
-    if (mark_array_base + 2 > data.len) return null;
-    const mark_count = parser.readU16(data, mark_array_base) catch return null;
-    if (mark_cov_index >= mark_count) return null;
-
-    const mark_rec_offset = mark_array_base + 2 + @as(usize, mark_cov_index) * 4;
-    if (mark_rec_offset + 4 > data.len) return null;
-    const mark_class = parser.readU16(data, mark_rec_offset) catch return null;
-    const mark_anchor_offset = parser.readU16(data, mark_rec_offset + 2) catch return null;
-
-    if (mark_class >= mark_class_count) return null;
-
-    const mark_anchor = otlayout.parseAnchor(data, mark_array_base + @as(usize, mark_anchor_offset)) orelse return null;
+    const mark = readMarkAttachment(data, subtable_offset, mark_cov_offset, lig_cov_offset, mark_class_count, mark_array_offset, lig_glyph, mark_glyph) orelse return null;
 
     // Read LigatureArray
     const lig_array_base = subtable_offset + @as(usize, lig_array_offset);
     if (lig_array_base + 2 > data.len) return null;
     const lig_count = parser.readU16(data, lig_array_base) catch return null;
-    if (lig_cov_index >= lig_count) return null;
+    if (mark.target_cov_index >= lig_count) return null;
 
     // LigatureAttach offset
-    const lig_attach_offset_pos = lig_array_base + 2 + @as(usize, lig_cov_index) * 2;
+    const lig_attach_offset_pos = lig_array_base + 2 + @as(usize, mark.target_cov_index) * 2;
     if (lig_attach_offset_pos + 2 > data.len) return null;
     const lig_attach_offset = parser.readU16(data, lig_attach_offset_pos) catch return null;
 
@@ -597,8 +600,8 @@ fn queryMarkLig(data: []const u8, subtable_offset: usize, lig_glyph: u16, mark_g
     if (component_index >= component_count) return null;
 
     // ComponentRecord: ligatureAnchorOffsets[markClassCount] — each u16
-    const comp_rec_offset = lig_attach_base + 2 + @as(usize, component_index) * @as(usize, mark_class_count) * 2;
-    const lig_anchor_offset_pos = comp_rec_offset + @as(usize, mark_class) * 2;
+    const comp_rec_offset = lig_attach_base + 2 + @as(usize, component_index) * @as(usize, mark.mark_class_count) * 2;
+    const lig_anchor_offset_pos = comp_rec_offset + @as(usize, mark.mark_class) * 2;
     if (lig_anchor_offset_pos + 2 > data.len) return null;
     const lig_anchor_offset = parser.readU16(data, lig_anchor_offset_pos) catch return null;
 
@@ -609,8 +612,8 @@ fn queryMarkLig(data: []const u8, subtable_offset: usize, lig_glyph: u16, mark_g
     return .{
         .base_x = lig_anchor.x,
         .base_y = lig_anchor.y,
-        .mark_x = mark_anchor.x,
-        .mark_y = mark_anchor.y,
+        .mark_x = mark.mark_anchor.x,
+        .mark_y = mark.mark_anchor.y,
     };
 }
 

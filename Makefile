@@ -2,6 +2,17 @@ DOCKER_RUN = docker compose run --rm dev
 ZENSICAL_RUN = docker compose run --rm doc
 DOCS_PORT ?= 8000
 
+# Shared guard for test-* targets that need one specific asset font present:
+# fetches it (and everything else fetch-asset.sh manages) if missing, so each
+# target can be run standalone without `make setup` first.
+# $(1) = font path relative to .font/, used only for the "not found" message.
+define ensure_font
+	@if [ ! -f .font/$(1) ]; then \
+		echo "$(1) not found, running fetch-asset.sh..."; \
+		$(DOCKER_RUN) bash script/fetch-asset.sh; \
+	fi
+endef
+
 .PHONY: build test run fmt clean shell fetch-asset generate-subset setup build-docs serve-docs generate-gallery generate-gallery-incremental generate-gallery-stroke-paint build-wasm release-windows release-linux test-colr-v1 test-colr-v1-variable test-vertical test-arabic test-sdf
 
 setup: fetch-asset generate-subset
@@ -21,7 +32,7 @@ run:
 	$(DOCKER_RUN) zig build run -- $(ARGS)
 
 fmt:
-	$(DOCKER_RUN) zig fmt cappan_core/src/ cappan_cli/src/
+	$(DOCKER_RUN) zig fmt .
 
 clean:
 	rm -rf zig-out .zig-cache
@@ -54,10 +65,7 @@ release-linux:
 	$(DOCKER_RUN) zig build -Dtarget=x86_64-linux -Doptimize=ReleaseSafe
 
 test-colr-v1:
-	@if [ ! -f .font/TestCOLRv1.ttf ]; then \
-		echo "TestCOLRv1.ttf not found, running fetch-asset.sh..."; \
-		$(DOCKER_RUN) bash script/fetch-asset.sh; \
-	fi
+	$(call ensure_font,TestCOLRv1.ttf)
 	$(DOCKER_RUN) zig build
 	$(DOCKER_RUN) zig-out/bin/cappan render \
 		--font .font/TestCOLRv1.ttf \
@@ -72,10 +80,7 @@ test-colr-v1:
 	@echo "test-colr-v1: PASS (no crash)"
 
 test-colr-v1-variable:
-	@if [ ! -f .font/test_glyphs-glyf_colr_1_variable.ttf ]; then \
-		echo "variable COLR font not found, running fetch-asset.sh..."; \
-		$(DOCKER_RUN) bash script/fetch-asset.sh; \
-	fi
+	$(call ensure_font,test_glyphs-glyf_colr_1_variable.ttf)
 	$(DOCKER_RUN) zig build
 	$(DOCKER_RUN) zig-out/bin/cappan render \
 		--font .font/test_glyphs-glyf_colr_1_variable.ttf \
@@ -94,10 +99,7 @@ test-colr-v1-variable:
 	else echo "test-colr-v1-variable: PASS (output changed with axis)"; fi
 
 test-vertical:
-	@if [ ! -f .font/NotoSansJP-Regular.otf ]; then \
-		echo "NotoSansJP-Regular.otf not found, running fetch-asset.sh..."; \
-		$(DOCKER_RUN) bash script/fetch-asset.sh; \
-	fi
+	$(call ensure_font,NotoSansJP-Regular.otf)
 	$(DOCKER_RUN) zig build
 	$(DOCKER_RUN) zig-out/bin/cappan render \
 		--font .font/NotoSansJP-Regular.otf \
@@ -110,10 +112,7 @@ test-vertical:
 # The printf octal escapes encode "العربية" (UTF-8). POSIX sh printf does not
 # support \x hex escapes, so octal is required here.
 test-arabic:
-	@if [ ! -f .font/NotoSansArabic-Regular.ttf ]; then \
-		echo "NotoSansArabic-Regular.ttf not found, running fetch-asset.sh..."; \
-		$(DOCKER_RUN) bash script/fetch-asset.sh; \
-	fi
+	$(call ensure_font,NotoSansArabic-Regular.ttf)
 	$(DOCKER_RUN) zig build
 	$(DOCKER_RUN) zig-out/bin/cappan render \
 		--font .font/NotoSansArabic-Regular.ttf \
@@ -129,6 +128,7 @@ test-arabic:
 	@echo "test-arabic: PASS (no crash)"
 
 test-sdf:
+	$(call ensure_font,DejaVuSans.ttf)
 	$(DOCKER_RUN) zig build
 	$(DOCKER_RUN) zig-out/bin/cappan render \
 		--font .font/DejaVuSans.ttf --text "SDF test" --size 48 \

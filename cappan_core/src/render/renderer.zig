@@ -40,20 +40,26 @@ pub const RenderOptions = struct {
     normalized_coords: []const f32 = &.{},
 };
 
-fn applyOutlineHinting(
+/// Applies CFF blue-zone hinting and/or auto-hinting to `outline` in place, gated
+/// on the `enable_hinting` build feature. Shared by renderer.zig's own render paths
+/// and incremental.zig (via this `pub` export), so this comptime gate is the single
+/// place that decides whether hinting is compiled in at all -- callers must not
+/// duplicate this logic with their own ungated copy.
+pub fn applyOutlineHinting(
     allocator: std.mem.Allocator,
     outline: *glyph_mod.GlyphOutline,
     glyph_font: font_mod.Font,
     glyph_id: u16,
-    options: RenderOptions,
+    cff_hinting: bool,
+    auto_hinting: bool,
 ) !void {
     if (comptime !ft.enable_hinting) return;
-    if (options.cff_hinting) {
+    if (cff_hinting) {
         if (outline.hints) |*h| {
             h.blue_zones = glyph_font.getBlueZones(glyph_id);
         }
     }
-    if (options.auto_hinting and outline.hints == null) {
+    if (auto_hinting and outline.hints == null) {
         outline.hints = try auto_hinting_mod.generateHints(allocator, outline.*, glyph_font.getAutoBlueZones());
     }
 }
@@ -97,7 +103,7 @@ fn getOrRasterizeGlyph(
     apply_hinting: bool,
     scratch: ?*rasterizer_mod.RasterScratch,
 ) !CachedRaster {
-    const cache_key = glyphCacheKey(font_index, glyph_id);
+    const cache_key = glyphRasterCacheKey(font_index, glyph_id, apply_hinting);
     if (glyph_cache.get(cache_key)) |cached| return cached;
 
     const outline_opt = glyph_font.getGlyphOutline(allocator, glyph_id) catch |err| switch (err) {
@@ -113,7 +119,7 @@ fn getOrRasterizeGlyph(
     defer outline.deinit();
 
     if (apply_hinting) {
-        try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options);
+        try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options.cff_hinting, options.auto_hinting);
     }
 
     const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
@@ -140,8 +146,95 @@ const CachedLcdRaster = struct {
     offset_y: f32,
 };
 
+/// Looks up `(font_index, glyph_id)` in `lcd_cache`; on a miss, rasterizes the
+/// glyph outline as subpixel (LCD) coverage and inserts the result (or an empty
+/// placeholder, if the font has no outline for this glyph) before returning it.
+/// Mirrors `getOrRasterizeGlyph`'s shape for the LCD-specific cache/raster types.
+fn getOrRasterizeLcdGlyph(
+    lcd_cache: *std.AutoHashMapUnmanaged(u32, CachedLcdRaster),
+    allocator: std.mem.Allocator,
+    glyph_font: font_mod.Font,
+    font_index: u8,
+    glyph_id: u16,
+    raster_options: scanline_mod.RasterOptions,
+    options: RenderOptions,
+) !CachedLcdRaster {
+    const cache_key = glyphCacheKey(font_index, glyph_id);
+    if (lcd_cache.get(cache_key)) |cached| return cached;
+
+    const outline_opt = glyph_font.getGlyphOutline(allocator, glyph_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
+    if (outline_opt == null) {
+        const empty_r = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_r);
+        const empty_g = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_g);
+        const empty_b = try allocator.alloc(u8, 0);
+        errdefer allocator.free(empty_b);
+        const empty_entry = CachedLcdRaster{
+            .r_coverage = empty_r,
+            .g_coverage = empty_g,
+            .b_coverage = empty_b,
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+        };
+        try lcd_cache.put(allocator, cache_key, empty_entry);
+        return empty_entry;
+    }
+    var outline = outline_opt.?;
+    defer outline.deinit();
+
+    try applyOutlineHinting(allocator, &outline, glyph_font, glyph_id, options.cff_hinting, options.auto_hinting);
+    const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
+    const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
+
+    const entry = CachedLcdRaster{
+        .r_coverage = lcd_result.r_coverage,
+        .g_coverage = lcd_result.g_coverage,
+        .b_coverage = lcd_result.b_coverage,
+        .width = lcd_result.width,
+        .height = lcd_result.height,
+        .offset_x = lcd_result.offset_x,
+        .offset_y = lcd_result.offset_y,
+    };
+    errdefer {
+        allocator.free(entry.r_coverage);
+        allocator.free(entry.g_coverage);
+        allocator.free(entry.b_coverage);
+    }
+    try lcd_cache.put(allocator, cache_key, entry);
+    return entry;
+}
+
 pub fn glyphCacheKey(font_index: u8, glyph_id: u16) u32 {
     return glyph_cache_mod.glyphCacheKeyU32(font_index, glyph_id);
+}
+
+/// Key for the `CachedRaster` glyph cache used by renderText's non-LCD path and
+/// RowRenderer. Unlike `glyphCacheKey`, this folds whether hinting was applied
+/// into bit 24 (free: `glyphCacheKeyU32` only uses bits 0-23 for glyph_id/font_index).
+///
+/// This distinction matters because a single glyph_id can be rasterized twice with
+/// different hinting within the same render: once as a COLR v0 palette layer
+/// (`getOrRasterizeGlyph(..., apply_hinting = false, ...)`, since layer components are
+/// historically unhinted) and once as an ordinary plain glyph
+/// (`apply_hinting = true`) elsewhere in the same text run. Without this bit, both
+/// calls would collide on the same `(font_index, glyph_id)` key and whichever ran
+/// first would silently poison the cache for the other.
+///
+/// All call sites that read or write this specific `glyph_cache` must agree on the
+/// `hinted` bucket for a given logical role: `getOrRasterizeGlyph` uses its own
+/// `apply_hinting` parameter; every other read/write in this file that operates on
+/// the *plain, top-level* glyph slot (as opposed to a COLR-layer sub-glyph) must
+/// pass `true`, since that slot is only ever populated by the hinted plain-glyph
+/// path (or the bitmap-glyph-decode-failure placeholder, which is bucketed the
+/// same way for consistency).
+fn glyphRasterCacheKey(font_index: u8, glyph_id: u16, hinted: bool) u32 {
+    return glyphCacheKey(font_index, glyph_id) | (@as(u32, @intFromBool(hinted)) << 24);
 }
 
 const PaintOpKind = enum(u8) { fill, stroke };
@@ -156,14 +249,19 @@ const PaintCacheKey = struct {
     miter_limit_q: u16,
 };
 
-fn resolveRasterOptions(options: RenderOptions) scanline_mod.RasterOptions {
+/// Resolves the effective `RasterOptions` for a render, applying stem-darkening
+/// adjustment when requested, gated on the `enable_hinting` build feature (stem
+/// darkening is a hinting-adjacent visual adjustment). Shared by renderer.zig's own
+/// render paths and incremental.zig (via this `pub` export) so this comptime gate
+/// has a single owner -- callers must not duplicate it with their own ungated copy.
+pub fn resolveRasterOptions(stem_darkening: bool, pixel_size: f32, raster_options: scanline_mod.RasterOptions) scanline_mod.RasterOptions {
     if (comptime ft.enable_hinting) {
-        return if (options.stem_darkening)
-            stem_darkening_mod.resolveRasterOptions(options.pixel_size, options.raster_options)
+        return if (stem_darkening)
+            stem_darkening_mod.resolveRasterOptions(pixel_size, raster_options)
         else
-            options.raster_options;
+            raster_options;
     }
-    return options.raster_options;
+    return raster_options;
 }
 
 pub fn computeStrokePadding(paint_stack: ?[]const paint_mod.PaintOperation, pixel_size: f32, base_padding: u32) u32 {
@@ -195,7 +293,7 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         return renderTextPaintStack(allocator, fonts, text, options, paint_stack);
     }
 
-    const raster_options = resolveRasterOptions(options);
+    const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
     var layout = try shaper.layoutText(allocator, fonts, text, .{
         .pixel_size = options.pixel_size,
@@ -207,8 +305,11 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
     const pad = @as(f32, @floatFromInt(options.padding));
 
-    const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
-    const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+    const max_bmp_dim: f32 = 16384.0;
+    const bmp_width_f = @ceil(layout.total_width + pad * 2);
+    const bmp_height_f = @ceil(layout.total_height + pad * 2);
+    const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+    const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
     if (bmp_width == 0 or bmp_height == 0) {
         return rgba_bitmap_mod.RgbaBitmap.init(allocator, 1, 1, options.bg_color);
@@ -231,61 +332,8 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         }
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
-
-            if (lcd_cache.get(cache_key)) |cached| {
-                if (cached.width == 0 or cached.height == 0) continue;
-                blendLcdRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color);
-                continue;
-            }
-
             const glyph_font = fonts[pos.font_index];
-            const glyph_scale = options.pixel_size / @as(f32, @floatFromInt(glyph_font.getUnitsPerEm()));
-
-            const outline_opt = glyph_font.getGlyphOutline(allocator, pos.glyph_id) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => null,
-            };
-            if (outline_opt == null) {
-                const empty_r = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_r);
-                const empty_g = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_g);
-                const empty_b = try allocator.alloc(u8, 0);
-                errdefer allocator.free(empty_b);
-                try lcd_cache.put(allocator, cache_key, .{
-                    .r_coverage = empty_r,
-                    .g_coverage = empty_g,
-                    .b_coverage = empty_b,
-                    .width = 0,
-                    .height = 0,
-                    .offset_x = 0,
-                    .offset_y = 0,
-                });
-                continue;
-            }
-            var outline = outline_opt.?;
-            defer outline.deinit();
-
-            try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
-            const lcd_result = try rasterizer_mod.rasterizeGlyphLcd(allocator, outline, glyph_scale, options.padding, raster_options);
-
-            const entry = CachedLcdRaster{
-                .r_coverage = lcd_result.r_coverage,
-                .g_coverage = lcd_result.g_coverage,
-                .b_coverage = lcd_result.b_coverage,
-                .width = lcd_result.width,
-                .height = lcd_result.height,
-                .offset_x = lcd_result.offset_x,
-                .offset_y = lcd_result.offset_y,
-            };
-            errdefer {
-                allocator.free(entry.r_coverage);
-                allocator.free(entry.g_coverage);
-                allocator.free(entry.b_coverage);
-            }
-            try lcd_cache.put(allocator, cache_key, entry);
-
+            const entry = try getOrRasterizeLcdGlyph(&lcd_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options);
             if (entry.width == 0 or entry.height == 0) continue;
             blendLcdRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color);
         }
@@ -303,11 +351,16 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
         defer raster_scratch.deinit(allocator);
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            // This slot is keyed as "hinted" (true): it is only ever populated by the
+            // plain hinted-glyph path below or the bitmap-decode-failure placeholder,
+            // never by the COLR v0 layer path (which caches under `layer.glyph_id`,
+            // separately bucketed as unhinted via glyphRasterCacheKey inside
+            // getOrRasterizeGlyph). See glyphRasterCacheKey's doc comment.
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
 
             if (glyph_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
-                blendRaster(&bitmap, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(&bitmap, cached.pixels, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
                 continue;
             }
 
@@ -347,13 +400,13 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
                             options.fg_color;
                         const layer_entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, layer.glyph_id, raster_options, options, false, &raster_scratch);
                         if (layer_entry.width == 0 or layer_entry.height == 0) continue;
-                        blendRaster(&bitmap, layer_entry, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
+                        blendRaster(&bitmap, layer_entry.pixels, layer_entry.width, layer_entry.height, layer_entry.offset_x, layer_entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, layer_color, options.gamma_correction, options.fractional_positioning);
                     }
                 }
             } else {
                 const entry = try getOrRasterizeGlyph(&glyph_cache, allocator, glyph_font, pos.font_index, pos.glyph_id, raster_options, options, true, &raster_scratch);
                 if (entry.width == 0 or entry.height == 0) continue;
-                blendRaster(&bitmap, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(&bitmap, entry.pixels, entry.width, entry.height, entry.offset_x, entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, options.fg_color, options.gamma_correction, options.fractional_positioning);
             }
         }
     }
@@ -368,7 +421,7 @@ fn renderTextPaintStack(
     options: RenderOptions,
     paint_stack: []const paint_mod.PaintOperation,
 ) !rgba_bitmap_mod.RgbaBitmap {
-    const raster_options = resolveRasterOptions(options);
+    const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
     var layout = try shaper.layoutText(allocator, fonts, text, .{
         .pixel_size = options.pixel_size,
@@ -404,6 +457,9 @@ fn renderTextPaintStack(
         paint_cache.deinit(allocator);
     }
 
+    var raster_scratch: rasterizer_mod.RasterScratch = .{};
+    defer raster_scratch.deinit(allocator);
+
     for (paint_stack) |op| {
         const opacity = getOpacity(op);
         const needs_temp = opacity < 0.996;
@@ -424,7 +480,7 @@ fn renderTextPaintStack(
 
             if (paint_cache.get(cache_key)) |cached| {
                 if (cached.width == 0 or cached.height == 0) continue;
-                blendRaster(target, cached, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
+                blendRaster(target, cached.pixels, cached.width, cached.height, cached.offset_x, cached.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
                 continue;
             }
 
@@ -448,8 +504,8 @@ fn renderTextPaintStack(
 
             const entry = switch (op) {
                 .fill => blk: {
-                    try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options);
-                    const glyph_result = try rasterizer_mod.rasterizeGlyph(allocator, outline, glyph_scale, extended_padding, raster_options);
+                    try applyOutlineHinting(allocator, &outline, glyph_font, pos.glyph_id, options.cff_hinting, options.auto_hinting);
+                    const glyph_result = try rasterizer_mod.rasterizeGlyphWithScratch(allocator, outline, glyph_scale, extended_padding, raster_options, &raster_scratch);
                     break :blk CachedRaster{
                         .pixels = glyph_result.pixels,
                         .width = glyph_result.width,
@@ -464,7 +520,7 @@ fn renderTextPaintStack(
             try paint_cache.put(allocator, cache_key, entry);
 
             if (entry.width == 0 or entry.height == 0) continue;
-            blendRaster(target, entry, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
+            blendRaster(target, entry.pixels, entry.width, entry.height, entry.offset_x, entry.offset_y, pos, base_baseline_y, pad, bmp_width, bmp_height, blend_color, options.gamma_correction, options.fractional_positioning);
         }
 
         if (temp_bmp) |tb| {
@@ -641,9 +697,22 @@ fn blendSubpixel(
     }
 }
 
-fn blendRaster(
+/// Blends a coverage-alpha glyph raster onto `bitmap` at the position implied by
+/// `pos`/`base_baseline_y`/`pad`, handling both the direct-pixel and (`fractional_positioning`)
+/// 4-tap bilinear-splat paths, with or without gamma-correct blending.
+///
+/// Takes the coverage buffer and its geometry as separate parameters (rather than a
+/// single `CachedRaster`) so callers with a differently-shaped cache entry type --
+/// e.g. incremental.zig's `CachedGlyph`, which keeps a possibly-animated coverage
+/// slice separate from its own cached-metadata struct -- can reuse this without
+/// wrapping their data in a `CachedRaster` first.
+pub fn blendRaster(
     bitmap: *rgba_bitmap_mod.RgbaBitmap,
-    raster: CachedRaster,
+    coverage_pixels: []const u8,
+    raster_width: u32,
+    raster_height: u32,
+    offset_x: f32,
+    offset_y: f32,
     pos: shaper.GlyphPosition,
     base_baseline_y: f32,
     pad: f32,
@@ -655,12 +724,12 @@ fn blendRaster(
 ) void {
     const origin_x = pos.x_offset + pad;
     const origin_y = base_baseline_y + pos.y_offset;
-    const bmp_x0 = origin_x - raster.offset_x;
-    const bmp_y0 = origin_y - raster.offset_y;
+    const bmp_x0 = origin_x - offset_x;
+    const bmp_y0 = origin_y - offset_y;
 
-    for (0..raster.height) |gy| {
-        for (0..raster.width) |gx| {
-            const coverage = raster.pixels[gy * @as(usize, raster.width) + gx];
+    for (0..raster_height) |gy| {
+        for (0..raster_width) |gx| {
+            const coverage = coverage_pixels[gy * @as(usize, raster_width) + gx];
             if (coverage == 0) continue;
 
             const bmp_xf = bmp_x0 + @as(f32, @floatFromInt(gx));
@@ -979,6 +1048,74 @@ test "render text with repeated characters uses cache" {
     try std.testing.expect(bitmap.height > 0);
 }
 
+test "glyphRasterCacheKey: hinted and unhinted buckets never collide with each other or with distinct glyph_id/font_index" {
+    // Guards the fix for the COLR v0 layer (unhinted) vs. plain glyph (hinted)
+    // cache collision: getOrRasterizeGlyph rasterizes the *same* glyph_id twice
+    // with different `apply_hinting` values within a single renderText call (once
+    // as a palette layer's component glyph, once as an ordinary plain glyph), and
+    // both writes/reads must land in distinct cache slots.
+    const same_font: u8 = 3;
+    const same_glyph: u16 = 42;
+
+    // The core property this fix depends on: same (font_index, glyph_id), different
+    // `hinted` bit => different key.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font, same_glyph, false));
+
+    // Varying font_index or glyph_id (holding hinted fixed) must still be distinct,
+    // i.e. folding in the hinted bit must not clobber the pre-existing distinctness
+    // that glyphCacheKey already provided.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font + 1, same_glyph, true));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, true) != glyphRasterCacheKey(same_font, same_glyph + 1, true));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font + 1, same_glyph, false));
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font, same_glyph + 1, false));
+
+    // And no cross-talk between an unhinted key at one (font,glyph) and a hinted
+    // key at a different (font,glyph): the hinted bit must not accidentally alias
+    // with the low 24 bits used by font_index/glyph_id.
+    try std.testing.expect(glyphRasterCacheKey(same_font, same_glyph, false) != glyphRasterCacheKey(same_font, same_glyph + (1 << 8), true));
+}
+
+test "renderText: a glyph_id used both as a COLR v0 layer component and as a plain glyph in the same call renders without cache corruption" {
+    // Regression test for the actual bug: before the fix, getOrRasterizeGlyph keyed
+    // solely on (font_index, glyph_id), so if the same numeric glyph_id was
+    // rasterized once unhinted (as a COLR v0 layer's component, apply_hinting =
+    // false) and once hinted (as a plain top-level glyph, apply_hinting = true)
+    // within one renderText call, whichever ran first would poison the cache for
+    // the other. NotoColorEmoji-style synthetic fixtures aren't available here, so
+    // this exercises the invariant at the getOrRasterizeGlyph level directly: two
+    // back-to-back calls for the same (font, glyph_id) with different
+    // `apply_hinting` must each reflect their own hinting setting, not whichever
+    // was cached first.
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    const glyph_id = try font.getGlyphId('l');
+    const raster_options = scanline_mod.RasterOptions{};
+    const options = RenderOptions{ .pixel_size = 48 };
+
+    var glyph_cache: std.AutoHashMapUnmanaged(u32, CachedRaster) = .empty;
+    defer {
+        var it = glyph_cache.valueIterator();
+        while (it.next()) |entry| std.testing.allocator.free(entry.pixels);
+        glyph_cache.deinit(std.testing.allocator);
+    }
+
+    // Unhinted first (simulating the COLR v0 layer path running first)...
+    const unhinted = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, false, null);
+    // ...then hinted for the *same* glyph_id (simulating the plain glyph path).
+    const hinted = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, true, null);
+
+    // Both entries must exist independently in the cache (distinct keys), and a
+    // second lookup for each must return exactly what was first computed for that
+    // hinting bucket, not a value poisoned by the other call.
+    const unhinted_again = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, false, null);
+    const hinted_again = try getOrRasterizeGlyph(&glyph_cache, std.testing.allocator, font, 0, glyph_id, raster_options, options, true, null);
+    try std.testing.expectEqual(unhinted.pixels.ptr, unhinted_again.pixels.ptr);
+    try std.testing.expectEqual(hinted.pixels.ptr, hinted_again.pixels.ptr);
+    try std.testing.expect(unhinted.pixels.ptr != hinted.pixels.ptr);
+}
+
 test "render text with LCD rendering" {
     const font_data = @embedFile("../fixture/DejaVuSans.ttf");
     var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
@@ -1027,7 +1164,7 @@ pub const RowRenderer = struct {
     scratch: rasterizer_mod.RasterScratch,
 
     pub fn init(allocator: std.mem.Allocator, fonts: []const font_mod.Font, text: []const u8, options: RenderOptions) !RowRenderer {
-        const raster_options = resolveRasterOptions(options);
+        const raster_options = resolveRasterOptions(options.stem_darkening, options.pixel_size, options.raster_options);
 
         var layout = try shaper.layoutText(allocator, fonts, text, .{
             .pixel_size = options.pixel_size,
@@ -1040,8 +1177,11 @@ pub const RowRenderer = struct {
         const scale = options.pixel_size / @as(f32, @floatFromInt(fonts[0].getUnitsPerEm()));
         const pad = @as(f32, @floatFromInt(options.padding));
 
-        const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
-        const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+        const max_bmp_dim: f32 = 16384.0;
+        const bmp_width_f = @ceil(layout.total_width + pad * 2);
+        const bmp_height_f = @ceil(layout.total_height + pad * 2);
+        const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+        const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
         const width = if (bmp_width == 0) 1 else bmp_width;
         const height = if (bmp_height == 0) 1 else bmp_height;
@@ -1059,7 +1199,10 @@ pub const RowRenderer = struct {
         errdefer scratch.deinit(allocator);
 
         for (layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            // RowRenderer never rasterizes a COLR v0 layer sub-glyph into this cache
+            // (only plain hinted glyphs), so `true` is the only bucket ever used here --
+            // kept consistent with getOrRasterizeGlyph's own key via glyphRasterCacheKey.
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
             if (glyph_cache.get(cache_key) != null) continue;
 
             const glyph_font = fonts[pos.font_index];
@@ -1098,6 +1241,27 @@ pub const RowRenderer = struct {
         self.layout.deinit();
     }
 
+    /// Blends `weight`-coverage `fg_color` into `row_buffer[off..off+4]` (a single
+    /// RGBA pixel slot), with or without gamma-correct blending. Shared by
+    /// `renderRow`'s fractional-positioning 2-tap splat (called once per tap) and
+    /// its direct-pixel path (called once, with `weight` = the glyph's own coverage).
+    fn blendRowPixel(row_buffer: []u8, off: usize, weight: u8, fg_color: rgba_bitmap_mod.Color, gamma_correction: bool) void {
+        if (gamma_correction) {
+            const alpha_f = @as(f32, @floatFromInt(weight)) * @as(f32, @floatFromInt(fg_color.a)) / (255.0 * 255.0);
+            row_buffer[off] = gamma_mod.blendLinear(row_buffer[off], fg_color.r, alpha_f);
+            row_buffer[off + 1] = gamma_mod.blendLinear(row_buffer[off + 1], fg_color.g, alpha_f);
+            row_buffer[off + 2] = gamma_mod.blendLinear(row_buffer[off + 2], fg_color.b, alpha_f);
+            row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, row_buffer[off + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
+        } else {
+            const alpha = @as(u16, weight) * @as(u16, fg_color.a) / 255;
+            const inv_alpha = 255 - alpha;
+            row_buffer[off] = @intCast((@as(u16, row_buffer[off]) * inv_alpha + @as(u16, fg_color.r) * alpha) / 255);
+            row_buffer[off + 1] = @intCast((@as(u16, row_buffer[off + 1]) * inv_alpha + @as(u16, fg_color.g) * alpha) / 255);
+            row_buffer[off + 2] = @intCast((@as(u16, row_buffer[off + 2]) * inv_alpha + @as(u16, fg_color.b) * alpha) / 255);
+            row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, row_buffer[off + 3]) + alpha));
+        }
+    }
+
     pub fn renderRow(self: *RowRenderer, y: u32) []const u8 {
         const bg = self.bg_color;
         var x: usize = 0;
@@ -1112,7 +1276,7 @@ pub const RowRenderer = struct {
         const yf = @as(f32, @floatFromInt(y));
 
         for (self.layout.positions) |pos| {
-            const cache_key = glyphCacheKey(pos.font_index, pos.glyph_id);
+            const cache_key = glyphRasterCacheKey(pos.font_index, pos.glyph_id, true);
             const cached = self.glyph_cache.get(cache_key) orelse continue;
             if (cached.width == 0 or cached.height == 0) continue;
 
@@ -1142,63 +1306,18 @@ pub const RowRenderer = struct {
                     const w1: u8 = @intFromFloat(@min(255.0, @round(cov_f * dx)));
 
                     if (w0 > 0 and ix >= 0 and @as(u32, @intCast(ix)) < self.width) {
-                        const off0 = @as(usize, @intCast(ix)) * 4;
-                        const fg = self.fg_color;
-                        if (self.gamma_correction) {
-                            const alpha_f = @as(f32, @floatFromInt(w0)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                            self.row_buffer[off0] = gamma_mod.blendLinear(self.row_buffer[off0], fg.r, alpha_f);
-                            self.row_buffer[off0 + 1] = gamma_mod.blendLinear(self.row_buffer[off0 + 1], fg.g, alpha_f);
-                            self.row_buffer[off0 + 2] = gamma_mod.blendLinear(self.row_buffer[off0 + 2], fg.b, alpha_f);
-                            self.row_buffer[off0 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off0 + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                        } else {
-                            const alpha = @as(u16, w0) * @as(u16, fg.a) / 255;
-                            const inv_alpha = 255 - alpha;
-                            self.row_buffer[off0] = @intCast((@as(u16, self.row_buffer[off0]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                            self.row_buffer[off0 + 1] = @intCast((@as(u16, self.row_buffer[off0 + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                            self.row_buffer[off0 + 2] = @intCast((@as(u16, self.row_buffer[off0 + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                            self.row_buffer[off0 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off0 + 3]) + alpha));
-                        }
+                        blendRowPixel(self.row_buffer, @as(usize, @intCast(ix)) * 4, w0, self.fg_color, self.gamma_correction);
                     }
                     const ix1 = ix + 1;
                     if (w1 > 0 and ix1 >= 0 and @as(u32, @intCast(ix1)) < self.width) {
-                        const off1 = @as(usize, @intCast(ix1)) * 4;
-                        const fg = self.fg_color;
-                        if (self.gamma_correction) {
-                            const alpha_f = @as(f32, @floatFromInt(w1)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                            self.row_buffer[off1] = gamma_mod.blendLinear(self.row_buffer[off1], fg.r, alpha_f);
-                            self.row_buffer[off1 + 1] = gamma_mod.blendLinear(self.row_buffer[off1 + 1], fg.g, alpha_f);
-                            self.row_buffer[off1 + 2] = gamma_mod.blendLinear(self.row_buffer[off1 + 2], fg.b, alpha_f);
-                            self.row_buffer[off1 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off1 + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                        } else {
-                            const alpha = @as(u16, w1) * @as(u16, fg.a) / 255;
-                            const inv_alpha = 255 - alpha;
-                            self.row_buffer[off1] = @intCast((@as(u16, self.row_buffer[off1]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                            self.row_buffer[off1 + 1] = @intCast((@as(u16, self.row_buffer[off1 + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                            self.row_buffer[off1 + 2] = @intCast((@as(u16, self.row_buffer[off1 + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                            self.row_buffer[off1 + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off1 + 3]) + alpha));
-                        }
+                        blendRowPixel(self.row_buffer, @as(usize, @intCast(ix1)) * 4, w1, self.fg_color, self.gamma_correction);
                     }
                 } else {
                     if (bmp_xf < 0) continue;
                     const bmp_xi = @as(u32, @intFromFloat(bmp_xf));
                     if (bmp_xi >= self.width) continue;
 
-                    const off = @as(usize, bmp_xi) * 4;
-                    const fg = self.fg_color;
-                    if (self.gamma_correction) {
-                        const alpha_f = @as(f32, @floatFromInt(coverage)) * @as(f32, @floatFromInt(fg.a)) / (255.0 * 255.0);
-                        self.row_buffer[off] = gamma_mod.blendLinear(self.row_buffer[off], fg.r, alpha_f);
-                        self.row_buffer[off + 1] = gamma_mod.blendLinear(self.row_buffer[off + 1], fg.g, alpha_f);
-                        self.row_buffer[off + 2] = gamma_mod.blendLinear(self.row_buffer[off + 2], fg.b, alpha_f);
-                        self.row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off + 3]) + @as(u16, @intFromFloat(@round(alpha_f * 255.0)))));
-                    } else {
-                        const alpha = @as(u16, coverage) * @as(u16, fg.a) / 255;
-                        const inv_alpha = 255 - alpha;
-                        self.row_buffer[off] = @intCast((@as(u16, self.row_buffer[off]) * inv_alpha + @as(u16, fg.r) * alpha) / 255);
-                        self.row_buffer[off + 1] = @intCast((@as(u16, self.row_buffer[off + 1]) * inv_alpha + @as(u16, fg.g) * alpha) / 255);
-                        self.row_buffer[off + 2] = @intCast((@as(u16, self.row_buffer[off + 2]) * inv_alpha + @as(u16, fg.b) * alpha) / 255);
-                        self.row_buffer[off + 3] = @intCast(@min(@as(u16, 255), @as(u16, self.row_buffer[off + 3]) + alpha));
-                    }
+                    blendRowPixel(self.row_buffer, @as(usize, bmp_xi) * 4, coverage, self.fg_color, self.gamma_correction);
                 }
             }
         }
@@ -1254,4 +1373,34 @@ test "render text with fractional positioning" {
         }
     }
     try std.testing.expect(has_dark);
+}
+
+test "C16: renderText with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = 1e9,
+    }));
+}
+
+test "C16: renderText with NaN pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = std.math.nan(f32),
+    }));
+}
+
+test "C16: RowRenderer.init with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, RowRenderer.init(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = 1e9,
+    }));
 }

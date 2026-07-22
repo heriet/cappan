@@ -31,10 +31,13 @@ jobs:
         run: bash script/fetch-asset.sh
 
       - name: Build docs with zensical
-        run: |
-          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace \
-            --user "$(id -u):$(id -g)" \
-            docker.io/zensical/zensical:0.0.45 build
+        # Reuses compose.yaml's `doc` service (the same one `make build-docs`
+        # runs locally) instead of a separate hand-rolled `docker run`, so the
+        # zensical image/version and volume/user setup have one source of
+        # truth instead of being duplicated here. `--user` matches this
+        # runner's actual user (can't export UID -- it's a readonly bash
+        # variable -- so pass the user through the compose flag instead).
+        run: docker compose run --rm --user "$(id -u):$(id -g)" doc build
 
       - name: Build WASM
         run: zig build wasm

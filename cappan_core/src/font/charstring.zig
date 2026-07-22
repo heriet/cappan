@@ -7,6 +7,7 @@ pub const CharstringError = error{
     StackUnderflow,
     InvalidSubroutine,
     CallDepthExceeded,
+    OpBudgetExceeded,
     InvalidCff,
     UnexpectedEof,
     OutOfMemory,
@@ -15,6 +16,22 @@ pub const CharstringError = error{
 const MAX_STACK = 48;
 const MAX_CALL_DEPTH = 10;
 const MAX_HINTS: usize = 96;
+/// Total operator/operand budget across the whole charstring, including all
+/// nested subroutine expansions. The depth cap alone doesn't bound work: a
+/// malicious font can fan out (e.g. 20-way) at each of the 10 allowed levels
+/// for exponential blow-up. This caps the total tokens interpreted. It is far
+/// above anything a real glyph needs, so valid rendering is unaffected.
+const MAX_OPS: u64 = 10_000_000;
+
+/// Clamp a float pen/bounds coordinate into the i16 range (mapping NaN to 0)
+/// before `@intFromFloat`, so a malformed charstring can't panic. Well-formed
+/// glyphs stay in range, so the result is byte-identical for them.
+fn floatToI16(v: f32) i16 {
+    if (std.math.isNan(v)) return 0;
+    const lo: f32 = @floatFromInt(@as(i16, std.math.minInt(i16)));
+    const hi: f32 = @floatFromInt(@as(i16, std.math.maxInt(i16)));
+    return @intFromFloat(std.math.clamp(v, lo, hi));
+}
 
 pub fn interpret(
     allocator: std.mem.Allocator,
@@ -57,6 +74,9 @@ const Interpreter = struct {
     total_points: u32,
     contour_count: u32,
 
+    // 総演算バジェット(サブルーチン展開を含む)
+    op_count: u64,
+
     // サブルーチン
     global_subrs: cff_mod.Index,
     local_subrs: cff_mod.Index,
@@ -84,6 +104,7 @@ const Interpreter = struct {
             .v_stem_acc = 0,
             .total_points = 0,
             .contour_count = 0,
+            .op_count = 0,
             .global_subrs = global_subrs,
             .local_subrs = local_subrs,
         };
@@ -123,8 +144,8 @@ const Interpreter = struct {
 
     fn addPoint(self: *Interpreter, px: f32, py: f32, on_curve: bool, is_cubic: bool) !void {
         self.updateBounds(px, py);
-        const ix: i16 = @intFromFloat(@round(px));
-        const iy: i16 = @intFromFloat(@round(py));
+        const ix: i16 = floatToI16(@round(px));
+        const iy: i16 = floatToI16(@round(py));
         try self.current_points.append(self.allocator, .{
             .x = ix,
             .y = iy,
@@ -132,6 +153,27 @@ const Interpreter = struct {
             .is_cubic = is_cubic,
         });
         self.total_points += 1;
+    }
+
+    fn emitCubic(self: *Interpreter, c1x: f32, c1y: f32, c2x: f32, c2y: f32, ex: f32, ey: f32) !void {
+        self.x = ex;
+        self.y = ey;
+        try self.addPoint(c1x, c1y, false, true);
+        try self.addPoint(c2x, c2y, false, true);
+        try self.addPoint(self.x, self.y, true, false);
+    }
+
+    fn callSubroutine(self: *Interpreter, subrs: cff_mod.Index, depth: u32) CharstringError!void {
+        if (self.sp == 0) return error.StackUnderflow;
+        const subr_index_f = self.stack[self.sp - 1];
+        self.sp -= 1;
+        const subr_index: i32 = @intFromFloat(subr_index_f);
+        const bias = subrBias(subrs.count);
+        const actual_index_i = subr_index + bias;
+        if (actual_index_i < 0) return error.InvalidSubroutine;
+        const actual_index = std.math.cast(u16, actual_index_i) orelse return error.InvalidSubroutine;
+        const subr_data = subrs.get(actual_index) orelse return error.InvalidSubroutine;
+        try self.execute(subr_data, depth + 1);
     }
 
     fn closeContour(self: *Interpreter) !void {
@@ -214,6 +256,10 @@ const Interpreter = struct {
 
         var i: usize = 0;
         while (i < data.len) {
+            // Bound total work across all nested subr expansions (see MAX_OPS).
+            self.op_count += 1;
+            if (self.op_count > MAX_OPS) return error.OpBudgetExceeded;
+
             const b0 = data[i];
             i += 1;
 
@@ -322,11 +368,7 @@ const Interpreter = struct {
                         const c1y = self.y + self.stack[si + 1];
                         const c2x = c1x + self.stack[si + 2];
                         const c2y = c1y + self.stack[si + 3];
-                        self.x = c2x + self.stack[si + 4];
-                        self.y = c2y + self.stack[si + 5];
-                        try self.addPoint(c1x, c1y, false, true);
-                        try self.addPoint(c2x, c2y, false, true);
-                        try self.addPoint(self.x, self.y, true, false);
+                        try self.emitCubic(c1x, c1y, c2x, c2y, c2x + self.stack[si + 4], c2y + self.stack[si + 5]);
                         si += 6;
                     }
                     self.sp = 0;
@@ -334,16 +376,7 @@ const Interpreter = struct {
 
                 // callsubr (10) - local
                 10 => {
-                    if (self.sp == 0) return error.StackUnderflow;
-                    const subr_index_f = self.stack[self.sp - 1];
-                    self.sp -= 1;
-                    const subr_index: i32 = @intFromFloat(subr_index_f);
-                    const bias = subrBias(self.local_subrs.count);
-                    const actual_index_i = subr_index + bias;
-                    if (actual_index_i < 0) return error.InvalidSubroutine;
-                    const actual_index = std.math.cast(u16, actual_index_i) orelse return error.InvalidSubroutine;
-                    const subr_data = self.local_subrs.get(actual_index) orelse return error.InvalidSubroutine;
-                    try self.execute(subr_data, depth + 1);
+                    try self.callSubroutine(self.local_subrs, depth);
                 },
 
                 // return (11)
@@ -421,11 +454,7 @@ const Interpreter = struct {
                         const c1y = self.y + self.stack[si + 1];
                         const c2x = c1x + self.stack[si + 2];
                         const c2y = c1y + self.stack[si + 3];
-                        self.x = c2x + self.stack[si + 4];
-                        self.y = c2y + self.stack[si + 5];
-                        try self.addPoint(c1x, c1y, false, true);
-                        try self.addPoint(c2x, c2y, false, true);
-                        try self.addPoint(self.x, self.y, true, false);
+                        try self.emitCubic(c1x, c1y, c2x, c2y, c2x + self.stack[si + 4], c2y + self.stack[si + 5]);
                         si += 6;
                     }
                     // Final line
@@ -452,11 +481,7 @@ const Interpreter = struct {
                     const c1y = self.y + self.stack[self.sp - 5];
                     const c2x = c1x + self.stack[self.sp - 4];
                     const c2y = c1y + self.stack[self.sp - 3];
-                    self.x = c2x + self.stack[self.sp - 2];
-                    self.y = c2y + self.stack[self.sp - 1];
-                    try self.addPoint(c1x, c1y, false, true);
-                    try self.addPoint(c2x, c2y, false, true);
-                    try self.addPoint(self.x, self.y, true, false);
+                    try self.emitCubic(c1x, c1y, c2x, c2y, c2x + self.stack[self.sp - 2], c2y + self.stack[self.sp - 1]);
                     self.sp = 0;
                 },
 
@@ -483,11 +508,7 @@ const Interpreter = struct {
                         const c1y = self.y + dya;
                         const c2x = c1x + dxb;
                         const c2y = c1y + dyb;
-                        self.x = c2x;
-                        self.y = c2y + dyc;
-                        try self.addPoint(c1x, c1y, false, true);
-                        try self.addPoint(c2x, c2y, false, true);
-                        try self.addPoint(self.x, self.y, true, false);
+                        try self.emitCubic(c1x, c1y, c2x, c2y, c2x, c2y + dyc);
                         si += 4;
                     }
                     self.sp = 0;
@@ -516,11 +537,7 @@ const Interpreter = struct {
                         }
                         const c2x = c1x + dxb;
                         const c2y = c1y + dyb;
-                        self.x = c2x + dxc;
-                        self.y = c2y;
-                        try self.addPoint(c1x, c1y, false, true);
-                        try self.addPoint(c2x, c2y, false, true);
-                        try self.addPoint(self.x, self.y, true, false);
+                        try self.emitCubic(c1x, c1y, c2x, c2y, c2x + dxc, c2y);
                         si += 4;
                     }
                     self.sp = 0;
@@ -528,16 +545,7 @@ const Interpreter = struct {
 
                 // callgsubr (29) - global
                 29 => {
-                    if (self.sp == 0) return error.StackUnderflow;
-                    const subr_index_f = self.stack[self.sp - 1];
-                    self.sp -= 1;
-                    const subr_index: i32 = @intFromFloat(subr_index_f);
-                    const bias = subrBias(self.global_subrs.count);
-                    const actual_index_i = subr_index + bias;
-                    if (actual_index_i < 0) return error.InvalidSubroutine;
-                    const actual_index = std.math.cast(u16, actual_index_i) orelse return error.InvalidSubroutine;
-                    const subr_data = self.global_subrs.get(actual_index) orelse return error.InvalidSubroutine;
-                    try self.execute(subr_data, depth + 1);
+                    try self.callSubroutine(self.global_subrs, depth);
                 },
 
                 // vhcurveto (30)
@@ -595,21 +603,13 @@ const Interpreter = struct {
                 const c1y = self.y;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x + dx3;
-                self.y = c2y;
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, c2x + dx3, c2y);
                 // Curve 2
                 const c3x = self.x + dx4;
                 const c3y = self.y;
                 const c4x = c3x + dx5;
                 const c4y = c3y + (-dy2);
-                self.x = c4x + dx6;
-                self.y = c4y;
-                try self.addPoint(c3x, c3y, false, true);
-                try self.addPoint(c4x, c4y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c3x, c3y, c4x, c4y, c4x + dx6, c4y);
                 self.sp = 0;
             },
             // flex (12 35) — 13 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd
@@ -633,21 +633,13 @@ const Interpreter = struct {
                 const c1y = self.y + dy1;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x + dx3;
-                self.y = c2y + dy3;
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, c2x + dx3, c2y + dy3);
                 // Curve 2
                 const c3x = self.x + dx4;
                 const c3y = self.y + dy4;
                 const c4x = c3x + dx5;
                 const c4y = c3y + dy5;
-                self.x = c4x + dx6;
-                self.y = c4y + dy6;
-                try self.addPoint(c3x, c3y, false, true);
-                try self.addPoint(c4x, c4y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c3x, c3y, c4x, c4y, c4x + dx6, c4y + dy6);
                 self.sp = 0;
             },
             // hflex1 (12 36) — 9 args: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
@@ -667,21 +659,13 @@ const Interpreter = struct {
                 const c1y = self.y + dy1;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x + dx3;
-                self.y = c2y;
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, c2x + dx3, c2y);
                 // Curve 2
                 const c3x = self.x + dx4;
                 const c3y = self.y;
                 const c4x = c3x + dx5;
                 const c4y = c3y + dy5;
-                self.x = c4x + dx6;
-                self.y = c4y + (-(dy1 + dy2 + dy5));
-                try self.addPoint(c3x, c3y, false, true);
-                try self.addPoint(c4x, c4y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c3x, c3y, c4x, c4y, c4x + dx6, c4y + (-(dy1 + dy2 + dy5)));
                 self.sp = 0;
             },
             // flex1 (12 37) — 11 args: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6
@@ -708,21 +692,13 @@ const Interpreter = struct {
                 const c1y = self.y + dy1;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x + dx3;
-                self.y = c2y + dy3;
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, c2x + dx3, c2y + dy3);
                 // Curve 2
                 const c3x = self.x + dx4;
                 const c3y = self.y + dy4;
                 const c4x = c3x + dx5;
                 const c4y = c3y + dy5;
-                self.x = c4x + f_dx6;
-                self.y = c4y + f_dy6;
-                try self.addPoint(c3x, c3y, false, true);
-                try self.addPoint(c4x, c4y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c3x, c3y, c4x, c4y, c4x + f_dx6, c4y + f_dy6);
                 self.sp = 0;
             },
             else => unreachable,
@@ -751,17 +727,15 @@ const Interpreter = struct {
                 const c1y = self.y + dy1;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x + dx3;
-                self.y = c2y;
+                const end_x = c2x + dx3;
+                var end_y = c2y;
                 if (has_extra) {
-                    self.y += self.stack[si + 4];
+                    end_y += self.stack[si + 4];
                     si += 5;
                 } else {
                     si += 4;
                 }
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, end_x, end_y);
             } else {
                 // h start: dx1 dx2 dy2 dy3 [dxf]
                 const dx1 = self.stack[si];
@@ -773,17 +747,15 @@ const Interpreter = struct {
                 const c1y = self.y;
                 const c2x = c1x + dx2;
                 const c2y = c1y + dy2;
-                self.x = c2x;
-                self.y = c2y + dy3;
+                var end_x = c2x;
+                const end_y = c2y + dy3;
                 if (has_extra) {
-                    self.x += self.stack[si + 4];
+                    end_x += self.stack[si + 4];
                     si += 5;
                 } else {
                     si += 4;
                 }
-                try self.addPoint(c1x, c1y, false, true);
-                try self.addPoint(c2x, c2y, false, true);
-                try self.addPoint(self.x, self.y, true, false);
+                try self.emitCubic(c1x, c1y, c2x, c2y, end_x, end_y);
             }
 
             vertical = !vertical;
@@ -811,10 +783,10 @@ const Interpreter = struct {
         var y_max: i16 = 0;
 
         if (self.x_min <= self.x_max) {
-            x_min = @intFromFloat(@floor(self.x_min));
-            y_min = @intFromFloat(@floor(self.y_min));
-            x_max = @intFromFloat(@ceil(self.x_max));
-            y_max = @intFromFloat(@ceil(self.y_max));
+            x_min = floatToI16(@floor(self.x_min));
+            y_min = floatToI16(@floor(self.y_min));
+            x_max = floatToI16(@ceil(self.x_max));
+            y_max = floatToI16(@ceil(self.y_max));
         }
 
         const hints: ?glyph_mod.HintData = if (self.h_stems.items.len > 0 or self.v_stems.items.len > 0) blk: {

@@ -3,12 +3,12 @@ const cappan_core = @import("cappan_core");
 
 const Font = cappan_core.font.Font;
 
-pub const TableInfo = struct {
-    tag: [4]u8,
-    offset: u32,
-    length: u32,
-    checksum: u32,
-};
+/// Same 4 fields (tag/offset/length/checksum) as core's own `TableRecord` --
+/// aliased instead of redeclared to avoid two structurally-identical types for
+/// the same thing. Kept as an owned copy in `FontSummary.tables` (rather than
+/// borrowing `font.offset_table.table_records` directly) since callers are not
+/// guaranteed to keep the source `Font` alive for as long as the `FontSummary`.
+pub const TableInfo = cappan_core.font.parser.TableRecord;
 
 pub const FontSummary = struct {
     num_glyphs: u16,
@@ -34,18 +34,8 @@ pub const FontSummary = struct {
 
 /// Get a summary of font metadata including table list, metrics, and name info.
 pub fn getSummary(allocator: std.mem.Allocator, font: Font) !FontSummary {
-    const records = font.offset_table.table_records;
-    const tables = try allocator.alloc(TableInfo, records.len);
+    const tables = try allocator.dupe(TableInfo, font.offset_table.table_records);
     errdefer allocator.free(tables);
-
-    for (records, 0..) |rec, i| {
-        tables[i] = .{
-            .tag = rec.tag,
-            .offset = rec.offset,
-            .length = rec.length,
-            .checksum = rec.checksum,
-        };
-    }
 
     var family_name: ?[]const u8 = null;
     var subfamily_name: ?[]const u8 = null;

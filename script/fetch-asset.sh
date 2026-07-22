@@ -16,6 +16,8 @@ BROTLI_DICT_SHA256="20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f3
 TEST_COLR_V1_SHA256="e87738d4e9f7f319e34045340c0a17bba948ed638345aba47d4a0d7d6d09f163"
 TEST_GLYPHS_COLR_1_SHA256="8aa611b1ca97044ac6f13dc982fde29256612f0a5acc6ef47ca541a7a5b99b28"
 TEST_GLYPHS_COLR_1_VAR_SHA256="ad575a09d6748aebcb3b90ffd384c64d5c64b5fd9927967e7cd7cc0d70c98d34"
+SOURCE_SANS_VF_UPRIGHT_SHA256="1147db9a3f0edd4956068de77930148acce2742dd76d57f7239b2b1c687ac63f"
+SOURCE_SANS_VF_ITALIC_SHA256="c34791f4f889af43d84e2f84ebeb02e6eed07058aca21e6729d26e6436d18965"
 
 verify_sha256() {
   local file="$1" expected="$2"
@@ -204,9 +206,9 @@ else
 fi
 
 # --- SourceSans3-Variable.ttf ---
-# TODO: add SHA256 verification
 SOURCE_SANS_VF_DIR="$FONT_DIR/source-sans-vf"
-if [ ! -f "$SOURCE_SANS_VF_DIR/SourceSans3VF-Upright.ttf" ]; then
+if ! file_ok "$SOURCE_SANS_VF_DIR/SourceSans3VF-Upright.ttf" "$SOURCE_SANS_VF_UPRIGHT_SHA256" ||
+   ! file_ok "$SOURCE_SANS_VF_DIR/SourceSans3VF-Italic.ttf" "$SOURCE_SANS_VF_ITALIC_SHA256"; then
   echo "Downloading Source Sans 3 Variable 3.052R..."
   tmpdir=$(mktemp -d)
   curl -fsSL "https://github.com/adobe-fonts/source-sans/releases/download/3.052R/VF-source-sans-3.052R.zip" \
@@ -215,6 +217,14 @@ if [ ! -f "$SOURCE_SANS_VF_DIR/SourceSans3VF-Upright.ttf" ]; then
   mkdir -p "$SOURCE_SANS_VF_DIR"
   find "$tmpdir" -name "*.ttf" -exec cp {} "$SOURCE_SANS_VF_DIR/" \;
   rm -rf "$tmpdir"
+  if ! verify_sha256 "$SOURCE_SANS_VF_DIR/SourceSans3VF-Upright.ttf" "$SOURCE_SANS_VF_UPRIGHT_SHA256"; then
+    echo "ERROR: SourceSans3VF-Upright.ttf checksum mismatch" >&2
+    exit 1
+  fi
+  if ! verify_sha256 "$SOURCE_SANS_VF_DIR/SourceSans3VF-Italic.ttf" "$SOURCE_SANS_VF_ITALIC_SHA256"; then
+    echo "ERROR: SourceSans3VF-Italic.ttf checksum mismatch" >&2
+    exit 1
+  fi
   echo "  OK: Source Sans 3 Variable"
 else
   echo "  OK: Source Sans 3 Variable (cached)"

@@ -110,6 +110,37 @@ pub const GvarTable = struct {
             serialized_pos = result.new_offset;
         }
 
+        const max_stack_axis_count = 16;
+        const axis_count = @as(usize, self.axis_count);
+        var peak_stack: [max_stack_axis_count]f32 = undefined;
+        var start_stack: [max_stack_axis_count]f32 = undefined;
+        var end_stack: [max_stack_axis_count]f32 = undefined;
+        var peak_heap: ?[]f32 = null;
+        var start_heap: ?[]f32 = null;
+        var end_heap: ?[]f32 = null;
+        defer if (peak_heap) |buf| allocator.free(buf);
+        defer if (start_heap) |buf| allocator.free(buf);
+        defer if (end_heap) |buf| allocator.free(buf);
+
+        const peak_buf = if (axis_count <= max_stack_axis_count)
+            peak_stack[0..axis_count]
+        else blk: {
+            peak_heap = try allocator.alloc(f32, axis_count);
+            break :blk peak_heap.?;
+        };
+        const start_buf = if (axis_count <= max_stack_axis_count)
+            start_stack[0..axis_count]
+        else blk: {
+            start_heap = try allocator.alloc(f32, axis_count);
+            break :blk start_heap.?;
+        };
+        const end_buf = if (axis_count <= max_stack_axis_count)
+            end_stack[0..axis_count]
+        else blk: {
+            end_heap = try allocator.alloc(f32, axis_count);
+            break :blk end_heap.?;
+        };
+
         var header_offset: usize = 4;
         var tuple_idx: u16 = 0;
         while (tuple_idx < tuple_count) : (tuple_idx += 1) {
@@ -121,14 +152,11 @@ pub const GvarTable = struct {
             const INTERMEDIATE_REGION: u16 = 0x4000;
             const PRIVATE_POINT_NUMBERS: u16 = 0x2000;
 
-            var peak_coords = try allocator.alloc(f32, self.axis_count);
-            defer allocator.free(peak_coords);
-
             if (tuple_index & EMBEDDED_PEAK_TUPLE != 0) {
                 const peak_size = @as(usize, self.axis_count) * 2;
                 if (header_offset + peak_size > glyph_var_data.len) return error.UnexpectedEof;
                 for (0..self.axis_count) |i| {
-                    peak_coords[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
+                    peak_buf[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
                     header_offset += 2;
                 }
             } else {
@@ -138,31 +166,29 @@ pub const GvarTable = struct {
                 const tuple_offset = @as(usize, self.shared_tuples_offset) + @as(usize, shared_idx) * tuple_size;
                 if (tuple_offset + tuple_size > self.data.len) return error.UnexpectedEof;
                 for (0..self.axis_count) |i| {
-                    peak_coords[i] = try parser.readF2Dot14(self.data, tuple_offset + i * 2);
+                    peak_buf[i] = try parser.readF2Dot14(self.data, tuple_offset + i * 2);
                 }
             }
 
             var start_coords: ?[]f32 = null;
             var end_coords: ?[]f32 = null;
-            defer if (start_coords) |sc| allocator.free(sc);
-            defer if (end_coords) |ec| allocator.free(ec);
 
             if (tuple_index & INTERMEDIATE_REGION != 0) {
                 const region_size = @as(usize, self.axis_count) * 4;
                 if (header_offset + region_size > glyph_var_data.len) return error.UnexpectedEof;
-                start_coords = try allocator.alloc(f32, self.axis_count);
+                start_coords = start_buf;
                 for (0..self.axis_count) |i| {
                     start_coords.?[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
                     header_offset += 2;
                 }
-                end_coords = try allocator.alloc(f32, self.axis_count);
+                end_coords = end_buf;
                 for (0..self.axis_count) |i| {
                     end_coords.?[i] = try parser.readF2Dot14(glyph_var_data, header_offset);
                     header_offset += 2;
                 }
             }
 
-            const scalar = computeScalar(normalized_coords, peak_coords, start_coords, end_coords);
+            const scalar = computeScalar(normalized_coords, peak_buf, start_coords, end_coords);
             if (scalar == 0.0) {
                 serialized_pos += variation_data_size;
                 continue;
@@ -293,13 +319,16 @@ fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: us
 
         for (0..run_count) |_| {
             if (i >= count) break;
+            // Point numbers are cumulative and must stay within u16 (a glyph
+            // has at most 65535 points); reject a malformed stream whose deltas
+            // sum past that instead of overflowing the accumulator.
             if (is_word) {
                 if (pos + 2 > data.len) return error.UnexpectedEof;
-                accumulated += try parser.readU16(data, pos);
+                accumulated = std.math.add(u16, accumulated, try parser.readU16(data, pos)) catch return error.UnexpectedEof;
                 pos += 2;
             } else {
                 if (pos >= data.len) return error.UnexpectedEof;
-                accumulated += @as(u16, try parser.readU8(data, pos));
+                accumulated = std.math.add(u16, accumulated, @as(u16, try parser.readU8(data, pos))) catch return error.UnexpectedEof;
                 pos += 1;
             }
             points[i] = accumulated;

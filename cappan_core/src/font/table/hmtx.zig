@@ -11,6 +11,9 @@ pub const HmtxTable = struct {
     number_of_h_metrics: u16,
 
     pub fn getMetrics(self: HmtxTable, glyph_id: u16) !HMetrics {
+        // The spec requires numberOfHMetrics >= 1; a malformed value of 0 would
+        // make the else-branch compute (0 - 1) * 4 and underflow usize.
+        if (self.number_of_h_metrics == 0) return error.UnexpectedEof;
         if (glyph_id < self.number_of_h_metrics) {
             const offset = @as(usize, glyph_id) * 4;
             return .{
@@ -36,6 +39,16 @@ pub fn parse(data: []const u8, number_of_h_metrics: u16) HmtxTable {
         .data = data,
         .number_of_h_metrics = number_of_h_metrics,
     };
+}
+
+test "getMetrics with numberOfHMetrics=0 errors instead of underflowing" {
+    // Malformed hhea would give numberOfHMetrics == 0; the extended-array
+    // branch used to compute (0 - 1) * 4 and underflow usize. It must now
+    // return an error for any glyph rather than crashing.
+    const data = [_]u8{0} ** 8;
+    const hmtx = parse(&data, 0);
+    try std.testing.expectError(error.UnexpectedEof, hmtx.getMetrics(0));
+    try std.testing.expectError(error.UnexpectedEof, hmtx.getMetrics(5));
 }
 
 test "parse hmtx table from DejaVuSans" {

@@ -108,11 +108,8 @@ pub fn decompress(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
                 // Copy MLEN raw bytes to output
                 if (output.items.len + mlen > MAX_OUTPUT_SIZE) return error.OutputTooLarge;
                 try output.ensureTotalCapacity(allocator, output.items.len + mlen);
-                var i: u32 = 0;
-                while (i < mlen) : (i += 1) {
-                    const byte_val = try reader.readBits(8);
-                    output.appendAssumeCapacity(@intCast(byte_val));
-                }
+                const dest = output.addManyAsSliceAssumeCapacity(mlen);
+                try reader.readBytes(dest);
                 continue;
             }
         }
@@ -353,13 +350,31 @@ fn decodeCompressedMetaBlock(
             if (copy_length > bytes_remaining) {
                 return BrotliError.InvalidStream;
             }
-            var copy_i: u32 = 0;
-            while (copy_i < copy_length) : (copy_i += 1) {
-                const src_pos = output.items.len - distance;
-                const byte_val = output.items[src_pos];
-                try output.append(allocator, byte_val);
-                p2 = p1;
-                p1 = byte_val;
+            try output.ensureUnusedCapacity(allocator, copy_length);
+            if (distance >= copy_length) {
+                // Non-overlapping: every source byte already existed in `output`
+                // before this copy started, so the whole run can be appended in
+                // one bulk slice copy instead of byte-by-byte.
+                const src_start = output.items.len - distance;
+                output.appendSliceAssumeCapacity(output.items[src_start..][0..copy_length]);
+                if (copy_length >= 2) {
+                    p2 = output.items[output.items.len - 2];
+                    p1 = output.items[output.items.len - 1];
+                } else if (copy_length == 1) {
+                    p2 = p1;
+                    p1 = output.items[output.items.len - 1];
+                }
+            } else {
+                // Overlapping (e.g. RLE-style short repeats): later bytes depend
+                // on earlier just-appended bytes, so this must stay byte-by-byte.
+                var copy_i: u32 = 0;
+                while (copy_i < copy_length) : (copy_i += 1) {
+                    const src_pos = output.items.len - distance;
+                    const byte_val = output.items[src_pos];
+                    output.appendAssumeCapacity(byte_val);
+                    p2 = p1;
+                    p1 = byte_val;
+                }
             }
             bytes_remaining -= copy_length;
 
@@ -370,9 +385,11 @@ fn decodeCompressedMetaBlock(
                 dist_ring[0] = distance;
             }
         } else {
-            // Dictionary reference
+            // Dictionary reference. Range-check the attacker-controlled
+            // copy_length (u32) *before* narrowing it to u8, or a value > 255
+            // would panic in safe builds / truncate-and-desync elsewhere.
+            if (copy_length < 4 or copy_length > 24) return BrotliError.InvalidDictionary;
             const word_len: u8 = @intCast(copy_length);
-            if (word_len < 4 or word_len > 24) return BrotliError.InvalidDictionary;
 
             const word_id = distance - max_backward - 1;
             const n_words: u32 = @as(u32, 1) << dictionary.kNDBits[word_len - 4];
@@ -820,6 +837,64 @@ fn ceilLog2(n: u32) u5 {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+test "dictionary reference with copy_length > 255 errors instead of panicking" {
+    // Craft a stream whose single insert&copy command decodes to a large copy
+    // length (326) with a distance that lands in the static-dictionary range.
+    // The old code narrowed copy_length to u8 *before* range-checking it, so a
+    // value > 255 panicked (@intCast) in safe builds. It must now return
+    // InvalidDictionary.
+    const Writer = struct {
+        buf: [16]u8 = @splat(0),
+        byte: usize = 0,
+        bit: u3 = 0,
+        fn put(self: *@This(), value: u32, n: u5) void {
+            var i: u5 = 0;
+            while (i < n) : (i += 1) {
+                const b: u32 = (value >> i) & 1;
+                if (b == 1) self.buf[self.byte] |= (@as(u8, 1) << self.bit);
+                if (self.bit == 7) {
+                    self.bit = 0;
+                    self.byte += 1;
+                } else {
+                    self.bit += 1;
+                }
+            }
+        }
+    };
+    var w = Writer{};
+    w.put(0, 1); // WBITS first bit -> window 16
+    w.put(1, 1); // ISLAST = 1
+    w.put(0, 1); // ISLASTEMPTY = 0
+    w.put(0, 2); // MNIBBLES = 0 -> 4 nibbles
+    w.put(0, 16); // MLEN raw 0 -> mlen = 1
+    w.put(0, 1); // literal NBLTYPES -> 1
+    w.put(0, 1); // insert&copy NBLTYPES -> 1
+    w.put(0, 1); // distance NBLTYPES -> 1
+    w.put(0, 2); // NPOSTFIX = 0
+    w.put(0, 4); // NDIRECT hbits = 0
+    w.put(0, 2); // context mode for literal type 0
+    w.put(0, 1); // literal context map NTREES -> 1 (all zeros)
+    w.put(0, 1); // distance context map NTREES -> 1 (all zeros)
+    // Literal prefix code (alphabet 256): simple, single symbol 0
+    w.put(1, 2); // HSKIP = 1 -> simple
+    w.put(0, 2); // NSYM-1 = 0 -> 1 symbol
+    w.put(0, 8); // symbol value 0
+    // Insert&copy prefix code (alphabet 704): simple, single symbol 388.
+    // cmd 388 -> insert_code 0 (len 0), copy_code 20 (len 326 + 8 extra bits).
+    w.put(1, 2);
+    w.put(0, 2);
+    w.put(388, 10);
+    // Distance prefix code (alphabet 64): simple, single symbol 0 (-> ring[0]=4)
+    w.put(1, 2);
+    w.put(0, 2);
+    w.put(0, 6);
+    // copy_code 20 carries 8 extra bits; 0 -> copy_length = 326
+    w.put(0, 8);
+
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(BrotliError.InvalidDictionary, decompress(allocator, &w.buf));
+}
 
 test "decompress Hello, World!" {
     const allocator = std.testing.allocator;

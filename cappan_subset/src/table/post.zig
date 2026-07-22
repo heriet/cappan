@@ -1,5 +1,6 @@
 const std = @import("std");
-const writer = @import("../writer.zig");
+const cappan_core = @import("cappan_core");
+const writer = cappan_core.font.sfnt_writer;
 
 pub fn buildPost(allocator: std.mem.Allocator) ![]u8 {
     const buf = try allocator.alloc(u8, 32);

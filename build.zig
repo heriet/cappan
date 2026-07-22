@@ -20,6 +20,8 @@ pub fn build(b: *std.Build) void {
     const enable_sdf = b.option(bool, "enable_sdf", "Enable SDF glyph rendering") orelse true;
 
     const feature_options = b.addOptions();
+    // Single source of truth for the version: the package manifest.
+    feature_options.addOption([]const u8, "version", @import("build.zig.zon").version);
     feature_options.addOption(bool, "enable_cff", enable_cff);
     feature_options.addOption(bool, "enable_opentype_layout", enable_opentype_layout);
     feature_options.addOption(bool, "enable_color", enable_color);
@@ -46,108 +48,77 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    const subset_mod = b.addModule("cappan_subset", .{
-        .root_source_file = b.path("cappan_subset/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
+    // Collected here and only wired up to the "test" step at the end, so that
+    // step's declaration order (relative to "run"/"wasm") matches the
+    // original file's -- `zig build --help` lists steps in declaration order.
+    var test_run_steps: std.ArrayList(*std.Build.Step) = .empty;
 
-    const subset_lib = b.addLibrary(.{
-        .name = "cappan_subset",
-        .root_module = subset_mod,
+    // lib_test reuses lib_mod directly (rather than building a second module
+    // with the same root_source_file + build_options) -- addTest accepts an
+    // already-in-use module just like addLibrary/addModule imports do.
+    const lib_test = b.addTest(.{
+        .root_module = lib_mod,
     });
-    b.installArtifact(subset_lib);
+    test_run_steps.append(b.allocator, &b.addRunArtifact(lib_test).step) catch @panic("OOM");
 
-    const embed_mod = b.addModule("cappan_embed", .{
-        .root_source_file = b.path("cappan_embed/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
+    // The 6 sibling modules (cappan_subset/cappan_embed/cappan_pathify/
+    // cappan_inspect/cappan_metrics/cappan_discover) all follow the exact same
+    // shape: a module importing only cappan_core, a library built from it,
+    // installed, and a test run from the same module. Looping over their
+    // names/paths keeps this in one place instead of 6 near-identical copies.
+    const SiblingModule = struct {
+        name: []const u8,
+        root_source_file: []const u8,
+    };
+    const sibling_modules = [_]SiblingModule{
+        .{ .name = "cappan_subset", .root_source_file = "cappan_subset/src/root.zig" },
+        .{ .name = "cappan_embed", .root_source_file = "cappan_embed/src/root.zig" },
+        .{ .name = "cappan_pathify", .root_source_file = "cappan_pathify/src/root.zig" },
+        .{ .name = "cappan_inspect", .root_source_file = "cappan_inspect/src/root.zig" },
+        .{ .name = "cappan_metrics", .root_source_file = "cappan_metrics/src/root.zig" },
+        .{ .name = "cappan_discover", .root_source_file = "cappan_discover/src/root.zig" },
+    };
 
-    const embed_lib = b.addLibrary(.{
-        .name = "cappan_embed",
-        .root_module = embed_mod,
-    });
-    b.installArtifact(embed_lib);
+    // cappan_cli's own exe module below imports every sibling module by name,
+    // so keep the built modules around (in the same order) to build that
+    // import list without hardcoding it a second time.
+    var sibling_imports: [sibling_modules.len]std.Build.Module.Import = undefined;
 
-    const pathify_mod = b.addModule("cappan_pathify", .{
-        .root_source_file = b.path("cappan_pathify/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
+    for (sibling_modules, 0..) |sm, i| {
+        const mod = b.addModule(sm.name, .{
+            .root_source_file = b.path(sm.root_source_file),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cappan_core", .module = lib_mod },
+            },
+        });
 
-    const pathify_lib = b.addLibrary(.{
-        .name = "cappan_pathify",
-        .root_module = pathify_mod,
-    });
-    b.installArtifact(pathify_lib);
+        const sibling_lib = b.addLibrary(.{
+            .name = sm.name,
+            .root_module = mod,
+        });
+        b.installArtifact(sibling_lib);
 
-    const inspect_mod = b.addModule("cappan_inspect", .{
-        .root_source_file = b.path("cappan_inspect/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
+        const sibling_test = b.addTest(.{
+            .root_module = mod,
+        });
+        test_run_steps.append(b.allocator, &b.addRunArtifact(sibling_test).step) catch @panic("OOM");
 
-    const inspect_lib = b.addLibrary(.{
-        .name = "cappan_inspect",
-        .root_module = inspect_mod,
-    });
-    b.installArtifact(inspect_lib);
+        sibling_imports[i] = .{ .name = sm.name, .module = mod };
+    }
 
-    const metrics_mod = b.addModule("cappan_metrics", .{
-        .root_source_file = b.path("cappan_metrics/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
-
-    const metrics_lib = b.addLibrary(.{
-        .name = "cappan_metrics",
-        .root_module = metrics_mod,
-    });
-    b.installArtifact(metrics_lib);
-
-    const discover_mod = b.addModule("cappan_discover", .{
-        .root_source_file = b.path("cappan_discover/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-        },
-    });
-    const discover_lib = b.addLibrary(.{
-        .name = "cappan_discover",
-        .root_module = discover_mod,
-    });
-    b.installArtifact(discover_lib);
+    var exe_imports: [1 + sibling_modules.len]std.Build.Module.Import = undefined;
+    exe_imports[0] = .{ .name = "cappan_core", .module = lib_mod };
+    for (sibling_imports, 0..) |imp, i| {
+        exe_imports[1 + i] = imp;
+    }
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("cappan_cli/src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cappan_core", .module = lib_mod },
-            .{ .name = "cappan_subset", .module = subset_mod },
-            .{ .name = "cappan_embed", .module = embed_mod },
-            .{ .name = "cappan_inspect", .module = inspect_mod },
-            .{ .name = "cappan_pathify", .module = pathify_mod },
-            .{ .name = "cappan_metrics", .module = metrics_mod },
-            .{ .name = "cappan_discover", .module = discover_mod },
-        },
+        .imports = &exe_imports,
     });
 
     const exe = b.addExecutable(.{
@@ -164,116 +135,17 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the cappan CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const lib_test_mod = b.createModule(.{
-        .root_source_file = b.path("cappan_core/src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    lib_test_mod.addOptions("build_options", feature_options);
-    const lib_test = b.addTest(.{
-        .root_module = lib_test_mod,
-    });
-    const run_lib_test = b.addRunArtifact(lib_test);
-
+    // exe_test reuses exe_mod directly instead of re-declaring the same
+    // root_source_file + 7-entry import list a second time.
     const exe_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_cli/src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-                .{ .name = "cappan_subset", .module = subset_mod },
-                .{ .name = "cappan_embed", .module = embed_mod },
-                .{ .name = "cappan_inspect", .module = inspect_mod },
-                .{ .name = "cappan_pathify", .module = pathify_mod },
-                .{ .name = "cappan_metrics", .module = metrics_mod },
-                .{ .name = "cappan_discover", .module = discover_mod },
-            },
-        }),
+        .root_module = exe_mod,
     });
-    const run_exe_test = b.addRunArtifact(exe_test);
-
-    const subset_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_subset/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_subset_test = b.addRunArtifact(subset_test);
-
-    const embed_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_embed/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_embed_test = b.addRunArtifact(embed_test);
-
-    const pathify_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_pathify/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_pathify_test = b.addRunArtifact(pathify_test);
-
-    const inspect_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_inspect/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_inspect_test = b.addRunArtifact(inspect_test);
-
-    const metrics_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_metrics/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_metrics_test = b.addRunArtifact(metrics_test);
-
-    const discover_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("cappan_discover/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "cappan_core", .module = lib_mod },
-            },
-        }),
-    });
-    const run_discover_test = b.addRunArtifact(discover_test);
+    test_run_steps.append(b.allocator, &b.addRunArtifact(exe_test).step) catch @panic("OOM");
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_test.step);
-    test_step.dependOn(&run_exe_test.step);
-    test_step.dependOn(&run_subset_test.step);
-    test_step.dependOn(&run_embed_test.step);
-    test_step.dependOn(&run_pathify_test.step);
-    test_step.dependOn(&run_inspect_test.step);
-    test_step.dependOn(&run_metrics_test.step);
-    test_step.dependOn(&run_discover_test.step);
+    for (test_run_steps.items) |s| {
+        test_step.dependOn(s);
+    }
 
     // WASM build
     const wasm_step = b.step("wasm", "Build WASM module");

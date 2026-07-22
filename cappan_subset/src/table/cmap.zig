@@ -1,6 +1,6 @@
 const std = @import("std");
 const cappan_core = @import("cappan_core");
-const writer = @import("../writer.zig");
+const writer = cappan_core.font.sfnt_writer;
 
 const Group = struct {
     start_char_code: u32,
@@ -67,21 +67,34 @@ pub fn buildCmap(
     @memset(buf, 0);
 
     var off: usize = 0;
-    writer.writeU16BE(buf, off, 0); off += 2;
-    writer.writeU16BE(buf, off, 1); off += 2;
-    writer.writeU16BE(buf, off, 3); off += 2;
-    writer.writeU16BE(buf, off, 10); off += 2;
-    writer.writeU32BE(buf, off, 12); off += 4;
-    writer.writeU16BE(buf, off, 12); off += 2;
-    writer.writeU16BE(buf, off, 0); off += 2;
-    writer.writeU32BE(buf, off, subtable_len); off += 4;
-    writer.writeU32BE(buf, off, 0); off += 4;
-    writer.writeU32BE(buf, off, num_groups); off += 4;
+    writer.writeU16BE(buf, off, 0);
+    off += 2;
+    writer.writeU16BE(buf, off, 1);
+    off += 2;
+    writer.writeU16BE(buf, off, 3);
+    off += 2;
+    writer.writeU16BE(buf, off, 10);
+    off += 2;
+    writer.writeU32BE(buf, off, 12);
+    off += 4;
+    writer.writeU16BE(buf, off, 12);
+    off += 2;
+    writer.writeU16BE(buf, off, 0);
+    off += 2;
+    writer.writeU32BE(buf, off, subtable_len);
+    off += 4;
+    writer.writeU32BE(buf, off, 0);
+    off += 4;
+    writer.writeU32BE(buf, off, num_groups);
+    off += 4;
 
     for (groups.items) |g| {
-        writer.writeU32BE(buf, off, g.start_char_code); off += 4;
-        writer.writeU32BE(buf, off, g.end_char_code); off += 4;
-        writer.writeU32BE(buf, off, g.start_glyph_id); off += 4;
+        writer.writeU32BE(buf, off, g.start_char_code);
+        off += 4;
+        writer.writeU32BE(buf, off, g.end_char_code);
+        off += 4;
+        writer.writeU32BE(buf, off, g.start_glyph_id);
+        off += 4;
     }
 
     return buf;

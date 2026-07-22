@@ -1,4 +1,5 @@
 const std = @import("std");
+const morphology = @import("morphology.zig");
 
 pub const DistanceFieldOptions = struct {};
 
@@ -24,33 +25,7 @@ pub fn buildRevealMap(allocator: std.mem.Allocator, coverage: []const u8, width:
         grid[i] = if (coverage[i] > 0) 1e10 else 0.0;
     }
 
-    const max_dim = @max(w, h);
-    const temp = try allocator.alloc(f32, max_dim);
-    defer allocator.free(temp);
-    const output_buf = try allocator.alloc(f32, max_dim);
-    defer allocator.free(output_buf);
-    const v_buf = try allocator.alloc(usize, max_dim);
-    defer allocator.free(v_buf);
-    const z_buf = try allocator.alloc(f32, max_dim + 1);
-    defer allocator.free(z_buf);
-
-    // EDT rows
-    for (0..h) |y| {
-        const row_start = y * w;
-        edt1d(grid[row_start .. row_start + w], w, v_buf, z_buf, output_buf[0..w]);
-        @memcpy(grid[row_start .. row_start + w], output_buf[0..w]);
-    }
-
-    // EDT columns
-    for (0..w) |x| {
-        for (0..h) |y| {
-            temp[y] = grid[y * w + x];
-        }
-        edt1d(temp[0..h], h, v_buf, z_buf, output_buf[0..h]);
-        for (0..h) |y| {
-            grid[y * w + x] = output_buf[y];
-        }
-    }
+    try morphology.squaredEdt2dInPlace(allocator, grid, w, h);
 
     // sqrt and normalize
     var max_dist: f32 = 0;
@@ -78,45 +53,6 @@ pub fn buildRevealMap(allocator: std.mem.Allocator, coverage: []const u8, width:
     }
 
     return grid;
-}
-
-// Felzenszwalb-Huttenlocher 1D distance transform
-fn edt1d(f: []const f32, n: usize, v_buf: []usize, z_buf: []f32, output: []f32) void {
-    if (n == 0) return;
-    if (n == 1) {
-        output[0] = f[0];
-        return;
-    }
-
-    var k: usize = 0;
-    v_buf[0] = 0;
-    z_buf[0] = -1e10;
-    z_buf[1] = 1e10;
-
-    for (1..n) |q| {
-        const q_f = @as(f32, @floatFromInt(q));
-        while (true) {
-            const v_f = @as(f32, @floatFromInt(v_buf[k]));
-            const s = ((f[q] + q_f * q_f) - (f[v_buf[k]] + v_f * v_f)) / (2.0 * q_f - 2.0 * v_f);
-            if (k > 0 and s <= z_buf[k]) {
-                k -= 1;
-            } else {
-                k += 1;
-                v_buf[k] = q;
-                z_buf[k] = s;
-                z_buf[k + 1] = 1e10;
-                break;
-            }
-        }
-    }
-
-    k = 0;
-    for (0..n) |q| {
-        const q_f = @as(f32, @floatFromInt(q));
-        while (z_buf[k + 1] < q_f) : (k += 1) {}
-        const v_f = @as(f32, @floatFromInt(v_buf[k]));
-        output[q] = (q_f - v_f) * (q_f - v_f) + f[v_buf[k]];
-    }
 }
 
 /// Apply the reveal map threshold to produce output coverage.

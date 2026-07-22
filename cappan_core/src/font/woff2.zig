@@ -2,6 +2,7 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const brotli = @import("../compress/brotli.zig");
 const woff2_glyf = @import("woff2_glyf.zig");
+const sfnt_writer = @import("sfnt_writer.zig");
 
 pub const WOFF2_SIGNATURE: u32 = 0x774F4632; // "wOF2"
 
@@ -254,14 +255,10 @@ pub fn woff2ToSfnt(allocator: std.mem.Allocator, woff2_data: []const u8) ![]u8 {
     std.mem.writeInt(u32, sfnt[0..4], header.flavor, .big);
     std.mem.writeInt(u16, sfnt[4..6], num_tables, .big);
 
-    var search_range: u16 = 1;
-    var entry_selector: u16 = 0;
-    while (search_range * 2 <= num_tables) {
-        search_range *= 2;
-        entry_selector += 1;
-    }
-    search_range *= 16;
-    const range_shift = @as(u16, num_tables) * 16 - search_range;
+    const sp = sfnt_writer.searchParams(num_tables);
+    const search_range = sp.search_range;
+    const entry_selector = sp.entry_selector;
+    const range_shift = sp.range_shift;
 
     std.mem.writeInt(u16, sfnt[6..8], search_range, .big);
     std.mem.writeInt(u16, sfnt[8..10], entry_selector, .big);
@@ -287,7 +284,11 @@ pub fn woff2ToSfnt(allocator: std.mem.Allocator, woff2_data: []const u8) ![]u8 {
                     break :blk std.math.cast(u32, r.loca_data.len) orelse return error.InvalidWoff2;
                 }
             }
-            // For untransformed tables, copy directly
+            // For untransformed tables, copy directly. `chunk` is only
+            // transform_length bytes; a malformed entry with
+            // orig_length > transform_length (e.g. a non-glyf/loca table
+            // carrying a transform version) would otherwise read past it.
+            if (e.orig_length > chunk.len) return error.InvalidWoff2;
             @memcpy(sfnt[dest_start .. dest_start + e.orig_length], chunk[0..e.orig_length]);
             break :blk e.orig_length;
         };
@@ -404,6 +405,32 @@ test "parseWoff2Header rejects short data" {
     const data = [_]u8{ 0x77, 0x4F, 0x46, 0x32 }; // correct sig, too short
     const result = parseHeader(&data);
     try std.testing.expectError(error.UnexpectedEof, result);
+}
+
+test "woff2ToSfnt rejects passthrough table with orig_length > transform_length" {
+    // One non-glyf/loca table ("cmap", tag_index 0) with a non-zero transform
+    // version, so transformLength is present and can be made smaller than
+    // origLength. The untransformed-copy path used to read chunk[0..orig_length]
+    // out of a chunk only transform_length bytes long -> OOB. It must error.
+    const allocator = std.testing.allocator;
+
+    var woff2: [59]u8 = @splat(0);
+    // Header (48 bytes)
+    std.mem.writeInt(u32, woff2[0..4], WOFF2_SIGNATURE, .big);
+    std.mem.writeInt(u32, woff2[4..8], 0x00010000, .big); // flavor
+    std.mem.writeInt(u32, woff2[8..12], 59, .big); // length
+    std.mem.writeInt(u16, woff2[12..14], 1, .big); // numTables
+    std.mem.writeInt(u32, woff2[20..24], 8, .big); // totalCompressedSize
+    // Table directory (offset 48)
+    woff2[48] = 0x40; // flags: transformVersion=1 (bits 6-7), tagIndex=0 ("cmap")
+    woff2[49] = 0x0A; // origLength = 10 (UIntBase128, single byte)
+    woff2[50] = 0x04; // transformLength = 4
+    // Brotli stream (offset 51..59): an uncompressed meta-block emitting 4 bytes
+    // "ABCD", so decompression yields exactly transformLength (4) bytes.
+    const brotli_stream = [_]u8{ 0x30, 0x00, 0x10, 0x41, 0x42, 0x43, 0x44, 0x03 };
+    @memcpy(woff2[51..59], &brotli_stream);
+
+    try std.testing.expectError(error.InvalidWoff2, woff2ToSfnt(allocator, &woff2));
 }
 
 test "woff2ToSfnt roundtrip with DejaVuSans" {
