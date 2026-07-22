@@ -11,9 +11,17 @@
 # old per-image `docker compose run --rm dev zig build run -- ...` did.
 # Must be called with "$0" "$@" from the top-level script, before it does
 # anything else that assumes it's already inside the container.
+#
+# The caller has already cd'd to repo root, so the script is re-exec'd inside
+# the container by its repo-relative path `script/<basename>` (the repo is
+# mounted at the container's working_dir). Passing the host "$0" verbatim
+# would only resolve when the script was invoked from repo root by a
+# repo-relative path; deriving it here works regardless of the host cwd/path.
 gallery_reexec_in_container_once() {
     if [ -z "${GALLERY_IN_CONTAINER:-}" ]; then
-        exec docker compose run --rm -e GALLERY_IN_CONTAINER=1 dev bash "$@"
+        local script_path="script/$(basename "$1")"
+        shift
+        exec docker compose run --rm -e GALLERY_IN_CONTAINER=1 dev bash "$script_path" "$@"
     fi
 }
 
