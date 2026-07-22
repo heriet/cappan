@@ -733,10 +733,14 @@ fn applyVerticalAlignment(
     const count = @as(usize, num_columns);
     var column_heights = try allocator.alloc(f32, count);
     defer allocator.free(column_heights);
-    var glyph_counts = try allocator.alloc(u32, count);
-    defer allocator.free(glyph_counts);
+    // Advancing (nonzero vertical-advance) glyphs per column define the justify
+    // gap slots; zero-advance glyphs (combining marks) ride with their base's
+    // cluster rather than taking a slot -- the vertical mirror of alignLine's
+    // horizontal justify (a mark must not leave a spurious gap in its column).
+    var advancing_counts = try allocator.alloc(u32, count);
+    defer allocator.free(advancing_counts);
     @memset(column_heights, 0);
-    @memset(glyph_counts, 0);
+    @memset(advancing_counts, 0);
 
     for (positions, columns, advances) |pos, column, advance| {
         const idx = @as(usize, @intCast(column));
@@ -744,27 +748,34 @@ fn applyVerticalAlignment(
         const cell_top = pos.y_offset - ascender_px;
         const extent = cell_top + advance;
         if (extent > column_heights[idx]) column_heights[idx] = extent;
-        glyph_counts[idx] += 1;
+        if (advance > 0) advancing_counts[idx] += 1;
     }
 
-    var ordinals = try allocator.alloc(u32, count);
-    defer allocator.free(ordinals);
-    @memset(ordinals, 0);
+    // Per-column cumulative justify shift + count of advancing glyphs seen so far.
+    var col_shift = try allocator.alloc(f32, count);
+    defer allocator.free(col_shift);
+    var advancing_seen = try allocator.alloc(u32, count);
+    defer allocator.free(advancing_seen);
+    @memset(col_shift, 0);
+    @memset(advancing_seen, 0);
 
-    for (positions, columns) |*pos, column| {
+    for (positions, columns, advances) |*pos, column, advance| {
         const idx = @as(usize, @intCast(column));
         if (idx >= count) continue;
         const extra = @max(0.0, container_height - column_heights[idx]);
-        const ordinal = ordinals[idx];
-        ordinals[idx] += 1;
 
         const shift = switch (align_type) {
             .left => 0,
             .center => extra / 2.0,
             .right => extra,
             .justify => blk: {
-                if (glyph_counts[idx] <= 1) break :blk 0;
-                break :blk extra * @as(f32, @floatFromInt(ordinal)) / @as(f32, @floatFromInt(glyph_counts[idx] - 1));
+                if (advancing_counts[idx] <= 1) break :blk 0;
+                const gap = extra / @as(f32, @floatFromInt(advancing_counts[idx] - 1));
+                if (advance > 0) {
+                    if (advancing_seen[idx] > 0) col_shift[idx] += gap;
+                    advancing_seen[idx] += 1;
+                }
+                break :blk col_shift[idx];
             },
         };
         pos.y_offset += shift;
