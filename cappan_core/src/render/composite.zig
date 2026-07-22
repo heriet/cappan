@@ -98,8 +98,12 @@ fn blendFunc(sc: f32, dc: f32, mode: colr_mod.CompositeMode) f32 {
         .overlay => if (dc < 0.5) 2.0 * sc * dc else 1.0 - 2.0 * (1.0 - sc) * (1.0 - dc),
         .darken => @min(sc, dc),
         .lighten => @max(sc, dc),
-        .color_dodge => if (sc >= 1.0) 1.0 else @min(1.0, dc / (1.0 - sc)),
-        .color_burn => if (sc <= 0.0) 0.0 else 1.0 - @min(1.0, (1.0 - dc) / sc),
+        // W3C compositing/COLR spec endpoint order matters: `dc == 0` (dodge) /
+        // `dc == 1` (burn) must win even when `sc` is *also* at its own endpoint
+        // (sc>=1 / sc<=0 respectively) -- checking `sc` first, as this used to,
+        // gives 1.0/0.0 instead of the spec-mandated 0.0/1.0 in that corner.
+        .color_dodge => if (dc <= 0.0) 0.0 else if (sc >= 1.0) 1.0 else @min(1.0, dc / (1.0 - sc)),
+        .color_burn => if (dc >= 1.0) 1.0 else if (sc <= 0.0) 0.0 else 1.0 - @min(1.0, (1.0 - dc) / sc),
         .hard_light => if (sc < 0.5) 2.0 * sc * dc else 1.0 - 2.0 * (1.0 - sc) * (1.0 - dc),
         .soft_light => blendSoftLight(sc, dc),
         .difference => @abs(sc - dc),
@@ -184,4 +188,44 @@ test "composite soft_light" {
     // soft_light: mid-gray dst + light src → result > 128
     try std.testing.expect(dst.pixels[0] > 128);
     try std.testing.expectEqual(@as(u8, 255), dst.pixels[3]);
+}
+
+// I11: W3C compositing/COLR spec mandates `dc`'s own endpoint (0 for dodge, 1
+// for burn) wins even when `sc` is *simultaneously* at its endpoint (sc=1 for
+// dodge, sc=0 for burn) -- before the fix, checking `sc` first gave the wrong
+// value (1.0/0.0) in exactly this corner instead of the spec's 0.0/1.0.
+test "composite color_dodge: dc=0 and sc=1 together yields 0 (spec endpoint), not 1" {
+    var dst = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 0, .g = 0, .b = 0, .a = 255 });
+    defer dst.deinit();
+    var src = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 255, .g = 255, .b = 255, .a = 255 });
+    defer src.deinit();
+
+    composite(&dst, src, .color_dodge);
+
+    try std.testing.expectEqual(@as(u8, 0), dst.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 255), dst.pixels[3]);
+}
+
+test "composite color_burn: dc=1 and sc=0 together yields 1 (spec endpoint), not 0" {
+    var dst = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 255, .g = 255, .b = 255, .a = 255 });
+    defer dst.deinit();
+    var src = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 0, .g = 0, .b = 0, .a = 255 });
+    defer src.deinit();
+
+    composite(&dst, src, .color_burn);
+
+    try std.testing.expectEqual(@as(u8, 255), dst.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 255), dst.pixels[3]);
+}
+
+test "composite color_dodge: normal (non-endpoint) values unchanged by the fix" {
+    var dst = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 100, .g = 100, .b = 100, .a = 255 });
+    defer dst.deinit();
+    var src = try rgba_bitmap_mod.RgbaBitmap.init(std.testing.allocator, 1, 1, .{ .r = 128, .g = 128, .b = 128, .a = 255 });
+    defer src.deinit();
+
+    composite(&dst, src, .color_dodge);
+
+    // dc=100/255≈0.392, sc=128/255≈0.502: min(1, dc/(1-sc)) ≈ min(1, 0.788) ≈ 0.788 → ~201
+    try std.testing.expect(dst.pixels[0] > 190 and dst.pixels[0] < 210);
 }
