@@ -14,5 +14,6 @@
         "cappan_inspect",
         "cappan_metrics",
         "cappan_discover",
+        "cappan_wasm",
     },
 }

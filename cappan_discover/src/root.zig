@@ -201,4 +201,3 @@ pub fn hasFontExtension(path: []const u8) bool {
         std.ascii.eqlIgnoreCase(ext, ".woff") or
         std.ascii.eqlIgnoreCase(ext, ".woff2");
 }
-
