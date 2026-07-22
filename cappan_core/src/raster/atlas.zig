@@ -331,7 +331,21 @@ pub const GlyphAtlas = struct {
 };
 
 fn cacheKey(font_index: u8, glyph_id: u16, pixel_size: f32) u64 {
-    const size_q: u16 = @intFromFloat(@round(pixel_size * 4.0));
+    // C17: pixel_size is caller-controlled (fonts/text can drive it arbitrarily
+    // large via layout math) and reaches @intFromFloat unclamped below, which
+    // panics in ReleaseSafe for out-of-u16-range, negative, or NaN input.
+    // Quantizing clamps into [0, max_pixel_size] first -- NaN fails both
+    // comparisons below and falls through to the 0.0 clamp, same as negative
+    // input. max_pixel_size keeps size_q comfortably under u16's max (65535)
+    // after `* 4.0` and rounding.
+    const max_pixel_size: f32 = 16383.0;
+    const clamped: f32 = if (pixel_size >= 0.0 and pixel_size <= max_pixel_size)
+        pixel_size
+    else if (pixel_size > max_pixel_size)
+        max_pixel_size
+    else
+        0.0;
+    const size_q: u16 = @intFromFloat(@round(clamped * 4.0));
     return @as(u64, font_index) << 32 | @as(u64, glyph_id) << 16 | @as(u64, size_q);
 }
 
@@ -544,6 +558,42 @@ test "GlyphAtlas overflow packs across exactly two pages" {
     defer page1_bitmap.deinit();
     try std.testing.expectEqual(@as(u32, 10), page1_bitmap.width);
     try std.testing.expectEqual(@as(u8, 100), page1_bitmap.getPixel(region_b.x, region_b.y));
+}
+
+test "C17: GlyphAtlas insert with out-of-range pixel_size does not panic" {
+    var atlas = GlyphAtlas.init(std.testing.allocator, .{ .page_width = 32, .page_height = 32, .padding = 1 });
+    defer atlas.deinit();
+
+    // cacheKey used to compute size_q via an unclamped @intFromFloat(@round(pixel_size
+    // * 4.0)) into a u16, which panicked in ReleaseSafe for any of these (out of u16
+    // range, negative, or NaN). Each of these dims (4x4) always fits the 32x32 page, so
+    // a successful insert (not just "doesn't panic") is the right assertion here.
+    const pixels = [_]u8{100} ** 16;
+    const pixel_sizes = [_]f32{ 20000.0, -5.0, std.math.nan(f32) };
+    for (pixel_sizes, 0..) |pixel_size, i| {
+        const region = try atlas.insert(0, @intCast(i + 1), pixel_size, &pixels, 4, 4, 0, 0);
+        try std.testing.expectEqual(@as(u32, 4), region.width);
+    }
+}
+
+test "C17: GlyphAtlas getOrInsert with out-of-range pixel_size does not panic" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    var atlas = GlyphAtlas.init(std.testing.allocator, .{});
+    defer atlas.deinit();
+
+    const glyph_id = try font.getGlyphId('A');
+
+    // Same cacheKey panic as above, but reached via lookup() at the top of
+    // getOrInsert (before rasterization). Whether the call then succeeds or
+    // fails gracefully downstream (rasterizer dimension guards, covered
+    // elsewhere) doesn't matter here -- only that it doesn't panic.
+    const pixel_sizes = [_]f32{ 100000.0, -5.0, std.math.nan(f32) };
+    for (pixel_sizes) |pixel_size| {
+        _ = atlas.getOrInsert(font, 0, glyph_id, pixel_size) catch {};
+    }
 }
 
 test "skyline merges adjacent nodes" {

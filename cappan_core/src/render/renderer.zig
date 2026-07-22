@@ -305,8 +305,11 @@ pub fn renderText(allocator: std.mem.Allocator, fonts: []const font_mod.Font, te
 
     const pad = @as(f32, @floatFromInt(options.padding));
 
-    const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
-    const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+    const max_bmp_dim: f32 = 16384.0;
+    const bmp_width_f = @ceil(layout.total_width + pad * 2);
+    const bmp_height_f = @ceil(layout.total_height + pad * 2);
+    const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+    const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
     if (bmp_width == 0 or bmp_height == 0) {
         return rgba_bitmap_mod.RgbaBitmap.init(allocator, 1, 1, options.bg_color);
@@ -1174,8 +1177,11 @@ pub const RowRenderer = struct {
         const scale = options.pixel_size / @as(f32, @floatFromInt(fonts[0].getUnitsPerEm()));
         const pad = @as(f32, @floatFromInt(options.padding));
 
-        const bmp_width = @as(u32, @intFromFloat(@ceil(layout.total_width + pad * 2)));
-        const bmp_height = @as(u32, @intFromFloat(@ceil(layout.total_height + pad * 2)));
+        const max_bmp_dim: f32 = 16384.0;
+        const bmp_width_f = @ceil(layout.total_width + pad * 2);
+        const bmp_height_f = @ceil(layout.total_height + pad * 2);
+        const bmp_width: u32 = if (!(bmp_width_f >= 0.0 and bmp_width_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_width_f);
+        const bmp_height: u32 = if (!(bmp_height_f >= 0.0 and bmp_height_f <= max_bmp_dim)) return error.OutOfMemory else @intFromFloat(bmp_height_f);
 
         const width = if (bmp_width == 0) 1 else bmp_width;
         const height = if (bmp_height == 0) 1 else bmp_height;
@@ -1367,4 +1373,34 @@ test "render text with fractional positioning" {
         }
     }
     try std.testing.expect(has_dark);
+}
+
+test "C16: renderText with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = 1e9,
+    }));
+}
+
+test "C16: renderText with NaN pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, renderText(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = std.math.nan(f32),
+    }));
+}
+
+test "C16: RowRenderer.init with huge pixel_size returns error.OutOfMemory instead of panicking" {
+    const font_data = @embedFile("../fixture/DejaVuSans.ttf");
+    var font = try font_mod.Font.init(std.testing.allocator, font_data, null);
+    defer font.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, RowRenderer.init(std.testing.allocator, &[_]font_mod.Font{font}, "Hi", .{
+        .pixel_size = 1e9,
+    }));
 }

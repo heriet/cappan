@@ -97,6 +97,7 @@ fn writeContours(
     for (outline.contours) |contour| {
         const points = contour.points;
         if (points.len == 0) continue;
+        const n = points.len;
 
         // Find first on-curve point index
         var start_idx: usize = points.len;
@@ -108,23 +109,51 @@ fn writeContours(
         }
 
         var walk_start: usize = undefined;
+        var walk_len: usize = n;
+        // I2 / C14 / C15: set when this contour has no on-curve point at all,
+        // so the start point was synthesized as the midpoint of points[0] and
+        // points[1]. In that case points[0] hasn't been walked yet -- it's
+        // consumed below by an explicit closing quad back to (start_x, start_y)
+        // instead of by the walk loop (see walk_start/walk_len comment below).
+        var synth_start = false;
+        var start_x: i16 = 0;
+        var start_y: i16 = 0;
         if (start_idx == points.len) {
             // No on-curve point in this contour at all: synthesize a start
             // point as the midpoint of the first two (off-curve) points.
+            // C14: that requires at least 2 points; a single-point contour
+            // has no pair to synthesize from, so treat it as an empty path
+            // instead of reading points[1] out of bounds.
+            if (n < 2) continue;
+            // C15: sum in i32 -- both operands are attacker-controlled i16
+            // font-unit coordinates, and their sum can overflow i16 range.
             // Truncating integer division here (matching both coordinate
-            // spaces) -- deliberately done before any float conversion.
-            const mx = @divTrunc(points[0].x + points[1].x, 2);
-            const my = @divTrunc(points[0].y + points[1].y, 2);
+            // spaces) -- deliberately done before any float conversion. The
+            // result is cast back down to i16: the midpoint of two i16
+            // values always fits in i16, so this narrowing is lossless.
+            const mx: i16 = @intCast(@divTrunc(@as(i32, points[0].x) + @as(i32, points[1].x), 2));
+            const my: i16 = @intCast(@divTrunc(@as(i32, points[0].y) + @as(i32, points[1].y), 2));
             try pen.moveTo(mx, my);
-            walk_start = 0;
+            // I2: walk_start=0 would re-walk points[0] as the very first
+            // control point, emitting a degenerate quad back to the point we
+            // just moved to (since its "next" point is points[1], whose
+            // midpoint with points[0] *is* the start point) and leaving the
+            // contour's actual closing segment (through points[0], back to
+            // the start) never drawn -- the shape reads as flattened/open.
+            // Instead walk only points[1..n-1] here, then explicitly emit
+            // the closing quad through points[0] after the loop.
+            walk_start = 1;
+            walk_len = n - 1;
+            synth_start = true;
+            start_x = mx;
+            start_y = my;
         } else {
             try pen.moveTo(points[start_idx].x, points[start_idx].y);
             walk_start = start_idx + 1;
         }
 
         var i: usize = 0;
-        const n = points.len;
-        while (i < n) {
+        while (i < walk_len) {
             const idx = (walk_start + i) % n;
             const pt = points[idx];
 
@@ -145,8 +174,9 @@ fn writeContours(
                     try pen.quadTo(pt.x, pt.y, next_pt.x, next_pt.y);
                     i += 2;
                 } else {
-                    const mx = @divTrunc(pt.x + next_pt.x, 2);
-                    const my = @divTrunc(pt.y + next_pt.y, 2);
+                    // C15: see the i32-sum comment above.
+                    const mx: i16 = @intCast(@divTrunc(@as(i32, pt.x) + @as(i32, next_pt.x), 2));
+                    const my: i16 = @intCast(@divTrunc(@as(i32, pt.y) + @as(i32, next_pt.y), 2));
                     try pen.quadTo(pt.x, pt.y, mx, my);
                     i += 1;
                 }
@@ -155,6 +185,10 @@ fn writeContours(
 
             try pen.lineTo(pt.x, pt.y);
             i += 1;
+        }
+
+        if (synth_start) {
+            try pen.quadTo(points[0].x, points[0].y, start_x, start_y);
         }
 
         try pen.close();
@@ -275,4 +309,110 @@ test "textToSvgPaths for Hello" {
     for (1..paths.len) |i| {
         try std.testing.expect(paths[i].x_offset > paths[i - 1].x_offset);
     }
+}
+
+const glyph_mod = cappan_core.font.glyph;
+
+test "C14: writeContours on a single-off-curve-point contour does not read out of bounds" {
+    const allocator = std.testing.allocator;
+
+    // A contour with exactly one point and it's off-curve: start_idx search finds no
+    // on-curve point, so the "synthesize a start from points[0]/points[1]" branch used
+    // to unconditionally read points[1] -- out of bounds here. The contour has no valid
+    // shape to synthesize a start from, so it should be skipped (empty path) rather than
+    // panicking.
+    var points = [_]glyph_mod.Point{
+        .{ .x = 100, .y = 100, .on_curve = false },
+    };
+    var contours = [_]glyph_mod.Contour{.{ .points = &points }};
+    const outline = glyph_mod.GlyphOutline{
+        .contours = &contours,
+        .x_min = 0,
+        .y_min = 0,
+        .x_max = 100,
+        .y_max = 100,
+        .allocator = allocator,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try writeContours(allocator, &buf, outline, null);
+
+    try std.testing.expectEqual(@as(usize, 0), buf.items.len);
+}
+
+test "C15: writeContours on a large off-curve pair does not overflow the i16 midpoint sum" {
+    const allocator = std.testing.allocator;
+
+    // Two off-curve points whose x/y sum (32000 + 32000 = 64000) overflows i16's
+    // range ([-32768, 32767]) before the @divTrunc that computes their midpoint. The
+    // midpoint itself (32000) fits back into i16 -- only the intermediate sum needs
+    // the wider i32 space.
+    var points = [_]glyph_mod.Point{
+        .{ .x = 32000, .y = 32000, .on_curve = false },
+        .{ .x = 32000, .y = 32000, .on_curve = false },
+    };
+    var contours = [_]glyph_mod.Contour{.{ .points = &points }};
+    const outline = glyph_mod.GlyphOutline{
+        .contours = &contours,
+        .x_min = 0,
+        .y_min = 0,
+        .x_max = 32000,
+        .y_max = 32000,
+        .allocator = allocator,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try writeContours(allocator, &buf, outline, null);
+
+    try std.testing.expectEqualStrings(
+        "M 32000 32000 Q 32000 32000 32000 32000 Q 32000 32000 32000 32000 Z ",
+        buf.items,
+    );
+}
+
+test "I2: writeContours on an all-off-curve square contour produces the correct closed shape" {
+    const allocator = std.testing.allocator;
+
+    // Four off-curve control points at the corners of a diamond; the implied
+    // on-curve midpoints between consecutive points trace an axis-aligned square:
+    //   M(P0,P1) = (300,100), M(P1,P2) = (300,300),
+    //   M(P2,P3) = (100,300), M(P3,P0) = (100,100).
+    // With walk_start=0 (the I2 bug), points[0] is walked twice: once as the
+    // synthesized start and again as the first loop iteration's control point,
+    // which emits a degenerate quad back to the point just moved to (a flattened,
+    // not-actually-there closing edge) instead of the real closing segment through
+    // points[0]. The fix (walk_start=1, explicit closing quad through points[0]
+    // after the loop) must produce exactly 4 non-degenerate quads tracing the
+    // square with no repeated/flattened edge.
+    var points = [_]glyph_mod.Point{
+        .{ .x = 200, .y = 0, .on_curve = false }, // P0
+        .{ .x = 400, .y = 200, .on_curve = false }, // P1
+        .{ .x = 200, .y = 400, .on_curve = false }, // P2
+        .{ .x = 0, .y = 200, .on_curve = false }, // P3
+    };
+    var contours = [_]glyph_mod.Contour{.{ .points = &points }};
+    const outline = glyph_mod.GlyphOutline{
+        .contours = &contours,
+        .x_min = 0,
+        .y_min = 0,
+        .x_max = 400,
+        .y_max = 400,
+        .allocator = allocator,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try writeContours(allocator, &buf, outline, null);
+
+    try std.testing.expectEqualStrings(
+        "M 300 100 " ++
+            "Q 400 200 300 300 " ++
+            "Q 200 400 100 300 " ++
+            "Q 0 200 100 100 " ++
+            "Q 200 0 300 100 " ++
+            "Z ",
+        buf.items,
+    );
 }
