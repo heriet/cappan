@@ -34,6 +34,17 @@ pub const Os2Table = struct {
     }
 };
 
+/// Reads just `xAvgCharWidth` (offset 2, 2 bytes) without requiring the rest
+/// of a full OS/2 table (`parse`'s `len >= 78` guard). xAvgCharWidth has been
+/// present at this fixed offset since the very first OS/2 version (v0), whose
+/// minimum legal size is only 68 bytes (some older/Apple-oriented fonts still
+/// ship exactly that) -- routing a "just need the average width" caller
+/// through `parse` would reject those perfectly valid, if minimal, tables
+/// outright. Returns null if `data` is too short even for this one field.
+pub fn readAvgCharWidth(data: []const u8) ?i16 {
+    return parser.readI16(data, 2) catch null;
+}
+
 pub fn parse(data: []const u8) !Os2Table {
     if (data.len < 78) return error.UnexpectedEof;
     const version = try parser.readU16(data, 0);
@@ -80,4 +91,35 @@ test "parse OS/2 table from DejaVuSans" {
     }
     try std.testing.expect(!os2.isItalic());
     try std.testing.expect(!os2.isBold());
+}
+
+test "readAvgCharWidth: reads xAvgCharWidth from a minimal 68-byte v0 OS/2 table (I9)" {
+    // OS/2 v0's minimum legal size is 68 bytes -- too short for `parse`
+    // (which requires 78), but xAvgCharWidth at offset 2 is present all the
+    // same.
+    var data = [_]u8{0} ** 68;
+    std.mem.writeInt(u16, data[0..2], 0, .big); // version
+    std.mem.writeInt(i16, data[2..4], 543, .big); // xAvgCharWidth
+
+    // The full parse should reject this table as too short...
+    try std.testing.expectError(error.UnexpectedEof, parse(&data));
+    // ...but the lightweight accessor should still read the field.
+    try std.testing.expectEqual(@as(?i16, 543), readAvgCharWidth(&data));
+}
+
+test "readAvgCharWidth: too short even for the one field returns null" {
+    var data = [_]u8{0} ** 3;
+    try std.testing.expectEqual(@as(?i16, null), readAvgCharWidth(&data));
+}
+
+test "readAvgCharWidth: unaffected on a normal (78+ byte) table" {
+    const font_data = @embedFile("../../fixture/DejaVuSans.ttf");
+    const offset_table = try parser.parseOffsetTable(std.testing.allocator, font_data);
+    defer std.testing.allocator.free(offset_table.table_records);
+
+    const record = parser.findTable(offset_table, "OS/2".*) orelse return error.TableNotFound;
+    const table_data = try parser.getTableData(font_data, record);
+    const os2 = try parse(table_data);
+
+    try std.testing.expectEqual(@as(?i16, os2.avg_char_width), readAvgCharWidth(table_data));
 }
