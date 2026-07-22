@@ -754,7 +754,15 @@ pub const Font = struct {
             }
 
             var all_contours: std.ArrayList(glyph_mod.Contour) = .empty;
-            defer all_contours.deinit(allocator);
+            // errdefer (not defer): success transfers ownership via
+            // toOwnedSlice; on error we must also free the point slices already
+            // appended so a malformed later component doesn't leak them.
+            errdefer {
+                for (all_contours.items) |contour| {
+                    if (contour.points.len > 0) allocator.free(contour.points);
+                }
+                all_contours.deinit(allocator);
+            }
 
             for (components) |comp| {
                 if (try self.getGlyphOutlineWithVariationRecursive(allocator, comp.glyph_id, adjusted_coords, depth + 1)) |component_outline_const| {

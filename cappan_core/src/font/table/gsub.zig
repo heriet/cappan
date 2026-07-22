@@ -10,8 +10,13 @@ fn shouldSkipGlyph(gdef: ?gdef_mod.GdefTable, glyph_id: u16, lookup_flag: u16) b
 }
 
 fn advanceAfterNestedLookup(pos: usize, consumed: u16, old_len: usize, new_len: usize) usize {
-    const len_delta = @as(i32, @intCast(new_len)) - @as(i32, @intCast(old_len));
-    return @as(usize, @intCast(@as(i32, @intCast(pos + @as(usize, consumed))) + len_delta));
+    // A nested lookup that deletes glyphs (new_len << old_len) can drive the
+    // new position negative; clamp to 0 instead of panicking on the cast.
+    // i64 intermediates avoid any overflow before the sign check.
+    const len_delta = @as(i64, @intCast(new_len)) - @as(i64, @intCast(old_len));
+    const raw = @as(i64, @intCast(pos + @as(usize, consumed))) + len_delta;
+    if (raw < 0) return 0;
+    return @intCast(raw);
 }
 
 const ContextMatchMode = enum { glyph, class };
@@ -751,7 +756,11 @@ fn applyLigatureSubstAtPos(data: []const u8, subtable_offset: usize, glyphs: *st
 
         const lig_glyph = parser.readU16(data, lig_base) catch continue;
         const comp_count = parser.readU16(data, lig_base + 2) catch continue;
-        if (comp_count == 0) continue;
+        // A ligature must join at least 2 components. comp_count < 2 means
+        // components_needed == 0: the loop below matches nothing, rewrites the
+        // glyph in place, consumes no input, and the caller (applyLigatureSubst)
+        // never advances -- an infinite loop on a self-map (A -> A). Skip it.
+        if (comp_count < 2) continue;
 
         const components_needed = comp_count - 1;
         if (pos + components_needed >= glyphs.items.len) continue;
@@ -804,6 +813,36 @@ pub fn parse(data: []const u8, gdef: ?gdef_mod.GdefTable) !GsubTable {
 // ============================================================
 // Tests
 // ============================================================
+
+test "LigatureSubst with componentCount=1 self-map terminates (no infinite loop)" {
+    // A malformed LigatureSubst whose ligature has componentCount == 1 maps a
+    // glyph to itself while consuming no input. applyLigatureSubst never
+    // advanced past it -> 100% CPU hang. It must now skip (comp_count < 2) and
+    // return, leaving the glyph run unchanged.
+    const data = [_]u8{
+        0x00, 0x01, // substFormat = 1
+        0x00, 0x10, // coverageOffset = 16
+        0x00, 0x01, // ligatureSetCount = 1
+        0x00, 0x08, // ligatureSetOffset[0] = 8
+        0x00, 0x01, // LigatureSet @8: ligatureCount = 1
+        0x00, 0x04, //   ligatureOffset[0] = 4 -> ligature at 8+4 = 12
+        0x00, 0x05, // Ligature @12: ligGlyph = 5 (same as input -> self map)
+        0x00, 0x01, //   componentCount = 1 (malicious: needs 0 components)
+        0x00, 0x01, // Coverage @16: format = 1
+        0x00, 0x01, //   glyphCount = 1
+        0x00, 0x05, //   glyph[0] = 5
+    };
+
+    var glyphs = std.ArrayListUnmanaged(u16).empty;
+    defer glyphs.deinit(std.testing.allocator);
+    try glyphs.appendSlice(std.testing.allocator, &[_]u16{5});
+
+    // Before the fix this call never returns; with the fix it returns promptly.
+    applyLigatureSubst(&data, 0, &glyphs, null, 0);
+
+    try std.testing.expectEqual(@as(usize, 1), glyphs.items.len);
+    try std.testing.expectEqual(@as(u16, 5), glyphs.items[0]);
+}
 
 test "Single Substitution Format 1: delta" {
     const data = [_]u8{

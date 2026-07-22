@@ -385,9 +385,11 @@ fn decodeCompressedMetaBlock(
                 dist_ring[0] = distance;
             }
         } else {
-            // Dictionary reference
+            // Dictionary reference. Range-check the attacker-controlled
+            // copy_length (u32) *before* narrowing it to u8, or a value > 255
+            // would panic in safe builds / truncate-and-desync elsewhere.
+            if (copy_length < 4 or copy_length > 24) return BrotliError.InvalidDictionary;
             const word_len: u8 = @intCast(copy_length);
-            if (word_len < 4 or word_len > 24) return BrotliError.InvalidDictionary;
 
             const word_id = distance - max_backward - 1;
             const n_words: u32 = @as(u32, 1) << dictionary.kNDBits[word_len - 4];
@@ -835,6 +837,64 @@ fn ceilLog2(n: u32) u5 {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+test "dictionary reference with copy_length > 255 errors instead of panicking" {
+    // Craft a stream whose single insert&copy command decodes to a large copy
+    // length (326) with a distance that lands in the static-dictionary range.
+    // The old code narrowed copy_length to u8 *before* range-checking it, so a
+    // value > 255 panicked (@intCast) in safe builds. It must now return
+    // InvalidDictionary.
+    const Writer = struct {
+        buf: [16]u8 = @splat(0),
+        byte: usize = 0,
+        bit: u3 = 0,
+        fn put(self: *@This(), value: u32, n: u5) void {
+            var i: u5 = 0;
+            while (i < n) : (i += 1) {
+                const b: u32 = (value >> i) & 1;
+                if (b == 1) self.buf[self.byte] |= (@as(u8, 1) << self.bit);
+                if (self.bit == 7) {
+                    self.bit = 0;
+                    self.byte += 1;
+                } else {
+                    self.bit += 1;
+                }
+            }
+        }
+    };
+    var w = Writer{};
+    w.put(0, 1); // WBITS first bit -> window 16
+    w.put(1, 1); // ISLAST = 1
+    w.put(0, 1); // ISLASTEMPTY = 0
+    w.put(0, 2); // MNIBBLES = 0 -> 4 nibbles
+    w.put(0, 16); // MLEN raw 0 -> mlen = 1
+    w.put(0, 1); // literal NBLTYPES -> 1
+    w.put(0, 1); // insert&copy NBLTYPES -> 1
+    w.put(0, 1); // distance NBLTYPES -> 1
+    w.put(0, 2); // NPOSTFIX = 0
+    w.put(0, 4); // NDIRECT hbits = 0
+    w.put(0, 2); // context mode for literal type 0
+    w.put(0, 1); // literal context map NTREES -> 1 (all zeros)
+    w.put(0, 1); // distance context map NTREES -> 1 (all zeros)
+    // Literal prefix code (alphabet 256): simple, single symbol 0
+    w.put(1, 2); // HSKIP = 1 -> simple
+    w.put(0, 2); // NSYM-1 = 0 -> 1 symbol
+    w.put(0, 8); // symbol value 0
+    // Insert&copy prefix code (alphabet 704): simple, single symbol 388.
+    // cmd 388 -> insert_code 0 (len 0), copy_code 20 (len 326 + 8 extra bits).
+    w.put(1, 2);
+    w.put(0, 2);
+    w.put(388, 10);
+    // Distance prefix code (alphabet 64): simple, single symbol 0 (-> ring[0]=4)
+    w.put(1, 2);
+    w.put(0, 2);
+    w.put(0, 6);
+    // copy_code 20 carries 8 extra bits; 0 -> copy_length = 326
+    w.put(0, 8);
+
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(BrotliError.InvalidDictionary, decompress(allocator, &w.buf));
+}
 
 test "decompress Hello, World!" {
     const allocator = std.testing.allocator;

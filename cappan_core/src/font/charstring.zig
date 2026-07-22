@@ -7,6 +7,7 @@ pub const CharstringError = error{
     StackUnderflow,
     InvalidSubroutine,
     CallDepthExceeded,
+    OpBudgetExceeded,
     InvalidCff,
     UnexpectedEof,
     OutOfMemory,
@@ -15,6 +16,22 @@ pub const CharstringError = error{
 const MAX_STACK = 48;
 const MAX_CALL_DEPTH = 10;
 const MAX_HINTS: usize = 96;
+/// Total operator/operand budget across the whole charstring, including all
+/// nested subroutine expansions. The depth cap alone doesn't bound work: a
+/// malicious font can fan out (e.g. 20-way) at each of the 10 allowed levels
+/// for exponential blow-up. This caps the total tokens interpreted. It is far
+/// above anything a real glyph needs, so valid rendering is unaffected.
+const MAX_OPS: u64 = 10_000_000;
+
+/// Clamp a float pen/bounds coordinate into the i16 range (mapping NaN to 0)
+/// before `@intFromFloat`, so a malformed charstring can't panic. Well-formed
+/// glyphs stay in range, so the result is byte-identical for them.
+fn floatToI16(v: f32) i16 {
+    if (std.math.isNan(v)) return 0;
+    const lo: f32 = @floatFromInt(@as(i16, std.math.minInt(i16)));
+    const hi: f32 = @floatFromInt(@as(i16, std.math.maxInt(i16)));
+    return @intFromFloat(std.math.clamp(v, lo, hi));
+}
 
 pub fn interpret(
     allocator: std.mem.Allocator,
@@ -57,6 +74,9 @@ const Interpreter = struct {
     total_points: u32,
     contour_count: u32,
 
+    // 総演算バジェット(サブルーチン展開を含む)
+    op_count: u64,
+
     // サブルーチン
     global_subrs: cff_mod.Index,
     local_subrs: cff_mod.Index,
@@ -84,6 +104,7 @@ const Interpreter = struct {
             .v_stem_acc = 0,
             .total_points = 0,
             .contour_count = 0,
+            .op_count = 0,
             .global_subrs = global_subrs,
             .local_subrs = local_subrs,
         };
@@ -123,8 +144,8 @@ const Interpreter = struct {
 
     fn addPoint(self: *Interpreter, px: f32, py: f32, on_curve: bool, is_cubic: bool) !void {
         self.updateBounds(px, py);
-        const ix: i16 = @intFromFloat(@round(px));
-        const iy: i16 = @intFromFloat(@round(py));
+        const ix: i16 = floatToI16(@round(px));
+        const iy: i16 = floatToI16(@round(py));
         try self.current_points.append(self.allocator, .{
             .x = ix,
             .y = iy,
@@ -235,6 +256,10 @@ const Interpreter = struct {
 
         var i: usize = 0;
         while (i < data.len) {
+            // Bound total work across all nested subr expansions (see MAX_OPS).
+            self.op_count += 1;
+            if (self.op_count > MAX_OPS) return error.OpBudgetExceeded;
+
             const b0 = data[i];
             i += 1;
 
@@ -758,10 +783,10 @@ const Interpreter = struct {
         var y_max: i16 = 0;
 
         if (self.x_min <= self.x_max) {
-            x_min = @intFromFloat(@floor(self.x_min));
-            y_min = @intFromFloat(@floor(self.y_min));
-            x_max = @intFromFloat(@ceil(self.x_max));
-            y_max = @intFromFloat(@ceil(self.y_max));
+            x_min = floatToI16(@floor(self.x_min));
+            y_min = floatToI16(@floor(self.y_min));
+            x_max = floatToI16(@ceil(self.x_max));
+            y_max = floatToI16(@ceil(self.y_max));
         }
 
         const hints: ?glyph_mod.HintData = if (self.h_stems.items.len > 0 or self.v_stems.items.len > 0) blk: {

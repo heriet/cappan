@@ -117,7 +117,7 @@ pub const CblcTable = struct {
 
                     return GlyphBitmapLocation{
                         .image_format = image_format,
-                        .image_data_offset = image_data_offset + off_cur,
+                        .image_data_offset = std.math.add(u32, image_data_offset, off_cur) catch return null,
                         .image_data_length = off_next - off_cur,
                     };
                 },
@@ -138,7 +138,7 @@ pub const CblcTable = struct {
 
                     return GlyphBitmapLocation{
                         .image_format = image_format,
-                        .image_data_offset = image_data_offset + off_cur,
+                        .image_data_offset = std.math.add(u32, image_data_offset, off_cur) catch return null,
                         .image_data_length = off_next - off_cur,
                     };
                 },

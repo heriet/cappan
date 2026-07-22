@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("parser.zig");
+const sfnt_writer = @import("sfnt_writer.zig");
 const flate = std.compress.flate;
 
 const WOFF_SIGNATURE: u32 = 0x774F4646; // "wOFF"
@@ -39,15 +40,12 @@ pub fn woffToSfnt(allocator: std.mem.Allocator, woff_data: []const u8) ![]u8 {
     std.mem.writeInt(u32, sfnt[0..4], flavor, .big);
     std.mem.writeInt(u16, sfnt[4..6], num_tables, .big);
 
-    // Calculate searchRange, entrySelector, rangeShift
-    var search_range: u16 = 1;
-    var entry_selector: u16 = 0;
-    while (search_range * 2 <= num_tables) {
-        search_range *= 2;
-        entry_selector += 1;
-    }
-    search_range *= 16;
-    const range_shift = @as(u16, num_tables) * 16 - search_range;
+    // Calculate searchRange, entrySelector, rangeShift (u32-safe: a malformed
+    // numTables of 0 or one whose *16 overflows u16 must not panic).
+    const sp = sfnt_writer.searchParams(num_tables);
+    const search_range = sp.search_range;
+    const entry_selector = sp.entry_selector;
+    const range_shift = sp.range_shift;
 
     std.mem.writeInt(u16, sfnt[6..8], search_range, .big);
     std.mem.writeInt(u16, sfnt[8..10], entry_selector, .big);

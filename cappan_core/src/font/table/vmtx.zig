@@ -11,6 +11,9 @@ pub const VmtxTable = struct {
     number_of_v_metrics: u16,
 
     pub fn getMetrics(self: VmtxTable, glyph_id: u16) !VMetrics {
+        // The spec requires numberOfVMetrics >= 1; a malformed value of 0 would
+        // make the else-branch compute (0 - 1) * 4 and underflow usize.
+        if (self.number_of_v_metrics == 0) return error.UnexpectedEof;
         if (glyph_id < self.number_of_v_metrics) {
             const offset = @as(usize, glyph_id) * 4;
             return .{
@@ -36,6 +39,15 @@ pub fn parse(data: []const u8, number_of_v_metrics: u16) VmtxTable {
         .data = data,
         .number_of_v_metrics = number_of_v_metrics,
     };
+}
+
+test "getMetrics with numberOfVMetrics=0 errors instead of underflowing" {
+    // Same defect class as hmtx: a malformed numberOfVMetrics == 0 would make
+    // the extended-array branch underflow usize. Must error, not crash.
+    const data = [_]u8{0} ** 8;
+    const vmtx = parse(&data, 0);
+    try std.testing.expectError(error.UnexpectedEof, vmtx.getMetrics(0));
+    try std.testing.expectError(error.UnexpectedEof, vmtx.getMetrics(3));
 }
 
 test "parse vmtx table with synthetic data" {

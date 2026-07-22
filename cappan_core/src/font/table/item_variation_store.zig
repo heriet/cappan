@@ -104,8 +104,12 @@ pub fn readMapEntry(data: []const u8, mapping: DeltaSetIndexMap, index: u32) !Ma
     }
 
     const inner_mask: u32 = (@as(u32, 1) << inner_bit_count) - 1;
+    // With a 4-byte entry and a small inner_bit_count the outer field can
+    // exceed u16; reject rather than panic on the narrowing @intCast. (inner is
+    // masked to <= 16 bits so it always fits u16.)
+    const outer_value = entry_value >> inner_bit_count;
     return .{
-        .outer = @intCast(entry_value >> inner_bit_count),
+        .outer = std.math.cast(u16, outer_value) orelse return error.UnexpectedEof,
         .inner = @intCast(entry_value & inner_mask),
     };
 }

@@ -319,13 +319,16 @@ fn unpackPointNumbers(allocator: std.mem.Allocator, data: []const u8, offset: us
 
         for (0..run_count) |_| {
             if (i >= count) break;
+            // Point numbers are cumulative and must stay within u16 (a glyph
+            // has at most 65535 points); reject a malformed stream whose deltas
+            // sum past that instead of overflowing the accumulator.
             if (is_word) {
                 if (pos + 2 > data.len) return error.UnexpectedEof;
-                accumulated += try parser.readU16(data, pos);
+                accumulated = std.math.add(u16, accumulated, try parser.readU16(data, pos)) catch return error.UnexpectedEof;
                 pos += 2;
             } else {
                 if (pos >= data.len) return error.UnexpectedEof;
-                accumulated += @as(u16, try parser.readU8(data, pos));
+                accumulated = std.math.add(u16, accumulated, @as(u16, try parser.readU8(data, pos))) catch return error.UnexpectedEof;
                 pos += 1;
             }
             points[i] = accumulated;

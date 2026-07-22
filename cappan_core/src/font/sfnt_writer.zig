@@ -29,6 +29,35 @@ pub fn writeI32BE(buf: []u8, offset: usize, value: i32) void {
     std.mem.writeInt(i32, buf[offset..][0..4], value, .big);
 }
 
+pub const SearchParams = struct {
+    search_range: u16,
+    entry_selector: u16,
+    range_shift: u16,
+};
+
+/// Computes the SFNT offset-table search parameters (searchRange,
+/// entrySelector, rangeShift) for `num_tables`, per the OpenType spec. Uses
+/// u32 intermediates so a malformed table count can't overflow/underflow the
+/// u16 arithmetic: numTables==0 (rangeShift would go 0*16 - 16 negative) or a
+/// count whose *16 exceeds u16 (>= 4096). The result is byte-identical to the
+/// naive u16 form for every well-formed count (1 <= numTables <= 4095).
+pub fn searchParams(num_tables: u16) SearchParams {
+    var search_range: u32 = 1;
+    var entry_selector: u16 = 0;
+    while (search_range * 2 <= num_tables) {
+        search_range *= 2;
+        entry_selector += 1;
+    }
+    search_range *= 16;
+    const total: u32 = @as(u32, num_tables) * 16;
+    const range_shift: u32 = if (total >= search_range) total - search_range else 0;
+    return .{
+        .search_range = @truncate(search_range),
+        .entry_selector = entry_selector,
+        .range_shift = @truncate(range_shift),
+    };
+}
+
 /// Calculate a TrueType table checksum (sum of 32-bit big-endian words, with zero-padding).
 pub fn calcChecksum(data: []const u8) u32 {
     var sum: u32 = 0;
@@ -58,14 +87,10 @@ pub fn calcChecksum(data: []const u8) u32 {
 pub fn assemble(allocator: std.mem.Allocator, entries: []const TableEntry) ![]u8 {
     const num_tables: u16 = @intCast(entries.len);
 
-    var search_range: u16 = 1;
-    var entry_selector: u16 = 0;
-    while (search_range * 2 <= num_tables) {
-        search_range *= 2;
-        entry_selector += 1;
-    }
-    search_range *= 16;
-    const range_shift: u16 = num_tables * 16 - search_range;
+    const sp = searchParams(num_tables);
+    const search_range = sp.search_range;
+    const entry_selector = sp.entry_selector;
+    const range_shift = sp.range_shift;
 
     const header_size: usize = 12 + @as(usize, num_tables) * 16;
     var tables_size: usize = 0;
