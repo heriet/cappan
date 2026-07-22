@@ -1033,14 +1033,46 @@ fn alignLine(
         }
         return;
     }
-    // justify: distribute extra space evenly between glyphs
+    // justify: distribute extra space evenly between glyphs. Gaps go only at
+    // *advancing* boundaries (glyphs whose advance > 0); a zero-advance glyph
+    // (a combining mark) belongs to its base's cluster, so it takes the same
+    // shift as the base rather than consuming its own gap slot -- otherwise a
+    // mark leaves a spurious extra gap after the cluster it sits on. For text
+    // with no zero-advance glyphs this reduces exactly to `gap * index`
+    // (byte-identical to the pre-fix behavior). Spaces have a real advance, so
+    // they still expand as normal justify.
     if (positions.len <= 1) return;
     if (line_width >= container_width) return;
-    const extra_space = container_width - line_width;
-    const gap = extra_space / @as(f32, @floatFromInt(positions.len - 1));
-    for (positions, 0..) |*pos, i| {
-        pos.x_offset += gap * @as(f32, @floatFromInt(i));
+
+    var advancing: usize = 0;
+    for (positions) |pos| {
+        if (glyphAdvancesForJustify(pos, fonts)) advancing += 1;
     }
+    if (advancing <= 1) return;
+
+    const extra_space = container_width - line_width;
+    const gap = extra_space / @as(f32, @floatFromInt(advancing - 1));
+    var shift: f32 = 0;
+    var advancing_seen: usize = 0;
+    for (positions) |*pos| {
+        if (glyphAdvancesForJustify(pos.*, fonts)) {
+            // Gap before every advancing glyph except the first, so the space
+            // lands between clusters, not inside one.
+            if (advancing_seen > 0) shift += gap;
+            advancing_seen += 1;
+        }
+        pos.x_offset += shift;
+    }
+}
+
+/// A glyph counts as an advancing justify boundary when its horizontal advance
+/// is nonzero. Zero-advance glyphs (combining marks) ride with their base's
+/// cluster instead of taking their own gap slot. Advance is unavailable only
+/// on a malformed hmtx read; treat that as advancing (the conservative choice,
+/// matching the pre-fix `gap * index` distribution).
+fn glyphAdvancesForJustify(pos: GlyphPosition, fonts: []const font_mod.Font) bool {
+    const metrics = fonts[pos.font_index].getHMetrics(pos.glyph_id) catch return true;
+    return metrics.advance_width > 0;
 }
 
 test "layout text Hello" {
