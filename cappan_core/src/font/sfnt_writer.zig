@@ -76,16 +76,35 @@ pub fn calcChecksum(data: []const u8) u32 {
     return sum;
 }
 
+fn tagLessThan(_: void, a: TableEntry, b: TableEntry) bool {
+    return std.mem.lessThan(u8, &a.tag, &b.tag);
+}
+
 /// Assembles `entries` into a complete SFNT binary: 12-byte offset-table
 /// header (version 0x00010000, i.e. TrueType outlines), a 16-byte-per-table
 /// directory (searchRange/entrySelector/rangeShift computed from the table
-/// count per the OpenType spec), 4-byte-aligned table data in `entries`
-/// order, and the standard "head" table checkSumAdjustment two-pass fixup
-/// (zero it, compute the whole-file checksum, then write
-/// `0xB1B0AFBA -% file_checksum` into it) if a "head" table is present.
+/// count per the OpenType spec), 4-byte-aligned table data, and the standard
+/// "head" table checkSumAdjustment two-pass fixup (zero it, compute the
+/// whole-file checksum, then write `0xB1B0AFBA -% file_checksum` into it) if a
+/// "head" table is present.
+///
+/// The OpenType spec requires the table *directory* to be sorted by tag in
+/// ascending order (and the header's searchRange/entrySelector/rangeShift
+/// advertise a binary search that only works on a sorted directory). Rather
+/// than trust every caller to pre-sort, `assemble` sorts a local copy of the
+/// entries by tag before emitting anything, so the output is spec-conformant
+/// regardless of the order tables were appended in. Both the directory and the
+/// table data are laid out in this sorted order; the checkSumAdjustment fixup
+/// runs against the final byte layout, so it stays correct after the sort.
 /// Caller owns the returned slice.
 pub fn assemble(allocator: std.mem.Allocator, entries: []const TableEntry) ![]u8 {
     const num_tables: u16 = @intCast(entries.len);
+
+    // Sort a private copy by tag so the emitted directory is in ascending-tag
+    // order (OpenType requirement) no matter what order the caller supplied.
+    const sorted = try allocator.dupe(TableEntry, entries);
+    defer allocator.free(sorted);
+    std.mem.sort(TableEntry, sorted, {}, tagLessThan);
 
     const sp = searchParams(num_tables);
     const search_range = sp.search_range;
@@ -94,7 +113,7 @@ pub fn assemble(allocator: std.mem.Allocator, entries: []const TableEntry) ![]u8
 
     const header_size: usize = 12 + @as(usize, num_tables) * 16;
     var tables_size: usize = 0;
-    for (entries) |e| {
+    for (sorted) |e| {
         tables_size += (e.data.len + 3) & ~@as(usize, 3);
     }
     const total_size = header_size + tables_size;
@@ -118,7 +137,7 @@ pub fn assemble(allocator: std.mem.Allocator, entries: []const TableEntry) ![]u8
     var data_offset: u32 = @intCast(header_size);
     var head_checksum_offset: usize = 0;
 
-    for (entries) |e| {
+    for (sorted) |e| {
         const checksum = calcChecksum(e.data);
         out[pos] = e.tag[0];
         out[pos + 1] = e.tag[1];
@@ -140,7 +159,7 @@ pub fn assemble(allocator: std.mem.Allocator, entries: []const TableEntry) ![]u8
         data_offset += @intCast(aligned);
     }
 
-    for (entries) |e| {
+    for (sorted) |e| {
         @memcpy(out[pos .. pos + e.data.len], e.data);
         const aligned: usize = (e.data.len + 3) & ~@as(usize, 3);
         pos += aligned;
@@ -214,6 +233,43 @@ test "assemble produces a valid SFNT header and directory" {
     try std.testing.expectEqualSlices(u8, "bbbb", out[28..32]);
     const second_offset = std.mem.readInt(u32, out[36..40], .big);
     try std.testing.expectEqual(@as(u32, 48), second_offset);
+}
+
+test "assemble sorts the table directory into ascending tag order" {
+    const allocator = std.testing.allocator;
+    // Deliberately supply entries out of tag order. The "head" table needs at
+    // least 12 bytes so the checkSumAdjustment field (offset 8) fits.
+    var head_data: [12]u8 = .{0} ** 12;
+    const entries = [_]TableEntry{
+        .{ .tag = "name".*, .data = &[_]u8{ 1, 2, 3, 4 } },
+        .{ .tag = "cmap".*, .data = &[_]u8{ 5, 6, 7, 8 } },
+        .{ .tag = "glyf".*, .data = &[_]u8{ 9, 10, 11, 12 } },
+        .{ .tag = "head".*, .data = &head_data },
+    };
+    const out = try assemble(allocator, &entries);
+    defer allocator.free(out);
+
+    try std.testing.expectEqual(@as(u16, 4), std.mem.readInt(u16, out[4..6], .big));
+
+    // Directory entries live at 12 + i*16; the first 4 bytes of each are the tag.
+    // Expect ascending order: cmap, glyf, head, name.
+    const expected_tags = [_][]const u8{ "cmap", "glyf", "head", "name" };
+    var prev: [4]u8 = .{ 0, 0, 0, 0 };
+    for (expected_tags, 0..) |tag, i| {
+        const entry_off = 12 + i * 16;
+        const got = out[entry_off .. entry_off + 4];
+        try std.testing.expectEqualSlices(u8, tag, got);
+        // Strictly ascending relative to the previous directory tag.
+        if (i > 0) try std.testing.expect(std.mem.lessThan(u8, &prev, got));
+        @memcpy(&prev, got);
+
+        // Offset + length stay within the assembled file.
+        const offset = std.mem.readInt(u32, out[entry_off + 8 ..][0..4], .big);
+        const length = std.mem.readInt(u32, out[entry_off + 12 ..][0..4], .big);
+        try std.testing.expect(offset + length <= out.len);
+        // Every table body must start 4-byte aligned.
+        try std.testing.expectEqual(@as(u32, 0), offset % 4);
+    }
 }
 
 test "assemble applies the head checkSumAdjustment fixup when a head table is present" {
